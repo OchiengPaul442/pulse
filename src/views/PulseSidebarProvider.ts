@@ -282,6 +282,19 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
             return;
           }
 
+          if (message.type === "newConversation") {
+            await this.runtime.startNewConversation();
+            await webviewView.webview.postMessage({
+              type: "runtimeSummary",
+              payload: await this.runtime.summary(),
+            });
+            await webviewView.webview.postMessage({
+              type: "actionResult",
+              payload: "Started a new conversation.",
+            });
+            return;
+          }
+
           if (message.type === "webviewError") {
             this.logger.error(
               `Sidebar webview error: ${String(message.payload ?? "unknown error")}`,
@@ -1236,6 +1249,7 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
     chatHistory = [];
     renderMessages();
     showChat();
+    vscode.postMessage({ type: 'newConversation' });
     taskInput.focus();
   });
 

@@ -64,6 +64,10 @@ export class SessionStore {
     await this.save(state);
   }
 
+  public async clearActiveSession(): Promise<void> {
+    await this.setActiveSession(null);
+  }
+
   public async updateSessionResult(
     sessionId: string,
     result: string,

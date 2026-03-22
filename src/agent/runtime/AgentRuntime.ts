@@ -239,11 +239,14 @@ export class AgentRuntime {
 
   public async runTask(objective: string): Promise<RuntimeTaskResult> {
     this.resetTokenUsage();
-    const session = await this.sessionStore.createSession(objective, {
-      planner: this.currentConfig.plannerModel,
-      editor: this.currentConfig.editorModel,
-      fast: this.currentConfig.fastModel,
-    });
+    let session = await this.sessionStore.getActiveSession();
+    if (!session) {
+      session = await this.sessionStore.createSession(objective, {
+        planner: this.currentConfig.plannerModel,
+        editor: this.currentConfig.editorModel,
+        fast: this.currentConfig.fastModel,
+      });
+    }
 
     const allowEdits = this.shouldAllowEdits(objective);
 
@@ -268,6 +271,7 @@ export class AgentRuntime {
       this.consumeTokens(response.tokenUsage);
 
       await this.sessionStore.updateSessionResult(session.id, response.text);
+      await this.editManager.clearPendingProposal();
       if (this.currentConfig.memoryMode !== "off") {
         await this.memoryStore.addEpisode(
           objective,
@@ -488,6 +492,12 @@ export class AgentRuntime {
 
     await this.sessionStore.setActiveSession(sessionId);
     return session;
+  }
+
+  public async startNewConversation(): Promise<void> {
+    await this.sessionStore.clearActiveSession();
+    await this.editManager.clearPendingProposal();
+    this.resetTokenUsage();
   }
 
   public listAvailableSkills(): SkillManifest[] {
