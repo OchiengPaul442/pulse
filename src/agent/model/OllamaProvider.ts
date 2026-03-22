@@ -1,3 +1,5 @@
+import * as https from "https";
+import * as http from "http";
 import type {
   ChatRequest,
   ChatResponse,
@@ -33,6 +35,12 @@ interface OllamaPsModel {
 
 interface OllamaPsResponse {
   models?: OllamaPsModel[];
+}
+
+interface SimpleResponse {
+  ok: boolean;
+  status: number;
+  json(): Promise<any>;
 }
 
 export class OllamaProvider implements ModelProvider {
@@ -176,12 +184,15 @@ export class OllamaProvider implements ModelProvider {
   private async fetchFromCandidates(
     path: string,
     init: RequestInit,
-  ): Promise<Response> {
+  ): Promise<SimpleResponse> {
     let lastError: unknown;
 
     for (const baseUrl of this.getCandidateBaseUrls()) {
       try {
-        const response = await fetch(this.buildUrl(baseUrl, path), init);
+        const response = await this.makeRequest(
+          this.buildUrl(baseUrl, path),
+          init,
+        );
         return response;
       } catch (error) {
         lastError = error;
@@ -191,6 +202,57 @@ export class OllamaProvider implements ModelProvider {
     throw lastError instanceof Error
       ? lastError
       : new Error("Failed to connect to Ollama");
+  }
+
+  private async makeRequest(
+    urlStr: string,
+    init: RequestInit,
+  ): Promise<SimpleResponse> {
+    return new Promise((resolve, reject) => {
+      const parsedUrl = new URL(urlStr);
+      const isHttps = parsedUrl.protocol === "https:";
+      const client = isHttps ? https : http;
+
+      const options: http.RequestOptions = {
+        hostname: parsedUrl.hostname,
+        port: parsedUrl.port,
+        path: parsedUrl.pathname + parsedUrl.search,
+        method: init.method || "GET",
+        headers: init.headers as Record<string, string>,
+        timeout: 5000,
+      };
+
+      const req = client.request(options, (res) => {
+        let data = "";
+        res.on("data", (chunk) => {
+          data += chunk;
+        });
+        res.on("end", () => {
+          const response: SimpleResponse = {
+            ok: res.statusCode! >= 200 && res.statusCode! < 300,
+            status: res.statusCode!,
+            json: async () => JSON.parse(data),
+          };
+          resolve(response);
+        });
+      });
+
+      req.on("error", (err) => {
+        reject(err);
+      });
+
+      if (init.signal) {
+        init.signal.addEventListener("abort", () => {
+          req.destroy();
+          reject(new Error("Aborted"));
+        });
+      }
+
+      if (init.body) {
+        req.write(init.body);
+      }
+      req.end();
+    });
   }
 
   private getCandidateBaseUrls(): string[] {
