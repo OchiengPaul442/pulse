@@ -5,6 +5,7 @@ node_modules/**
 .vscode/**
 .storage/**
 docs/**
+scripts/**
 01-*.md
 02-*.md
 03-*.md
@@ -27,3 +28,8 @@ docs/**
 20-*.md
 esbuild.mjs
 tsconfig.json
+.gitignore
+.eslintrc*
+.prettierrc*
+package-lock.json
+*.vsix

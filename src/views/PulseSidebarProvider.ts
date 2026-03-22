@@ -1,3 +1,4 @@
+import * as crypto from "crypto";
 import * as vscode from "vscode";
 
 import type { AgentRuntime } from "../agent/runtime/AgentRuntime";
@@ -225,7 +226,7 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
   }
 
   private buildHtml(webview: vscode.Webview): string {
-    const nonce = String(Date.now());
+    const nonce = crypto.randomBytes(16).toString("base64");
     const csp = webview.cspSource;
 
     return `<!DOCTYPE html>
@@ -1245,13 +1246,38 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
     vscode.postMessage({ type: 'setApprovalMode', payload: next });
   });
 
+  // Two-step confirmation without confirm() (blocked in VS Code webviews)
+  let applyPending = false;
+  let revertPending = false;
+
+  function resetBannerBtns() {
+    applyPending = false;
+    revertPending = false;
+    btnApply.textContent  = 'Apply';
+    btnApply.className   = 'btn primary sm';
+    btnRevert.textContent = 'Revert';
+    btnRevert.className  = 'btn danger sm';
+  }
+
   btnApply.addEventListener('click', () => {
-    if (!confirm('Apply the pending file edits to your workspace?')) return;
+    if (!applyPending) {
+      applyPending = true;
+      btnApply.textContent = 'Confirm apply?';
+      btnApply.className   = 'btn primary sm';
+      return;
+    }
+    resetBannerBtns();
     vscode.postMessage({ type: 'applyPending', payload: true });
   });
 
   btnRevert.addEventListener('click', () => {
-    if (!confirm('Revert the last applied transaction?')) return;
+    if (!revertPending) {
+      revertPending = true;
+      btnRevert.textContent = 'Confirm revert?';
+      btnRevert.className   = 'btn danger sm';
+      return;
+    }
+    resetBannerBtns();
     vscode.postMessage({ type: 'revertLast', payload: true });
   });
 

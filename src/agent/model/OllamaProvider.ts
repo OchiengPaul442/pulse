@@ -39,10 +39,14 @@ export class OllamaProvider implements ModelProvider {
   public constructor(private readonly baseUrl: string) {}
 
   public async healthCheck(): Promise<ProviderHealth> {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 5000);
     try {
       const response = await fetch(`${this.baseUrl}/api/tags`, {
         method: "GET",
+        signal: controller.signal,
       });
+      clearTimeout(timer);
       if (!response.ok) {
         return {
           ok: false,
@@ -55,6 +59,7 @@ export class OllamaProvider implements ModelProvider {
         message: "Ollama reachable",
       };
     } catch (error) {
+      clearTimeout(timer);
       return {
         ok: false,
         message:
