@@ -16,7 +16,11 @@ import {
   type WebSearchResponse,
 } from "../search/WebSearchService";
 import { SkillRegistry, type SkillManifest } from "../skills/SkillRegistry";
-import type { ExplainResult, RuntimeTaskResult } from "./RuntimeTypes";
+import type {
+  ConversationMessage,
+  ExplainResult,
+  RuntimeTaskResult,
+} from "./RuntimeTypes";
 import { SessionStore } from "../sessions/SessionStore";
 import type { SessionRecord } from "../sessions/SessionStore";
 import { VerificationRunner } from "../verification/VerificationRunner";
@@ -45,6 +49,8 @@ export interface RecentSessionItem {
   id: string;
   title: string;
   updatedAt: string;
+  messageCount: number;
+  attachmentCount: number;
 }
 
 export interface PrepublishGuardResult {
@@ -248,7 +254,17 @@ export class AgentRuntime {
       });
     }
 
+    const userTurn: ConversationMessage = {
+      role: "user",
+      content: objective,
+      createdAt: new Date().toISOString(),
+    };
+    await this.sessionStore.appendMessage(session.id, userTurn);
+
     const allowEdits = this.shouldAllowEdits(objective);
+    const attachedFiles = session.attachedFiles ?? [];
+    const attachedContext = await this.loadAttachedFileContext(attachedFiles);
+    const conversationHistory = await this.buildConversationHistory(session.id);
 
     if (!allowEdits) {
       const model = await this.resolveModelOrFallback(
@@ -262,6 +278,20 @@ export class AgentRuntime {
             content:
               "You are Pulse, a concise VS Code coding assistant. Reply conversationally to greetings and general questions. Do not propose file edits unless the user explicitly asks for code changes.",
           },
+          ...conversationHistory,
+          ...(attachedContext.length > 0
+            ? [
+                {
+                  role: "system",
+                  content: [
+                    "Attached workspace context:",
+                    ...attachedContext.map(
+                      (snippet) => `File: ${snippet.path}\n${snippet.content}`,
+                    ),
+                  ].join("\n\n"),
+                },
+              ]
+            : []),
           {
             role: "user",
             content: objective,
@@ -270,6 +300,11 @@ export class AgentRuntime {
       });
       this.consumeTokens(response.tokenUsage);
 
+      await this.sessionStore.appendMessage(session.id, {
+        role: "assistant",
+        content: response.text,
+        createdAt: new Date().toISOString(),
+      });
       await this.sessionStore.updateSessionResult(session.id, response.text);
       await this.editManager.clearPendingProposal();
       if (this.currentConfig.memoryMode !== "off") {
@@ -347,6 +382,12 @@ export class AgentRuntime {
         : "No web research used.",
       "Context snippets:",
       JSON.stringify(contextSnippets, null, 2),
+      attachedContext.length > 0
+        ? "Attached file context:"
+        : "No attached files.",
+      attachedContext.length > 0
+        ? JSON.stringify(attachedContext, null, 2)
+        : "",
     ].join("\n\n");
 
     const response = await this.provider.chat({
@@ -378,6 +419,11 @@ export class AgentRuntime {
         ? await this.editManager.setPendingProposal(objective, normalizedEdits)
         : null;
 
+    await this.sessionStore.appendMessage(session.id, {
+      role: "assistant",
+      content: parsed.response,
+      createdAt: new Date().toISOString(),
+    });
     await this.sessionStore.updateSessionResult(session.id, parsed.response);
     if (this.currentConfig.memoryMode !== "off") {
       await this.memoryStore.addEpisode(
@@ -481,6 +527,8 @@ export class AgentRuntime {
       id: session.id,
       title: session.title,
       updatedAt: session.updatedAt,
+      messageCount: session.messages?.length ?? 0,
+      attachmentCount: session.attachedFiles?.length ?? 0,
     }));
   }
 
@@ -492,6 +540,30 @@ export class AgentRuntime {
 
     await this.sessionStore.setActiveSession(sessionId);
     return session;
+  }
+
+  public async attachFilesToActiveSession(
+    paths: string[],
+  ): Promise<SessionRecord | null> {
+    const trimmed = paths.map((value) => value.trim()).filter(Boolean);
+    if (trimmed.length === 0) {
+      return null;
+    }
+
+    let session = await this.sessionStore.getActiveSession();
+    if (!session) {
+      session = await this.sessionStore.createSession("Attached context", {
+        planner: this.currentConfig.plannerModel,
+        editor: this.currentConfig.editorModel,
+        fast: this.currentConfig.fastModel,
+      });
+    }
+
+    const nextFiles = Array.from(
+      new Set([...(session.attachedFiles ?? []), ...trimmed]),
+    );
+    await this.sessionStore.setAttachedFiles(session.id, nextFiles);
+    return this.sessionStore.getSession(session.id);
   }
 
   public async deleteSession(sessionId: string): Promise<{
@@ -863,6 +935,27 @@ export class AgentRuntime {
     }
 
     await Promise.all(updates);
+  }
+
+  private async buildConversationHistory(
+    sessionId: string,
+  ): Promise<ConversationMessage[]> {
+    const session = await this.sessionStore.getSession(sessionId);
+    const messages = session?.messages ?? [];
+    return messages.slice(-8).map((message) => ({
+      role: message.role,
+      content: message.content,
+    }));
+  }
+
+  private async loadAttachedFileContext(
+    paths: string[],
+  ): Promise<Array<{ path: string; content: string }>> {
+    if (paths.length === 0) {
+      return [];
+    }
+
+    return this.scanner.readContextSnippets(paths.slice(0, 8), 2400);
   }
 
   private shouldAllowEdits(objective: string): boolean {

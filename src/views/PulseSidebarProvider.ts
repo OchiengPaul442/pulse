@@ -283,9 +283,24 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
           }
 
           if (
-            message.type === "deleteSession" &&
+            message.type === "deleteSessionRequest" &&
             typeof message.payload === "string"
           ) {
+            const decision = await vscode.window.showWarningMessage(
+              "Delete this conversation? This cannot be undone.",
+              { modal: true },
+              "Delete",
+              "Cancel",
+            );
+
+            if (decision !== "Delete") {
+              await webviewView.webview.postMessage({
+                type: "actionResult",
+                payload: "Delete canceled.",
+              });
+              return;
+            }
+
             const result = await this.runtime.deleteSession(message.payload);
             if (!result.deleted) {
               await webviewView.webview.postMessage({
@@ -306,6 +321,49 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
             await webviewView.webview.postMessage({
               type: "sessionDeleted",
               payload: { wasActive: result.wasActive },
+            });
+            return;
+          }
+
+          if (message.type === "attachContext") {
+            const picked = await vscode.window.showOpenDialog({
+              canSelectFiles: true,
+              canSelectFolders: true,
+              canSelectMany: true,
+              openLabel: "Attach context",
+              title: "Attach files or folders for Pulse to read",
+            });
+
+            if (!picked || picked.length === 0) {
+              await webviewView.webview.postMessage({
+                type: "actionResult",
+                payload: "Attachment canceled.",
+              });
+              return;
+            }
+
+            const session = await this.runtime.attachFilesToActiveSession(
+              picked.map((item) => item.fsPath),
+            );
+            if (!session) {
+              await webviewView.webview.postMessage({
+                type: "actionResult",
+                payload: "Unable to attach files.",
+              });
+              return;
+            }
+
+            await webviewView.webview.postMessage({
+              type: "runtimeSummary",
+              payload: await this.runtime.summary(),
+            });
+            await webviewView.webview.postMessage({
+              type: "sessionAttachments",
+              payload: session.attachedFiles ?? [],
+            });
+            await webviewView.webview.postMessage({
+              type: "actionResult",
+              payload: `Attached ${session.attachedFiles?.length ?? 0} file(s).`,
             });
             return;
           }
@@ -548,7 +606,7 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
     .sessions { border-top: 1px solid var(--border); }
     .sitem {
       display: flex; align-items: center; justify-content: space-between;
-      padding: 9px 4px; cursor: pointer;
+      padding: 9px 6px; cursor: pointer;
       border-bottom: 1px solid var(--border);
       border-radius: var(--r-sm); transition: background var(--spd);
     }
@@ -566,6 +624,16 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
       align-items: center;
       gap: 4px;
       flex-shrink: 0;
+    }
+    .session-meta {
+      display: flex;
+      flex-direction: column;
+      align-items: flex-end;
+      gap: 2px;
+    }
+    .session-count {
+      font-size: 10px;
+      color: var(--vscode-descriptionForeground);
     }
     .session-delete {
       width: 22px;
@@ -717,6 +785,30 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
       transition: all var(--spd); background: transparent;
     }
     .chip:hover { border-color: var(--amber); color: var(--amber); background: var(--amber-bg); }
+    .chip.attach {
+      color: var(--amber);
+      border-style: dashed;
+    }
+    .chip.attach:hover { border-color: var(--amber); background: var(--amber-bg); }
+    .attachment-row {
+      display: flex;
+      gap: 5px;
+      align-items: center;
+      flex-wrap: wrap;
+      padding: 0 10px 8px;
+    }
+    .attachment-label {
+      font-size: 10px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: .6px;
+      color: var(--vscode-descriptionForeground);
+    }
+    .attachment-empty {
+      font-size: 10px;
+      color: var(--vscode-descriptionForeground);
+      opacity: .7;
+    }
 
     /* Send button — rounded square, disabled until text is typed */
     .send-btn {
@@ -763,7 +855,7 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
     .btn.primary:hover { background: #d97706; border-color: #d97706; }
     .btn.danger  { color: var(--red); border-color: var(--red-bdr); }
     .btn.danger:hover  { background: var(--red-bg); }
-    .btn.sm { padding: 4px 8px; font-size: 11px; }
+    .btn.sm { padding: 4px 8px; font-size: 10px; }
 
     @keyframes fadein {
       from { opacity: 0; transform: translateY(4px); }
@@ -852,6 +944,7 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
 
     <div id="chatView" class="hidden">
       <button id="btnBack" class="back-btn">&#8592; Back</button>
+      <div id="attachmentRow" class="attachment-row"></div>
       <div id="messages"></div>
       <div id="typing">
         <div class="typing-bubble">
@@ -882,6 +975,7 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
         <div class="chips">
           <span id="chipMode"  class="chip" title="Click to cycle approval mode">balanced</span>
           <span id="chipModel" class="chip" title="Active planner model">\u2013</span>
+          <button id="btnAttach" type="button" class="chip attach" title="Attach files or folders">+ attach</button>
         </div>
         <button id="btnSend" class="send-btn" title="Send (Enter)" disabled>&#8593;</button>
       </div>
@@ -957,6 +1051,7 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
   const chatView       = $('chatView');
   const btnNewChat     = $('btnNewChat');
   const btnBack        = $('btnBack');
+  const attachmentRow  = $('attachmentRow');
   const sessionList    = $('sessionList');
   const messages       = $('messages');
   const typing         = $('typing');
@@ -968,6 +1063,7 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
   const btnSend        = $('btnSend');
   const chipModel      = $('chipModel');
   const chipMode       = $('chipMode');
+  const btnAttach      = $('btnAttach');
   const statusLine     = $('statusLine');
   const tokenRing      = $('tokenRing');
   const tokenValue     = $('tokenValue');
@@ -978,6 +1074,7 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
   let models      = [];
   let mcpServers  = [];
   let chatHistory = [];
+  let attachedFiles = [];
   let inChat      = false;
 
   // ── Helpers ───────────────────────────────────────────────────────────
@@ -1161,18 +1258,37 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
     messages.innerHTML = '';
     for (const m of chatHistory) {
       const div = document.createElement('div');
-      div.className = 'msg ' + m.role + ' fadein';
-      let html = esc(m.text);
+      const role = m.role === 'assistant' ? 'agent' : m.role;
+      div.className = 'msg ' + role + ' fadein';
+      let html = esc(m.text ?? m.content ?? '');
       // Minimal markdown: fenced code blocks then inline code
       html = html.replace(/\`\`\`([\\s\\S]*?)\`\`\`/g, '<pre>$1</pre>');
       html = html.replace(/\`([^\`\\n]+)\`/g, '<code>$1</code>');
       html = html.replace(/\\n/g, '<br>');
-      const ts = m.ts ? relTime(new Date(m.ts).toISOString()) : '';
+      const rawTs = m.ts ?? m.createdAt ?? null;
+      const ts = rawTs ? relTime(new Date(rawTs).toISOString()) : '';
       div.innerHTML =
         '<div class="bubble">' + html + '</div>' +
         '<div class="msg-time">' + esc(ts) + '</div>';
       messages.appendChild(div);
     }
+  }
+
+  function renderAttachments(files) {
+    attachedFiles = Array.isArray(files) ? files.slice() : [];
+    if (!attachmentRow) return;
+    if (!attachedFiles.length) {
+      attachmentRow.innerHTML =
+        '<span class="attachment-label">Attached</span>' +
+        '<span class="attachment-empty">No files attached</span>';
+      return;
+    }
+
+    attachmentRow.innerHTML =
+      '<span class="attachment-label">Attached</span>' +
+      attachedFiles.map(function(filePath) {
+        return '<span class="chip" title="' + esc(filePath) + '">' + esc(filePath) + '</span>';
+      }).join('');
   }
 
   // ── Render session list ───────────────────────────────────────────────
@@ -1193,7 +1309,10 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
       d.innerHTML =
         '<span class="sitem-title">' + esc(s.title || s.id) + '</span>' +
         '<div class="session-actions">' +
-          '<span class="sitem-time">'  + esc(relTime(s.updatedAt)) + '</span>' +
+          '<div class="session-meta">' +
+            '<span class="sitem-time">'  + esc(relTime(s.updatedAt)) + '</span>' +
+            '<span class="session-count">' + esc(String(s.messageCount || 0)) + ' msg' + (Number(s.messageCount) === 1 ? '' : 's') + (Number(s.attachmentCount) ? ', ' + Number(s.attachmentCount) + ' attach' + (Number(s.attachmentCount) === 1 ? '' : 'ments') : '') + '</span>' +
+          '</div>' +
           '<button type="button" class="session-delete" title="Delete conversation" aria-label="Delete conversation">&#128465;</button>' +
         '</div>';
       d.addEventListener('click', function() {
@@ -1202,18 +1321,10 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
         }
       });
       const deleteButton = d.querySelector('.session-delete');
-      let deleteArmed = false;
       deleteButton.addEventListener('click', function(event) {
         event.preventDefault();
         event.stopPropagation();
-        if (!deleteArmed) {
-          deleteArmed = true;
-          deleteButton.classList.add('confirming');
-          deleteButton.textContent = 'Delete?';
-          return;
-        }
-
-        vscode.postMessage({ type: 'deleteSession', payload: s.id });
+        vscode.postMessage({ type: 'deleteSessionRequest', payload: s.id });
       });
       sessionList.appendChild(d);
     }
@@ -1221,18 +1332,30 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
 
   function renderLoadedSession(session) {
     if (!session) return;
-    chatHistory = [{
-      role: 'user',
-      text: session.objective || session.title || 'Session',
-      ts: session.updatedAt || Date.now(),
-    }];
-
-    if (session.lastResult) {
-      chatHistory.push({
-        role: 'agent',
-        text: session.lastResult,
-        ts: session.updatedAt || Date.now(),
+    attachedFiles = session.attachedFiles || [];
+    renderAttachments(attachedFiles);
+    if (Array.isArray(session.messages) && session.messages.length > 0) {
+      chatHistory = session.messages.map(function(message) {
+        return {
+          role: message.role,
+          content: message.content,
+          ts: message.createdAt,
+        };
       });
+    } else {
+      chatHistory = [{
+        role: 'user',
+        text: session.objective || session.title || 'Session',
+        ts: session.updatedAt || Date.now(),
+      }];
+
+      if (session.lastResult) {
+        chatHistory.push({
+          role: 'assistant',
+          text: session.lastResult,
+          ts: session.updatedAt || Date.now(),
+        });
+      }
     }
 
     renderMessages();
@@ -1243,6 +1366,8 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
   function handleSessionDeleted(payload) {
     if (payload && payload.wasActive) {
       chatHistory = [];
+      attachedFiles = [];
+      renderAttachments(attachedFiles);
       renderMessages();
       showHome();
       statusLine.textContent = 'Deleted conversation';
@@ -1333,6 +1458,8 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
 
   on(btnNewChat, 'click', function() {
     chatHistory = [];
+    attachedFiles = [];
+    renderAttachments(attachedFiles);
     renderMessages();
     showChat();
     vscode.postMessage({ type: 'newConversation' });
@@ -1340,6 +1467,7 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
   });
 
   on(btnBack,     'click', showHome);
+  on(btnAttach,   'click', function() { vscode.postMessage({ type: 'attachContext' }); });
   on(btnSettings, 'click', function() { settingsDrawer.classList.toggle('open'); });
   on(btnRefresh,  'click', function() { vscode.postMessage({ type: 'ping' }); });
 
@@ -1406,6 +1534,7 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
     if (type === 'sessions')       { renderSessions(payload); return; }
     if (type === 'sessionLoaded')  { renderLoadedSession(payload); return; }
     if (type === 'sessionDeleted') { handleSessionDeleted(payload); return; }
+    if (type === 'sessionAttachments') { renderAttachments(payload); return; }
 
     if (type === 'taskResult') {
       typing.classList.remove('on');

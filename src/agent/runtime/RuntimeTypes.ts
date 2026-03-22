@@ -1,6 +1,12 @@
 import type { EditProposal } from "../edits/EditManager";
 import type { TaskPlan } from "../planner/Planner";
 
+export interface ConversationMessage {
+  role: "user" | "assistant";
+  content: string;
+  createdAt: string;
+}
+
 export interface RuntimeTaskResult {
   sessionId: string;
   objective: string;

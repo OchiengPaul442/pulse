@@ -1,5 +1,7 @@
 import * as vscode from "vscode";
 
+import type { ConversationMessage } from "../runtime/RuntimeTypes";
+
 export interface SessionRecord {
   id: string;
   title: string;
@@ -11,6 +13,8 @@ export interface SessionRecord {
     editor: string;
     fast: string;
   };
+  messages?: ConversationMessage[];
+  attachedFiles?: string[];
   lastResult?: string;
 }
 
@@ -36,6 +40,8 @@ export class SessionStore {
       createdAt: now,
       updatedAt: now,
       modelProfile,
+      messages: [],
+      attachedFiles: [],
     };
 
     state.sessions.unshift(record);
@@ -84,6 +90,38 @@ export class SessionStore {
 
     await this.save(state);
     return true;
+  }
+
+  public async appendMessage(
+    sessionId: string,
+    message: ConversationMessage,
+  ): Promise<void> {
+    const state = await this.load();
+    const found = state.sessions.find((session) => session.id === sessionId);
+    if (!found) {
+      return;
+    }
+
+    found.messages = [...(found.messages ?? []), message];
+    found.lastResult =
+      message.role === "assistant" ? message.content : found.lastResult;
+    found.updatedAt = new Date().toISOString();
+    await this.save(state);
+  }
+
+  public async setAttachedFiles(
+    sessionId: string,
+    attachedFiles: string[],
+  ): Promise<void> {
+    const state = await this.load();
+    const found = state.sessions.find((session) => session.id === sessionId);
+    if (!found) {
+      return;
+    }
+
+    found.attachedFiles = [...attachedFiles];
+    found.updatedAt = new Date().toISOString();
+    await this.save(state);
   }
 
   public async updateSessionResult(
