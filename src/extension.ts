@@ -31,6 +31,7 @@ export async function activate(
     vscode.window.registerWebviewViewProvider(
       PulseSidebarProvider.viewType,
       sidebarProvider,
+      { webviewOptions: { retainContextWhenHidden: true } },
     ),
   );
 

@@ -138,10 +138,15 @@ export class McpManager {
 }
 
 function isCommandAvailable(command: string): boolean {
-  const probe = process.platform === "win32" ? "where" : "which";
-  const result = spawnSync(probe, [command], {
-    stdio: "ignore",
-    shell: false,
-  });
-  return result.status === 0;
+  try {
+    const probe = process.platform === "win32" ? "where" : "which";
+    const result = spawnSync(probe, [command], {
+      stdio: "ignore",
+      shell: false,
+      timeout: 3000,
+    });
+    return result.status === 0;
+  } catch {
+    return false;
+  }
 }

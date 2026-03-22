@@ -345,15 +345,19 @@ export class EditManager {
   }
 
   private async load(): Promise<EditState> {
-    const bytes = await vscode.workspace.fs.readFile(
-      vscode.Uri.file(this.editsPath),
-    );
-    const raw = Buffer.from(bytes).toString("utf8");
-    const parsed = JSON.parse(raw) as EditState;
-    return {
-      pendingProposal: parsed.pendingProposal ?? null,
-      lastApplied: parsed.lastApplied ?? null,
-    };
+    try {
+      const bytes = await vscode.workspace.fs.readFile(
+        vscode.Uri.file(this.editsPath),
+      );
+      const raw = Buffer.from(bytes).toString("utf8");
+      const parsed = JSON.parse(raw) as EditState;
+      return {
+        pendingProposal: parsed.pendingProposal ?? null,
+        lastApplied: parsed.lastApplied ?? null,
+      };
+    } catch {
+      return { pendingProposal: null, lastApplied: null };
+    }
   }
 
   private async save(state: EditState): Promise<void> {

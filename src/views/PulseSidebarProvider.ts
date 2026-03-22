@@ -21,73 +21,92 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
 
     webviewView.webview.html = this.buildHtml(webviewView.webview);
 
+    // ── Push the full runtime state to the webview ─────────────────────
+    const pushState = async (): Promise<void> => {
+      if (!webviewView.visible) {
+        return;
+      }
+
+      // Refresh Ollama health — errors here are non-fatal
+      try {
+        await this.runtime.refreshProviderState();
+      } catch (err) {
+        this.logger.warn(
+          `refreshProviderState failed: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+
+      // Always post runtimeSummary — even a degraded one — so the badge updates
+      let summary;
+      try {
+        summary = await this.runtime.summary();
+      } catch (err) {
+        this.logger.warn(
+          `runtime.summary() failed: ${err instanceof Error ? err.message : String(err)}`,
+        );
+        summary = {
+          status: "degraded" as const,
+          ollamaReachable: false,
+          plannerModel: "unknown",
+          editorModel: "unknown",
+          fastModel: "unknown",
+          embeddingModel: "unknown",
+          approvalMode: "balanced" as const,
+          storagePath: "",
+          ollamaHealth: `Error: ${err instanceof Error ? err.message : String(err)}`,
+          modelCount: 0,
+          activeSessionId: null,
+          hasPendingEdits: false,
+          tokenBudget: 32000,
+          tokensConsumed: 0,
+          tokenUsagePercent: 0,
+          mcpConfigured: 0,
+          mcpHealthy: 0,
+        };
+      }
+      void webviewView.webview.postMessage({
+        type: "runtimeSummary",
+        payload: summary,
+      });
+
+      // Secondary data — each isolated so one failure can't block the rest
+      const sessions = await this.runtime.listRecentSessions().catch(() => []);
+      void webviewView.webview.postMessage({
+        type: "sessions",
+        payload: sessions,
+      });
+      void webviewView.webview.postMessage({
+        type: "mcpServers",
+        payload: this.runtime.getConfiguredMcpServers(),
+      });
+      if (summary?.ollamaReachable) {
+        const models = await this.runtime.listAvailableModels().catch(() => []);
+        void webviewView.webview.postMessage({
+          type: "models",
+          payload: models,
+        });
+      }
+    };
+
+    // Re-push state every time the sidebar panel becomes visible
+    webviewView.onDidChangeVisibility(() => {
+      if (webviewView.visible) {
+        void pushState();
+      }
+    });
+
     webviewView.webview.onDidReceiveMessage(
       async (message: { type?: string; payload?: unknown }) => {
         try {
-          if (message.type === "loadDashboard") {
-            await this.runtime.refreshProviderState();
-            const summary = await this.runtime.summary();
-            await webviewView.webview.postMessage({
-              type: "runtimeSummary",
-              payload: summary,
-            });
-
-            let sessions: Array<{
-              id: string;
-              title: string;
-              updatedAt: string;
-            }> = [];
-            try {
-              sessions = await this.runtime.listRecentSessions();
-            } catch (error) {
-              this.logger.warn(
-                `Failed to load recent sessions: ${error instanceof Error ? error.message : String(error)}`,
-              );
-            }
-
-            let mcpServers: Array<Record<string, unknown>> = [];
-            try {
-              mcpServers = this.runtime.getConfiguredMcpServers() as Array<
-                Record<string, unknown>
-              >;
-            } catch (error) {
-              this.logger.warn(
-                `Failed to load MCP configuration: ${error instanceof Error ? error.message : String(error)}`,
-              );
-            }
-
-            await webviewView.webview.postMessage({
-              type: "sessions",
-              payload: sessions,
-            });
-            await webviewView.webview.postMessage({
-              type: "mcpServers",
-              payload: mcpServers,
-            });
-
-            if (summary.ollamaReachable) {
-              try {
-                const models = await this.runtime.listAvailableModels();
-                await webviewView.webview.postMessage({
-                  type: "models",
-                  payload: models,
-                });
-              } catch (error) {
-                this.logger.warn(
-                  `Failed to load Ollama models for sidebar: ${error instanceof Error ? error.message : String(error)}`,
-                );
-              }
-            }
+          // Both loadDashboard and ping use the same consolidated pushState
+          if (message.type === "loadDashboard" || message.type === "ping") {
+            await pushState();
             return;
           }
 
-          if (message.type === "ping") {
-            await this.runtime.refreshProviderState();
-            const summary = await this.runtime.summary();
-            await webviewView.webview.postMessage({
-              type: "runtimeSummary",
-              payload: summary,
-            });
+          if (message.type === "webviewReady") {
+            // Webview signals it's ready — push state immediately
+            await pushState();
             return;
           }
 
@@ -254,6 +273,11 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
         }
       },
     );
+
+    // ── Proactive initial push ──────────────────────────────────────
+    // Don't rely on the webview's loadDashboard message (race condition).
+    // Kick off an initial push from the extension host side.
+    void pushState();
   }
 
   private buildHtml(webview: vscode.Webview): string {
@@ -267,27 +291,24 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
   <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${csp} 'unsafe-inline'; script-src 'nonce-${nonce}';"/>
   <meta name="viewport" content="width=device-width,initial-scale=1.0"/>
   <style>
-    /* ─── Reset ─────────────────────────────────────────────────── */
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
-    /* ─── Tokens ─────────────────────────────────────────────────── */
     :root {
       --amber:      #f59e0b;
       --amber-bg:   rgba(245,158,11,0.12);
       --amber-bdr:  rgba(245,158,11,0.30);
+      --amber-glow: rgba(245,158,11,0.14);
       --green:      #22c55e;
       --green-bg:   rgba(34,197,94,0.10);
       --green-bdr:  rgba(34,197,94,0.28);
       --red:        var(--vscode-errorForeground, #f87171);
       --red-bg:     rgba(248,113,113,0.08);
       --red-bdr:    rgba(248,113,113,0.28);
-      --r-sm: 8px;
-      --r-md: 14px;
-      --r-lg: 20px;
-      --spd: 180ms;
+      --border:     var(--vscode-sideBarSectionHeader-border, rgba(128,128,128,.18));
+      --r-sm: 8px; --r-md: 14px; --r-lg: 18px;
+      --spd: 160ms;
     }
 
-    /* ─── Layout ─────────────────────────────────────────────────── */
     html, body {
       height: 100%;
       font-family: var(--vscode-font-family, "Segoe UI", system-ui, sans-serif);
@@ -296,24 +317,16 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
       background: var(--vscode-sideBar-background);
       overflow: hidden;
     }
+    #root { display: flex; flex-direction: column; height: 100%; }
 
-    #root {
-      display: flex;
-      flex-direction: column;
-      height: 100%;
-    }
-
-    /* ─── Header ─────────────────────────────────────────────────── */
+    /* ── Header ─────────────────────────────────────────────────── */
     .hdr {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      padding: 10px 12px 9px;
-      border-bottom: 1px solid var(--vscode-sideBarSectionHeader-border, rgba(128,128,128,.18));
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 9px 12px 8px;
+      border-bottom: 1px solid var(--border);
       flex-shrink: 0;
     }
-
-    .hdr-right { display: flex; align-items: center; gap: 6px; }
+    .hdr-right { display: flex; align-items: center; gap: 5px; }
 
     .badge {
       display: inline-flex; align-items: center; gap: 4px;
@@ -325,164 +338,85 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
     .badge.off { color: var(--red);   border-color: var(--red-bdr);   background: var(--red-bg); }
 
     .icon-btn {
-      width: 26px; height: 26px;
-      border: none; background: transparent;
-      color: var(--vscode-foreground); opacity: .55;
-      cursor: pointer; border-radius: var(--r-sm);
+      width: 24px; height: 24px; border: none; background: transparent;
+      color: var(--vscode-foreground); opacity: .5; cursor: pointer;
+      border-radius: var(--r-sm);
       display: flex; align-items: center; justify-content: center;
-      font-size: 15px; transition: opacity var(--spd), background var(--spd);
+      font-size: 14px; transition: opacity var(--spd), background var(--spd);
     }
     .icon-btn:hover { opacity: 1; background: var(--vscode-toolbar-hoverBackground, rgba(128,128,128,.14)); }
 
-    /* ─── Settings drawer ───────────────────────────────────────── */
+    /* ── Settings drawer ────────────────────────────────────────── */
     #settingsDrawer {
       display: none; flex-direction: column; gap: 8px;
       padding: 10px 12px 12px;
-      border-bottom: 1px solid var(--vscode-sideBarSectionHeader-border, rgba(128,128,128,.18));
-      flex-shrink: 0; background: var(--vscode-sideBar-background);
+      border-bottom: 1px solid var(--border);
+      flex-shrink: 0;
     }
     #settingsDrawer.open { display: flex; }
 
     .srow { display: grid; grid-template-columns: 68px 1fr; align-items: center; gap: 8px; }
-
     .slabel {
       font-size: 10px; font-weight: 700; text-transform: uppercase;
       letter-spacing: .5px; color: var(--vscode-descriptionForeground);
     }
 
     input[type="text"], select, textarea {
-      width: 100%;
-      padding: 5px 7px;
+      width: 100%; padding: 5px 7px;
       border-radius: var(--r-sm);
-      border: 1px solid var(--vscode-input-border, rgba(128,128,128,.2));
+      border: 1px solid var(--border);
       background: var(--vscode-input-background);
       color: var(--vscode-input-foreground);
       font: 12px var(--vscode-font-family);
     }
-
     input[type="text"]::placeholder, textarea::placeholder {
       color: var(--vscode-input-placeholderForeground);
     }
-
     select { cursor: pointer; }
-
-    textarea {
-      resize: vertical;
-      min-height: 38px;
-    }
+    textarea { resize: vertical; min-height: 38px; }
 
     .sbtns { display: flex; justify-content: flex-end; gap: 6px; margin-top: 2px; }
 
     .section {
-      display: flex;
-      flex-direction: column;
-      gap: 6px;
-      padding-top: 8px;
-      border-top: 1px solid var(--vscode-sideBarSectionHeader-border, rgba(128,128,128,.12));
+      display: flex; flex-direction: column; gap: 6px;
+      padding-top: 8px; border-top: 1px solid var(--border);
     }
+    .section-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+    .section-copy { color: var(--vscode-descriptionForeground); font-size: 11px; line-height: 1.45; }
 
-    .section-head {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 8px;
-    }
-
-    .section-copy {
-      color: var(--vscode-descriptionForeground);
-      font-size: 11px;
-      line-height: 1.45;
-    }
-
-    .mcp-toolbar {
-      display: flex;
-      flex-wrap: wrap;
-      align-items: center;
-      gap: 6px;
-    }
-
+    .mcp-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
     .mcp-count {
-      margin-left: auto;
-      font-size: 10px;
-      font-weight: 700;
-      text-transform: uppercase;
-      letter-spacing: .6px;
+      margin-left: auto; font-size: 10px; font-weight: 700;
+      text-transform: uppercase; letter-spacing: .6px;
       color: var(--vscode-descriptionForeground);
     }
-
-    .mcp-list {
-      display: flex;
-      flex-direction: column;
-      gap: 8px;
-      max-height: 230px;
-      overflow: auto;
-      padding-right: 2px;
-    }
-
+    .mcp-list { display: flex; flex-direction: column; gap: 8px; max-height: 230px; overflow: auto; padding-right: 2px; }
     .mcp-card {
-      display: flex;
-      flex-direction: column;
-      gap: 8px;
-      padding: 10px;
-      border-radius: var(--r-md);
-      border: 1px solid var(--vscode-sideBarSectionHeader-border, rgba(128,128,128,.18));
+      display: flex; flex-direction: column; gap: 8px; padding: 10px;
+      border-radius: var(--r-md); border: 1px solid var(--border);
       background: linear-gradient(180deg, rgba(128,128,128,.04), rgba(128,128,128,.01));
     }
-
-    .mcp-card-head {
-      display: flex;
-      align-items: center;
-      gap: 8px;
-    }
-
+    .mcp-card-head { display: flex; align-items: center; gap: 8px; }
     .mcp-card-title { flex: 1; min-width: 0; }
-
     .mcp-chip {
-      display: inline-flex;
-      align-items: center;
-      gap: 4px;
-      padding: 2px 7px;
-      border-radius: 999px;
-      border: 1px solid var(--vscode-sideBarSectionHeader-border, rgba(128,128,128,.18));
-      font-size: 10px;
-      font-weight: 700;
-      color: var(--vscode-descriptionForeground);
-      text-transform: uppercase;
-      letter-spacing: .5px;
+      display: inline-flex; align-items: center; gap: 4px;
+      padding: 2px 7px; border-radius: 999px; border: 1px solid var(--border);
+      font-size: 10px; font-weight: 700; color: var(--vscode-descriptionForeground);
+      text-transform: uppercase; letter-spacing: .5px;
     }
-
-    .mcp-grid {
-      display: grid;
-      grid-template-columns: 1fr 130px;
-      gap: 6px;
-    }
-
-    .mcp-grid.triple {
-      grid-template-columns: 1fr 1fr 1fr;
-    }
-
-    .mcp-note {
-      font-size: 10px;
-      color: var(--vscode-descriptionForeground);
-      line-height: 1.35;
-    }
-
+    .mcp-grid { display: grid; grid-template-columns: 1fr 130px; gap: 6px; }
+    .mcp-grid.triple { grid-template-columns: 1fr 1fr 1fr; }
+    .mcp-note { font-size: 10px; color: var(--vscode-descriptionForeground); line-height: 1.35; }
     .mcp-empty {
-      padding: 12px;
-      border-radius: var(--r-md);
-      border: 1px dashed var(--vscode-sideBarSectionHeader-border, rgba(128,128,128,.22));
-      color: var(--vscode-descriptionForeground);
-      font-size: 11px;
-      text-align: center;
+      padding: 12px; border-radius: var(--r-md);
+      border: 1px dashed var(--border);
+      color: var(--vscode-descriptionForeground); font-size: 11px; text-align: center;
     }
 
-    /* ─── Main scroll area ─────────────────────────────────────── */
-    #main {
-      flex: 1; overflow-y: auto; overflow-x: hidden;
-      scroll-behavior: smooth;
-    }
+    /* ── Main scroll area ───────────────────────────────────────── */
+    #main { flex: 1; overflow-y: auto; overflow-x: hidden; scroll-behavior: smooth; }
 
-    /* ─── Home view ─────────────────────────────────────────────── */
+    /* ── Home view ──────────────────────────────────────────────── */
     #homeView { padding: 12px; display: flex; flex-direction: column; gap: 10px; }
     #homeView.hidden, #chatView.hidden { display: none; }
 
@@ -490,9 +424,8 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
       display: flex; align-items: center; justify-content: center; gap: 8px;
       width: 100%; padding: 10px 14px;
       border-radius: var(--r-md);
-      border: 1.5px dashed var(--vscode-sideBarSectionHeader-border, rgba(128,128,128,.25));
-      background: transparent;
-      color: var(--vscode-foreground);
+      border: 1.5px dashed var(--border);
+      background: transparent; color: var(--vscode-foreground);
       font: 600 13px var(--vscode-font-family); cursor: pointer; opacity: .65;
       transition: all var(--spd);
     }
@@ -500,49 +433,38 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
 
     .sec-title {
       font-size: 10px; font-weight: 700; text-transform: uppercase;
-      letter-spacing: .7px; color: var(--vscode-descriptionForeground);
-      padding: 0 2px;
+      letter-spacing: .7px; color: var(--vscode-descriptionForeground); padding: 0 2px;
     }
-
-    .sessions {
-      border-top: 1px solid var(--vscode-sideBarSectionHeader-border, rgba(128,128,128,.14));
-    }
-
+    .sessions { border-top: 1px solid var(--border); }
     .sitem {
       display: flex; align-items: center; justify-content: space-between;
       padding: 9px 4px; cursor: pointer;
-      border-bottom: 1px solid var(--vscode-sideBarSectionHeader-border, rgba(128,128,128,.1));
+      border-bottom: 1px solid var(--border);
       border-radius: var(--r-sm); transition: background var(--spd);
     }
     .sitem:hover { background: var(--vscode-list-hoverBackground, rgba(128,128,128,.08)); }
-
     .sitem-title {
       font-size: 13px; font-weight: 500;
       white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex: 1;
     }
-    .sitem-time {
-      font-size: 11px; color: var(--vscode-descriptionForeground);
-      margin-left: 8px; flex-shrink: 0;
-    }
+    .sitem-time { font-size: 11px; color: var(--vscode-descriptionForeground); margin-left: 8px; flex-shrink: 0; }
 
-    /* ─── Chat view ─────────────────────────────────────────────── */
+    /* ── Chat view ──────────────────────────────────────────────── */
     #chatView { padding: 10px 12px 4px; display: flex; flex-direction: column; gap: 10px; }
 
     .back-btn {
       display: inline-flex; align-items: center; gap: 4px;
-      border: none; background: none;
-      color: var(--amber); font: 600 11px var(--vscode-font-family);
-      cursor: pointer; opacity: .8; padding: 0 0 2px; width: fit-content;
+      border: none; background: none; color: var(--amber);
+      font: 600 11px var(--vscode-font-family); cursor: pointer; opacity: .8;
+      padding: 0 0 2px; width: fit-content;
     }
     .back-btn:hover { opacity: 1; }
 
-    /* ─── Message bubbles ───────────────────────────────────────── */
+    /* ── Messages ───────────────────────────────────────────────── */
     #messages { display: flex; flex-direction: column; gap: 10px; }
-
-    .msg { max-width: 88%; }
+    .msg { max-width: 90%; }
     .msg.user  { align-self: flex-end; }
     .msg.agent { align-self: flex-start; }
-
     .bubble {
       padding: 9px 13px; border-radius: var(--r-md);
       line-height: 1.55; font-size: 13px; word-break: break-word;
@@ -550,39 +472,29 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
     .msg.user  .bubble { background: var(--amber); color: #fff; border-bottom-right-radius: 3px; }
     .msg.agent .bubble {
       background: var(--vscode-input-background, rgba(128,128,128,.1));
-      border: 1px solid var(--vscode-input-border, rgba(128,128,128,.15));
-      border-bottom-left-radius: 3px;
+      border: 1px solid var(--border); border-bottom-left-radius: 3px;
     }
-
     .bubble code {
-      font-family: var(--vscode-editor-font-family, "Cascadia Code", monospace);
-      font-size: 11.5px;
-      background: rgba(0,0,0,.16);
-      padding: 1px 5px; border-radius: 4px;
+      font-family: var(--vscode-editor-font-family, monospace);
+      font-size: 11.5px; background: rgba(0,0,0,.16); padding: 1px 5px; border-radius: 4px;
     }
     .bubble pre {
-      font-family: var(--vscode-editor-font-family, "Cascadia Code", monospace);
+      font-family: var(--vscode-editor-font-family, monospace);
       font-size: 11.5px; line-height: 1.45;
       background: rgba(0,0,0,.18); border-radius: var(--r-sm);
-      padding: 9px 11px; margin: 7px 0;
-      overflow-x: auto; white-space: pre-wrap;
+      padding: 9px 11px; margin: 7px 0; overflow-x: auto; white-space: pre-wrap;
     }
-
-    .msg-time {
-      font-size: 10px; color: var(--vscode-descriptionForeground);
-      margin-top: 3px; padding: 0 2px;
-    }
+    .msg-time { font-size: 10px; color: var(--vscode-descriptionForeground); margin-top: 3px; padding: 0 2px; }
     .msg.user .msg-time { text-align: right; }
 
-    /* ─── Typing indicator ──────────────────────────────────────── */
+    /* ── Typing indicator ───────────────────────────────────────── */
     #typing { align-self: flex-start; display: none; }
     #typing.on { display: block; }
-
     .typing-bubble {
       display: inline-flex; align-items: center; gap: 4px;
       padding: 10px 13px; border-radius: var(--r-md); border-bottom-left-radius: 3px;
       background: var(--vscode-input-background, rgba(128,128,128,.1));
-      border: 1px solid var(--vscode-input-border, rgba(128,128,128,.15));
+      border: 1px solid var(--border);
     }
     .dot {
       width: 7px; height: 7px; border-radius: 50%;
@@ -596,99 +508,111 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
       30%          { transform: translateY(-5px); opacity: 1; }
     }
 
-    /* ─── Empty state ───────────────────────────────────────────── */
-    .empty {
-      text-align: center; padding: 28px 12px;
-      color: var(--vscode-descriptionForeground);
-    }
+    /* ── Empty state ────────────────────────────────────────────── */
+    .empty { text-align: center; padding: 28px 12px; color: var(--vscode-descriptionForeground); }
     .empty-icon { font-size: 28px; margin-bottom: 8px; opacity: .45; }
     .empty-h { font-size: 13px; font-weight: 600; margin-bottom: 4px; }
     .empty-p { font-size: 12px; opacity: .7; }
 
-    /* ─── Pending edits banner ──────────────────────────────────── */
+    /* ── Pending edits banner ───────────────────────────────────── */
     #editsBanner {
       display: none; margin: 4px 12px 0;
       padding: 9px 11px; border-radius: var(--r-md);
       background: var(--amber-bg); border: 1px solid var(--amber-bdr);
-      align-items: center; justify-content: space-between; gap: 8px;
-      flex-shrink: 0;
+      align-items: center; justify-content: space-between; gap: 8px; flex-shrink: 0;
     }
     #editsBanner.on { display: flex; }
-
     .banner-txt { font-size: 12px; font-weight: 600; color: var(--amber); flex: 1; }
     .banner-acts { display: flex; gap: 5px; }
 
-    /* ─── Composer ──────────────────────────────────────────────── */
+    /* ── Composer (Codex / Copilot-style) ───────────────────────── */
     .composer {
-      padding: 8px 12px 12px;
-      border-top: 1px solid var(--vscode-sideBarSectionHeader-border, rgba(128,128,128,.18));
+      padding: 8px 12px 10px;
+      border-top: 1px solid var(--border);
       flex-shrink: 0;
     }
 
-    .input-shell {
-      display: flex; align-items: flex-end; gap: 8px;
-      padding: 7px 9px;
+    /* Main input card — border glows amber on focus */
+    .composer-box {
+      position: relative;
       border-radius: var(--r-lg);
-      border: 1.5px solid var(--vscode-input-border, rgba(128,128,128,.22));
+      border: 1.5px solid var(--vscode-input-border, rgba(128,128,128,.25));
       background: var(--vscode-input-background);
-      transition: border-color var(--spd);
+      transition: border-color var(--spd), box-shadow var(--spd);
     }
-    .input-shell:focus-within { border-color: var(--amber); }
+    .composer-box:focus-within {
+      border-color: var(--amber);
+      box-shadow: 0 0 0 3px var(--amber-glow);
+    }
 
-    textarea {
-      flex: 1; border: none; background: none; outline: none;
+    /* Textarea sits flush inside the box — no own border */
+    .composer-box textarea {
+      display: block; width: 100%;
+      min-height: 52px; max-height: 180px;
+      padding: 12px 14px 4px;
+      background: none; border: none; outline: none;
       color: var(--vscode-input-foreground);
-      font: 13px var(--vscode-font-family);
-      resize: none; min-height: 21px; max-height: 96px; line-height: 1.5;
-      overflow-y: auto;
+      font: 13px/1.55 var(--vscode-font-family);
+      resize: none; overflow-y: auto;
     }
-    textarea::placeholder { color: var(--vscode-input-placeholderForeground); }
+    .composer-box textarea::placeholder { color: var(--vscode-input-placeholderForeground); }
 
+    /* Bottom row inside the box: chips on left, send on right */
+    .composer-inner-row {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 4px 10px 8px; gap: 6px;
+    }
+
+    .chips { display: flex; gap: 5px; align-items: center; flex-wrap: wrap; }
+
+    .chip {
+      font-size: 10px; font-weight: 600;
+      padding: 3px 8px; border-radius: 999px;
+      border: 1px solid var(--border);
+      color: var(--vscode-descriptionForeground);
+      cursor: pointer; white-space: nowrap;
+      max-width: 120px; overflow: hidden; text-overflow: ellipsis;
+      transition: all var(--spd); background: transparent;
+    }
+    .chip:hover { border-color: var(--amber); color: var(--amber); background: var(--amber-bg); }
+
+    /* Send button — rounded square, disabled until text is typed */
     .send-btn {
       width: 30px; height: 30px; min-width: 30px;
-      border: none; border-radius: 50%;
+      border: none; border-radius: 10px;
       background: var(--amber); color: #fff;
-      font-size: 15px; line-height: 1; cursor: pointer;
+      font-size: 15px; line-height: 1; cursor: default;
       display: flex; align-items: center; justify-content: center;
-      opacity: .35; transition: opacity var(--spd), transform var(--spd), background var(--spd);
+      transition: opacity var(--spd), transform var(--spd), background var(--spd);
+      opacity: .3;
     }
-    .send-btn.active { opacity: 1; }
-    .send-btn.active:hover { background: #d97706; transform: scale(1.08); }
+    .send-btn:not([disabled]) { opacity: 1; cursor: pointer; }
+    .send-btn:not([disabled]):hover { background: #d97706; transform: scale(1.06); }
 
-    .meta { display: flex; align-items: center; justify-content: space-between; padding: 5px 1px 0; }
-    .chips { display: flex; gap: 5px; }
+    /* Status / token row below the box */
+    .composer-foot {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 5px 2px 0; gap: 8px;
+    }
+    .status-txt { font-size: 10px; color: var(--vscode-descriptionForeground); }
 
-    .token-row { display: flex; justify-content: flex-end; padding: 6px 2px 0; }
-    .token-wrap { display: inline-flex; align-items: center; gap: 6px; color: var(--vscode-descriptionForeground); font-size: 10px; }
+    .token-wrap { display: inline-flex; align-items: center; gap: 5px; color: var(--vscode-descriptionForeground); font-size: 10px; }
     .token-ring {
-      width: 26px; height: 26px; border-radius: 50%;
+      width: 24px; height: 24px; border-radius: 50%;
       background: conic-gradient(var(--amber) 0deg, rgba(128,128,128,.18) 0deg);
       display: inline-flex; align-items: center; justify-content: center; position: relative;
     }
     .token-ring::after {
-      content: ""; position: absolute; width: 18px; height: 18px; border-radius: 50%;
+      content: ""; position: absolute; width: 16px; height: 16px; border-radius: 50%;
       background: var(--vscode-sideBar-background);
     }
-    .token-value { position: relative; z-index: 1; font-size: 8.5px; font-weight: 700; color: var(--vscode-foreground); }
+    .token-value { position: relative; z-index: 1; font-size: 8px; font-weight: 700; color: var(--vscode-foreground); }
 
-    .chip {
-      font-size: 10px; font-weight: 600;
-      padding: 2px 7px; border-radius: 999px;
-      border: 1px solid var(--vscode-sideBarSectionHeader-border, rgba(128,128,128,.2));
-      color: var(--vscode-descriptionForeground);
-      cursor: pointer; white-space: nowrap;
-      max-width: 110px; overflow: hidden; text-overflow: ellipsis;
-      transition: all var(--spd);
-    }
-    .chip:hover { border-color: var(--amber); color: var(--amber); background: var(--amber-bg); }
-
-    .status-txt { font-size: 10px; color: var(--vscode-descriptionForeground); }
-
-    /* ─── Generic buttons ───────────────────────────────────────── */
+    /* ── Generic buttons ────────────────────────────────────────── */
     .btn {
       font: 600 11px var(--vscode-font-family);
       padding: 5px 10px; border-radius: var(--r-sm);
-      border: 1px solid var(--vscode-sideBarSectionHeader-border, rgba(128,128,128,.22));
+      border: 1px solid var(--border);
       background: transparent; color: var(--vscode-foreground);
       cursor: pointer; transition: all var(--spd);
     }
@@ -699,35 +623,33 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
     .btn.danger:hover  { background: var(--red-bg); }
     .btn.sm { padding: 4px 8px; font-size: 11px; }
 
-    /* ─── Animations ───────────────────────────────────────────── */
     @keyframes fadein {
-      from { opacity: 0; transform: translateY(5px); }
+      from { opacity: 0; transform: translateY(4px); }
       to   { opacity: 1; transform: translateY(0); }
     }
-    .fadein { animation: fadein 240ms ease forwards; }
+    .fadein { animation: fadein 220ms ease forwards; }
 
-    /* ─── Scrollbar ────────────────────────────────────────────── */
-    ::-webkit-scrollbar { width: 5px; }
+    ::-webkit-scrollbar { width: 4px; }
     ::-webkit-scrollbar-track { background: transparent; }
-    ::-webkit-scrollbar-thumb { background: rgba(128,128,128,.28); border-radius: 99px; }
-    ::-webkit-scrollbar-thumb:hover { background: rgba(128,128,128,.5); }
+    ::-webkit-scrollbar-thumb { background: rgba(128,128,128,.25); border-radius: 99px; }
+    ::-webkit-scrollbar-thumb:hover { background: rgba(128,128,128,.45); }
   </style>
 </head>
 <body>
 <div id="root">
 
-  <!-- ── Header ──────────────────────────────────────────────── -->
+  <!-- ── Header ── -->
   <header class="hdr">
+    <span id="statusBadge" class="badge off">
+      <span class="badge-dot"></span><span id="statusTxt">Offline</span>
+    </span>
     <div class="hdr-right">
-      <span id="statusBadge" class="badge off">
-        <span class="badge-dot"></span><span id="statusTxt">Offline</span>
-      </span>
-      <button id="btnSettings" class="icon-btn" title="Model and MCP settings">&#9881;</button>
-      <button id="btnRefresh"  class="icon-btn" title="Refresh">&#8635;</button>
+      <button id="btnSettings" class="icon-btn" title="Settings">&#9881;</button>
+      <button id="btnRefresh"  class="icon-btn" title="Refresh status">&#8635;</button>
     </div>
   </header>
 
-  <!-- ── Settings drawer ─────────────────────────────────────── -->
+  <!-- ── Settings drawer ── -->
   <div id="settingsDrawer">
     <div class="srow">
       <span class="slabel">Role</span>
@@ -753,56 +675,50 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
         <span id="mcpCount" class="mcp-count">0 configured</span>
       </div>
       <div class="section-copy">
-        Edit servers inline, save to workspace settings, then use the status report to verify transport health.
+        Edit servers inline, save to workspace settings, then verify transport health.
       </div>
       <div class="mcp-toolbar">
-        <button id="btnAddMcp" class="btn">Add server</button>
-        <button id="btnReloadMcp" class="btn">Reload</button>
-        <button id="btnSaveMcp" class="btn primary">Save changes</button>
+        <button id="btnAddMcp"          class="btn">Add server</button>
+        <button id="btnReloadMcp"       class="btn">Reload</button>
+        <button id="btnSaveMcp"         class="btn primary">Save changes</button>
         <button id="btnOpenMcpSettings" class="btn">Open settings</button>
-        <button id="btnManageMcp" class="btn">View status</button>
+        <button id="btnManageMcp"       class="btn">View status</button>
       </div>
       <div id="mcpList" class="mcp-list"></div>
-      <div class="mcp-note">Stdio servers use a command and optional args. HTTP/SSE servers use a URL.</div>
+      <div class="mcp-note">Stdio servers use a command + optional args. HTTP/SSE servers use a URL.</div>
     </div>
   </div>
 
-  <!-- ── Main scrollable area ────────────────────────────────── -->
+  <!-- ── Main scrollable area ── -->
   <div id="main">
 
-    <!-- Home view -->
     <div id="homeView">
-      <div style="padding:12px; display:flex; flex-direction:column; gap:10px;">
-        <button id="btnNewChat" class="new-btn">
-          <span style="font-size:16px; line-height:1;">+</span> New conversation
-        </button>
-        <div class="sec-title">Recent Conversations</div>
-        <div id="sessionList" class="sessions">
-          <div class="empty">
-            <div class="empty-icon">&#128172;</div>
-            <div class="empty-h">No conversations yet</div>
-            <div class="empty-p">Type a task below to begin</div>
-          </div>
+      <button id="btnNewChat" class="new-btn">
+        <span style="font-size:16px;line-height:1">+</span> New conversation
+      </button>
+      <div class="sec-title">Recent Conversations</div>
+      <div id="sessionList" class="sessions">
+        <div class="empty">
+          <div class="empty-icon">&#128172;</div>
+          <div class="empty-h">No conversations yet</div>
+          <div class="empty-p">Type a task below to begin</div>
         </div>
       </div>
     </div>
 
-    <!-- Chat view -->
     <div id="chatView" class="hidden">
-      <div style="padding:10px 12px 4px; display:flex; flex-direction:column; gap:10px;">
-        <button id="btnBack" class="back-btn">&#8592; Back</button>
-        <div id="messages"></div>
-        <div id="typing">
-          <div class="typing-bubble">
-            <span class="dot"></span><span class="dot"></span><span class="dot"></span>
-          </div>
+      <button id="btnBack" class="back-btn">&#8592; Back</button>
+      <div id="messages"></div>
+      <div id="typing">
+        <div class="typing-bubble">
+          <span class="dot"></span><span class="dot"></span><span class="dot"></span>
         </div>
       </div>
     </div>
 
-  </div><!-- /main -->
+  </div>
 
-  <!-- ── Pending edits banner ────────────────────────────────── -->
+  <!-- ── Pending edits banner ── -->
   <div id="editsBanner">
     <span id="bannerTxt" class="banner-txt">Pending edits ready</span>
     <div class="banner-acts">
@@ -811,78 +727,83 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
     </div>
   </div>
 
-  <!-- ── Composer ────────────────────────────────────────────── -->
+  <!-- ── Composer (Codex / Copilot-style) ── -->
   <div class="composer">
-    <div class="input-shell">
-      <textarea id="taskInput" placeholder="Ask Pulse anything about your code…" rows="1"></textarea>
-      <button id="btnSend" class="send-btn" title="Send  (Enter)">&#8593;</button>
-    </div>
-    <div class="meta">
-      <div class="chips">
-        <span id="chipModel" class="chip" title="Active planner model">–</span>
-        <span id="chipMode"  class="chip" title="Click to cycle approval mode">balanced</span>
+    <div class="composer-box">
+      <textarea id="taskInput"
+                placeholder="Ask Pulse anything about your code\u2026"
+                rows="2"
+                aria-label="Message"></textarea>
+      <div class="composer-inner-row">
+        <div class="chips">
+          <span id="chipMode"  class="chip" title="Click to cycle approval mode">balanced</span>
+          <span id="chipModel" class="chip" title="Active planner model">\u2013</span>
+        </div>
+        <button id="btnSend" class="send-btn" title="Send (Enter)" disabled>&#8593;</button>
       </div>
-      <span id="statusLine" class="status-txt">Ready</span>
     </div>
-    <div class="token-row">
-      <div class="token-wrap" title="Token usage in this Pulse runtime session">
-        <span id="tokenRing" class="token-ring"><span id="tokenValue" class="token-value">0%</span></span>
+    <div class="composer-foot">
+      <span id="statusLine" class="status-txt">Ready</span>
+      <div class="token-wrap" title="Token usage this session">
+        <div id="tokenRing" class="token-ring">
+          <span id="tokenValue" class="token-value">0%</span>
+        </div>
         <span id="tokenLabel">0 / 0</span>
       </div>
     </div>
   </div>
 
-</div><!-- /root -->
+</div>
 
 <script nonce="${nonce}">
 (function () {
   'use strict';
   const vscode = acquireVsCodeApi();
 
-  // ── Element refs ──────────────────────────────────────────────────────
+  // ── DOM refs ──────────────────────────────────────────────────────────
   const $ = id => document.getElementById(id);
-  const statusBadge  = $('statusBadge');
-  const statusTxt    = $('statusTxt');
-  const btnSettings  = $('btnSettings');
-  const btnRefresh   = $('btnRefresh');
+  const statusBadge    = $('statusBadge');
+  const statusTxt      = $('statusTxt');
+  const btnSettings    = $('btnSettings');
+  const btnRefresh     = $('btnRefresh');
   const settingsDrawer = $('settingsDrawer');
-  const roleSelect   = $('roleSelect');
-  const modelSelect  = $('modelSelect');
-  const btnSyncModels= $('btnSyncModels');
-  const btnApplyModel= $('btnApplyModel');
-  const btnAddMcp    = $('btnAddMcp');
-  const btnReloadMcp = $('btnReloadMcp');
-  const btnSaveMcp   = $('btnSaveMcp');
+  const roleSelect     = $('roleSelect');
+  const modelSelect    = $('modelSelect');
+  const btnSyncModels  = $('btnSyncModels');
+  const btnApplyModel  = $('btnApplyModel');
+  const btnAddMcp      = $('btnAddMcp');
+  const btnReloadMcp   = $('btnReloadMcp');
+  const btnSaveMcp     = $('btnSaveMcp');
   const btnOpenMcpSettings = $('btnOpenMcpSettings');
-  const btnManageMcp = $('btnManageMcp');
-  const mcpList      = $('mcpList');
-  const mcpCount     = $('mcpCount');
-  const homeView     = $('homeView');
-  const chatView     = $('chatView');
-  const btnNewChat   = $('btnNewChat');
-  const btnBack      = $('btnBack');
-  const sessionList  = $('sessionList');
-  const messages     = $('messages');
-  const typing       = $('typing');
-  const editsBanner  = $('editsBanner');
-  const bannerTxt    = $('bannerTxt');
-  const btnApply     = $('btnApply');
-  const btnRevert    = $('btnRevert');
-  const taskInput    = $('taskInput');
-  const btnSend      = $('btnSend');
-  const chipModel    = $('chipModel');
-  const chipMode     = $('chipMode');
-  const statusLine   = $('statusLine');
-  const tokenRing    = $('tokenRing');
-  const tokenValue   = $('tokenValue');
-  const tokenLabel   = $('tokenLabel');
+  const btnManageMcp   = $('btnManageMcp');
+  const mcpList        = $('mcpList');
+  const mcpCount       = $('mcpCount');
+  const homeView       = $('homeView');
+  const chatView       = $('chatView');
+  const btnNewChat     = $('btnNewChat');
+  const btnBack        = $('btnBack');
+  const sessionList    = $('sessionList');
+  const messages       = $('messages');
+  const typing         = $('typing');
+  const editsBanner    = $('editsBanner');
+  const bannerTxt      = $('bannerTxt');
+  const btnApply       = $('btnApply');
+  const btnRevert      = $('btnRevert');
+  const taskInput      = $('taskInput');
+  const btnSend        = $('btnSend');
+  const chipModel      = $('chipModel');
+  const chipMode       = $('chipMode');
+  const statusLine     = $('statusLine');
+  const tokenRing      = $('tokenRing');
+  const tokenValue     = $('tokenValue');
+  const tokenLabel     = $('tokenLabel');
 
   // ── State ─────────────────────────────────────────────────────────────
-  let summary  = null;
-  let models   = [];
-  let mcpServers = [];
-  let history  = [];   // { role:'user'|'agent', text:string, ts:number }
-  let inChat   = false;
+  let summary     = null;
+  let models      = [];
+  let mcpServers  = [];
+  let chatHistory = [];
+  let inChat      = false;
 
   // ── Helpers ───────────────────────────────────────────────────────────
   function esc(s) {
@@ -901,170 +822,140 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
   }
 
   function autoGrow(el) {
+    if (!el) return;
     el.style.height = 'auto';
-    el.style.height = Math.min(el.scrollHeight, 96) + 'px';
+    el.style.height = Math.min(el.scrollHeight, 180) + 'px';
   }
 
   function scrollBottom() {
-    requestAnimationFrame(() => { $('main').scrollTop = 9999999; });
+    requestAnimationFrame(() => {
+      const el = $('main');
+      if (el) el.scrollTop = 999999;
+    });
+  }
+
+  function on(el, evt, fn) {
+    if (!el) { console.warn('[Pulse] missing element for:', evt); return; }
+    el.addEventListener(evt, fn);
   }
 
   function normalizeMcpServer(server) {
-    const transport = String(server?.transport || 'stdio');
-    const args = Array.isArray(server?.args)
-      ? server.args.map((item) => String(item))
-      : typeof server?.args === 'string'
-        ? server.args.split(/\r?\n/).map((item) => item.trim()).filter(Boolean)
-        : [];
-
+    const transport = String(server && server.transport || 'stdio');
+    let args = [];
+    if (Array.isArray(server && server.args)) {
+      args = server.args.map(function(a) { return String(a); });
+    } else if (typeof (server && server.args) === 'string') {
+      args = server.args.split(/\r?\n/).map(function(a) { return a.trim(); }).filter(Boolean);
+    }
     return {
-      id: String(server?.id || ''),
-      enabled: server?.enabled !== false,
-      trust: String(server?.trust || 'workspace'),
-      transport,
-      command: String(server?.command || ''),
-      url: String(server?.url || ''),
-      args,
+      id:        String(server && server.id || ''),
+      enabled:   server && server.enabled !== false,
+      trust:     String(server && server.trust || 'workspace'),
+      transport: transport,
+      command:   String(server && server.command || ''),
+      url:       String(server && server.url || ''),
+      args:      args,
     };
   }
 
   function parseArgs(text) {
     const raw = String(text || '').trim();
-    if (!raw) {
-      return [];
-    }
-
-    if (raw.startsWith('[')) {
+    if (!raw) return [];
+    if (raw.charAt(0) === '[') {
       const parsed = JSON.parse(raw);
-      if (!Array.isArray(parsed)) {
-        throw new Error('Arguments must be a JSON array or one argument per line.');
-      }
-      return parsed.map((item) => String(item));
+      if (!Array.isArray(parsed)) throw new Error('Args must be a JSON array or one per line.');
+      return parsed.map(function(a) { return String(a); });
     }
-
-    return raw.split(/\r?\n/).map((item) => item.trim()).filter(Boolean);
+    return raw.split(/\r?\n/).map(function(a) { return a.trim(); }).filter(Boolean);
   }
 
   function renderMcpServers(list) {
     mcpServers = (list || []).map(normalizeMcpServer);
     mcpCount.textContent = mcpServers.length === 1 ? '1 configured' : mcpServers.length + ' configured';
-
     if (!mcpServers.length) {
-      mcpList.innerHTML = '<div class="mcp-empty fadein">No MCP servers yet. Add one to connect Pulse to tools, resources, and prompts.</div>';
+      mcpList.innerHTML = '<div class="mcp-empty fadein">No MCP servers yet. Add one to connect Pulse to tools.</div>';
       return;
     }
-
     mcpList.innerHTML = '';
-    mcpServers.forEach((server, index) => {
+    mcpServers.forEach(function(server, index) {
       const card = document.createElement('div');
       card.className = 'mcp-card fadein';
       card.dataset.index = String(index);
-
       const endpointLabel = server.transport === 'stdio' ? 'Command' : 'URL';
       const endpointValue = server.transport === 'stdio' ? server.command : server.url;
       const note = server.transport === 'stdio'
         ? 'Use one argument per line or paste JSON array syntax.'
         : 'Remote servers should use a valid URL.';
-
       card.innerHTML = [
         '<div class="mcp-card-head">',
-        '  <div class="mcp-card-title">',
-        '    <input type="text" data-field="id" placeholder="filesystem" value="' + esc(server.id) + '" />',
-        '  </div>',
-        '  <label class="mcp-chip" title="Enable or disable this server">',
-        '    <input type="checkbox" data-field="enabled" ' + (server.enabled ? 'checked' : '') + ' />',
-        '    Enabled',
-        '  </label>',
+        '  <div class="mcp-card-title"><input type="text" data-field="id" placeholder="filesystem" value="' + esc(server.id) + '" /></div>',
+        '  <label class="mcp-chip" title="Enable/disable"><input type="checkbox" data-field="enabled" ' + (server.enabled ? 'checked' : '') + ' /> Enabled</label>',
         '  <button type="button" class="btn danger sm" data-action="remove">Remove</button>',
         '</div>',
         '<div class="mcp-grid triple">',
-        '  <select data-field="transport">',
-        '    <option value="stdio">stdio</option>',
-        '    <option value="http">http</option>',
-        '    <option value="sse">sse</option>',
-        '  </select>',
-        '  <select data-field="trust">',
-        '    <option value="workspace">workspace</option>',
-        '    <option value="user">user</option>',
-        '    <option value="system">system</option>',
-        '  </select>',
+        '  <select data-field="transport"><option value="stdio">stdio</option><option value="http">http</option><option value="sse">sse</option></select>',
+        '  <select data-field="trust"><option value="workspace">workspace</option><option value="user">user</option><option value="system">system</option></select>',
         '  <div class="mcp-chip">' + esc(endpointLabel) + '</div>',
         '</div>',
         '<input type="text" data-field="endpoint" placeholder="' + esc(endpointLabel) + '" value="' + esc(endpointValue) + '" />',
-        '<textarea data-field="args" placeholder="[&quot;-y&quot;, &quot;@modelcontextprotocol/server-filesystem&quot;, &quot;\${workspaceFolder}&quot;]">' + esc((server.args || []).join('\n')) + '</textarea>',
+        '<textarea data-field="args" placeholder="[\&quot;-y\&quot;, \&quot;@mcp/server\&quot;]">' + esc((server.args || []).join('\n')) + '</textarea>',
         '<div class="mcp-note">' + esc(note) + '</div>',
       ].join('');
 
       const transportSelect = card.querySelector('select[data-field="transport"]');
-      const trustSelect = card.querySelector('select[data-field="trust"]');
-      const endpointInput = card.querySelector('input[data-field="endpoint"]');
-      const argsInput = card.querySelector('textarea[data-field="args"]');
-      const enabledInput = card.querySelector('input[data-field="enabled"]');
+      const trustSelect     = card.querySelector('select[data-field="trust"]');
+      const endpointInput   = card.querySelector('input[data-field="endpoint"]');
+      const argsInput       = card.querySelector('textarea[data-field="args"]');
+      const enabledInput    = card.querySelector('input[data-field="enabled"]');
       transportSelect.value = server.transport;
-      trustSelect.value = server.trust;
+      trustSelect.value     = server.trust;
 
-      const syncEndpointState = () => {
+      const syncEndpoint = function() {
         const isStdio = transportSelect.value === 'stdio';
         endpointInput.placeholder = isStdio ? 'Command' : 'URL';
-        argsInput.style.display = isStdio ? 'block' : 'none';
+        argsInput.style.display   = isStdio ? 'block' : 'none';
+      };
+      transportSelect.addEventListener('change', syncEndpoint);
+      syncEndpoint();
+
+      card._read = function() {
+        return {
+          id:        String(card.querySelector('input[data-field="id"]').value || '').trim(),
+          enabled:   Boolean(enabledInput.checked),
+          trust:     String(trustSelect.value || 'workspace'),
+          transport: String(transportSelect.value || 'stdio'),
+          command:   String(transportSelect.value === 'stdio' ? endpointInput.value || '' : ''),
+          url:       String(transportSelect.value === 'stdio' ? '' : endpointInput.value || ''),
+          args:      parseArgs(String(argsInput.value || '')),
+        };
       };
 
-      transportSelect.addEventListener('change', syncEndpointState);
-      syncEndpointState();
-
-      card._read = () => ({
-        id: String(card.querySelector('input[data-field="id"]').value || '').trim(),
-        enabled: Boolean(enabledInput.checked),
-        trust: String(trustSelect.value || 'workspace'),
-        transport: String(transportSelect.value || 'stdio'),
-        command: String(transportSelect.value === 'stdio' ? endpointInput.value || '' : ''),
-        url: String(transportSelect.value === 'stdio' ? '' : endpointInput.value || ''),
-        args: parseArgs(String(argsInput.value || '')),
+      card.querySelector('[data-action="remove"]').addEventListener('click', function() {
+        const cur = snapshotMcpServers();
+        cur.splice(index, 1);
+        renderMcpServers(cur);
       });
-
-      card.querySelector('[data-action="remove"]').addEventListener('click', () => {
-        const currentServers = snapshotMcpServers();
-        currentServers.splice(index, 1);
-        renderMcpServers(currentServers);
-      });
-
       mcpList.appendChild(card);
     });
   }
 
   function collectMcpServers() {
-    const cards = [...mcpList.querySelectorAll('.mcp-card')];
-    const collected = [];
-
+    const cards = Array.from(mcpList.querySelectorAll('.mcp-card'));
+    const out = [];
     for (const card of cards) {
-      const reader = card._read;
-      if (typeof reader !== 'function') {
-        continue;
-      }
-
-      const server = reader();
-      if (!server.id) {
-        continue;
-      }
-
-      if (server.transport === 'stdio' && !server.command) {
-        throw new Error('Each stdio MCP server needs a command.');
-      }
-
-      if ((server.transport === 'http' || server.transport === 'sse') && !server.url) {
-        throw new Error('Each HTTP or SSE MCP server needs a URL.');
-      }
-
-      collected.push(server);
+      if (typeof card._read !== 'function') continue;
+      const s = card._read();
+      if (!s.id) continue;
+      if (s.transport === 'stdio' && !s.command) throw new Error('Each stdio server needs a command.');
+      if ((s.transport === 'http' || s.transport === 'sse') && !s.url) throw new Error('Each HTTP/SSE server needs a URL.');
+      out.push(s);
     }
-
-    return collected;
+    return out;
   }
 
   function snapshotMcpServers() {
-    const cards = [...mcpList.querySelectorAll('.mcp-card')];
-    return cards
-      .map((card) => (typeof card._read === 'function' ? card._read() : null))
+    return Array.from(mcpList.querySelectorAll('.mcp-card'))
+      .map(function(card) { return typeof card._read === 'function' ? card._read() : null; })
       .filter(Boolean);
   }
 
@@ -1084,7 +975,7 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
 
   // ── Render messages ───────────────────────────────────────────────────
   function renderMessages() {
-    if (!history.length) {
+    if (!chatHistory.length) {
       messages.innerHTML =
         '<div class="empty fadein">' +
         '<div class="empty-icon">&#9889;</div>' +
@@ -1093,17 +984,14 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
       return;
     }
     messages.innerHTML = '';
-    for (const m of history) {
+    for (const m of chatHistory) {
       const div = document.createElement('div');
       div.className = 'msg ' + m.role + ' fadein';
-
-      // Minimal markdown: fenced code blocks then inline code
       let html = esc(m.text);
-      html = html.replace(/\`\`\`([\\s\\S]*?)\`\`\`/g, '<pre>$1</pre>');
-      html = html.replace(/\`([^\`\\n]+)\`/g,
-        '<code>$1</code>');
-      html = html.replace(/\\n/g, '<br>');
-
+      // Minimal markdown: fenced code blocks then inline code
+      html = html.replace(/\`\`\`([\s\S]*?)\`\`\`/g, '<pre>$1</pre>');
+      html = html.replace(/\`([^\`\n]+)\`/g, '<code>$1</code>');
+      html = html.replace(/\n/g, '<br>');
       const ts = m.ts ? relTime(new Date(m.ts).toISOString()) : '';
       div.innerHTML =
         '<div class="bubble">' + html + '</div>' +
@@ -1133,38 +1021,40 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
     }
   }
 
-  // ── Render summary ────────────────────────────────────────────────────
+  // ── Render runtime summary ────────────────────────────────────────────
   function renderSummary(s) {
     summary = s;
-    const ok = Boolean(s?.ollamaReachable) || s?.status === 'ready';
+    const ok = s && (Boolean(s.ollamaReachable) || s.status === 'ready');
     statusBadge.className = 'badge ' + (ok ? 'on' : 'off');
     statusTxt.textContent  = ok ? 'Online' : 'Offline';
 
-    const model = s?.plannerModel || '';
-    chipModel.textContent = model.split(':')[0].slice(0, 14) || '–';
-    chipModel.title = 'Planner: ' + (model || 'none');
-    chipMode.textContent = s?.approvalMode || 'balanced';
+    const model = (s && s.plannerModel) || '';
+    chipModel.textContent = model.split(':')[0].slice(0, 14) || '\u2013';
+    chipModel.title       = 'Planner: ' + (model || 'none');
+    chipMode.textContent  = (s && s.approvalMode) || 'balanced';
 
-    const hasPending = !!s?.hasPendingEdits;
-    editsBanner.classList.toggle('on', hasPending);
-    if (hasPending) bannerTxt.textContent = 'Pending file edits — review before applying';
+    const hasPending = s && s.hasPendingEdits;
+    editsBanner.classList.toggle('on', Boolean(hasPending));
+    if (hasPending) bannerTxt.textContent = 'Pending file edits \u2014 review before applying';
 
-    const pct = Number.isFinite(s?.tokenUsagePercent)
-      ? Math.max(0, Math.min(100, s.tokenUsagePercent))
-      : 0;
+    const pct = (s && Number.isFinite(s.tokenUsagePercent))
+      ? Math.max(0, Math.min(100, s.tokenUsagePercent)) : 0;
     tokenRing.style.background =
       'conic-gradient(var(--amber) ' + (pct * 3.6) + 'deg, rgba(128,128,128,.18) 0deg)';
     tokenValue.textContent = pct + '%';
-    tokenLabel.textContent = (s?.tokensConsumed ?? 0) + ' / ' + (s?.tokenBudget ?? 0);
+    tokenLabel.textContent = ((s && s.tokensConsumed) || 0) + ' / ' + ((s && s.tokenBudget) || 0);
 
-    statusLine.textContent = ok
-      ? (s?.modelCount
-          ? s.modelCount + ' models, MCP ' + (s?.mcpHealthy ?? 0) + '/' + (s?.mcpConfigured ?? 0)
-          : 'Ollama ready')
-      : 'Ollama offline';
+    if (ok) {
+      statusLine.textContent = (s && s.modelCount)
+        ? s.modelCount + ' model' + (s.modelCount !== 1 ? 's' : '') +
+          ', MCP ' + ((s && s.mcpHealthy) || 0) + '/' + ((s && s.mcpConfigured) || 0)
+        : 'Ollama ready';
+    } else {
+      statusLine.textContent = 'Ollama offline \u2014 check settings';
+    }
   }
 
-  // ── Update model dropdown ────────────────────────────────────────────
+  // ── Update model dropdown ─────────────────────────────────────────────
   function updateModels(list) {
     models = list || [];
     const prev = modelSelect.value;
@@ -1178,7 +1068,7 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
       o.value = m.name; o.text = m.name;
       modelSelect.appendChild(o);
     }
-    if (models.some(m => m.name === prev)) modelSelect.value = prev;
+    if (models.some(function(m) { return m.name === prev; })) modelSelect.value = prev;
   }
 
   // ── Send task ─────────────────────────────────────────────────────────
@@ -1188,162 +1078,142 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
 
     taskInput.value = '';
     taskInput.style.height = 'auto';
-    btnSend.classList.remove('active');
+    btnSend.disabled = true;
 
-    history.push({ role: 'user', text, ts: Date.now() });
+    chatHistory.push({ role: 'user', text: text, ts: Date.now() });
     renderMessages();
     showChat();
 
     typing.classList.add('on');
     scrollBottom();
-    statusLine.textContent = 'Thinking…';
+    statusLine.textContent = 'Thinking\u2026';
 
     vscode.postMessage({ type: 'runTask', payload: text });
   }
 
   // ── Event listeners ───────────────────────────────────────────────────
-  taskInput.addEventListener('input', () => {
+  on(taskInput, 'input', function() {
     autoGrow(taskInput);
-    btnSend.classList.toggle('active', taskInput.value.trim().length > 0);
+    btnSend.disabled = taskInput.value.trim().length === 0;
   });
 
-  taskInput.addEventListener('keydown', e => {
+  on(taskInput, 'keydown', function(e) {
     if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendTask(); }
   });
 
-  btnSend.addEventListener('click', sendTask);
+  on(btnSend, 'click', sendTask);
 
-  btnNewChat.addEventListener('click', () => {
-    history = [];
+  on(btnNewChat, 'click', function() {
+    chatHistory = [];
     renderMessages();
     showChat();
     taskInput.focus();
   });
 
-  btnBack.addEventListener('click', showHome);
+  on(btnBack,     'click', showHome);
+  on(btnSettings, 'click', function() { settingsDrawer.classList.toggle('open'); });
+  on(btnRefresh,  'click', function() { vscode.postMessage({ type: 'ping' }); });
 
-  btnSettings.addEventListener('click', () => settingsDrawer.classList.toggle('open'));
-  btnRefresh.addEventListener('click',  () => vscode.postMessage({ type: 'loadDashboard' }));
+  on(btnSyncModels, 'click', function() { vscode.postMessage({ type: 'refreshModels' }); });
 
-  btnSyncModels.addEventListener('click', () => vscode.postMessage({ type: 'refreshModels' }));
-
-  btnAddMcp.addEventListener('click', () => {
-    mcpServers = [...snapshotMcpServers(), normalizeMcpServer({ enabled: true, trust: 'workspace', transport: 'stdio', args: [] })];
+  on(btnAddMcp, 'click', function() {
+    mcpServers = snapshotMcpServers().concat([normalizeMcpServer({ enabled: true, trust: 'workspace', transport: 'stdio', args: [] })]);
     renderMcpServers(mcpServers);
   });
 
-  btnReloadMcp.addEventListener('click', () => {
-    vscode.postMessage({ type: 'reloadMcpServers' });
-  });
+  on(btnReloadMcp,       'click', function() { vscode.postMessage({ type: 'reloadMcpServers' }); });
+  on(btnOpenMcpSettings, 'click', function() { vscode.postMessage({ type: 'configureMcpServers' }); });
+  on(btnManageMcp,       'click', function() { vscode.postMessage({ type: 'manageMcpConnections' }); });
 
-  btnSaveMcp.addEventListener('click', () => {
+  on(btnSaveMcp, 'click', function() {
     try {
-      const collected = collectMcpServers();
-      vscode.postMessage({ type: 'saveMcpServers', payload: collected });
-    } catch (error) {
-      vscode.postMessage({ type: 'actionResult', payload: 'Error: ' + (error instanceof Error ? error.message : String(error)) });
+      vscode.postMessage({ type: 'saveMcpServers', payload: collectMcpServers() });
+    } catch (e) {
+      statusLine.textContent = 'Error: ' + (e instanceof Error ? e.message : String(e));
     }
   });
 
-  btnOpenMcpSettings.addEventListener('click', () => {
-    vscode.postMessage({ type: 'configureMcpServers' });
-  });
-
-  btnManageMcp.addEventListener('click', () => {
-    vscode.postMessage({ type: 'manageMcpConnections' });
-  });
-
-  btnApplyModel.addEventListener('click', () => {
+  on(btnApplyModel, 'click', function() {
     const role  = roleSelect.value;
     const model = modelSelect.value;
-    if (!model) return;
-    vscode.postMessage({ type: 'setModel', payload: { role, model } });
+    if (model) vscode.postMessage({ type: 'setModel', payload: { role: role, model: model } });
   });
 
-  chipMode.addEventListener('click', () => {
-    const modes = ['strict', 'balanced', 'fast'];
-    const idx  = modes.indexOf(summary?.approvalMode || 'balanced');
-    const next = modes[(idx + 1) % modes.length];
-    vscode.postMessage({ type: 'setApprovalMode', payload: next });
+  on(chipMode, 'click', function() {
+    const modes = ['strict','balanced','fast'];
+    const idx   = modes.indexOf((summary && summary.approvalMode) || 'balanced');
+    vscode.postMessage({ type: 'setApprovalMode', payload: modes[(idx + 1) % modes.length] });
   });
 
-  // Two-step confirmation without confirm() (blocked in VS Code webviews)
-  let applyPending = false;
-  let revertPending = false;
-
+  // Two-step confirmation (window.confirm is blocked in VS Code webviews)
+  let applyPending = false, revertPending = false;
   function resetBannerBtns() {
-    applyPending = false;
-    revertPending = false;
-    btnApply.textContent  = 'Apply';
-    btnApply.className   = 'btn primary sm';
-    btnRevert.textContent = 'Revert';
-    btnRevert.className  = 'btn danger sm';
+    applyPending  = false; revertPending = false;
+    btnApply.textContent  = 'Apply';  btnApply.className  = 'btn primary sm';
+    btnRevert.textContent = 'Revert'; btnRevert.className = 'btn danger sm';
   }
 
-  btnApply.addEventListener('click', () => {
-    if (!applyPending) {
-      applyPending = true;
-      btnApply.textContent = 'Confirm apply?';
-      btnApply.className   = 'btn primary sm';
-      return;
-    }
+  on(btnApply, 'click', function() {
+    if (!applyPending) { applyPending = true; btnApply.textContent = 'Confirm apply?'; return; }
     resetBannerBtns();
     vscode.postMessage({ type: 'applyPending', payload: true });
   });
 
-  btnRevert.addEventListener('click', () => {
-    if (!revertPending) {
-      revertPending = true;
-      btnRevert.textContent = 'Confirm revert?';
-      btnRevert.className   = 'btn danger sm';
-      return;
-    }
+  on(btnRevert, 'click', function() {
+    if (!revertPending) { revertPending = true; btnRevert.textContent = 'Confirm revert?'; return; }
     resetBannerBtns();
     vscode.postMessage({ type: 'revertLast', payload: true });
   });
 
   // ── Message handler ───────────────────────────────────────────────────
-  window.addEventListener('message', ({ data }) => {
-    const { type, payload } = data || {};
+  window.addEventListener('message', function(event) {
+    const data = event.data || {};
+    const type    = data.type;
+    const payload = data.payload;
 
-    if (type === 'runtimeSummary') renderSummary(payload);
-
-    if (type === 'models') updateModels(payload);
-
-    if (type === 'mcpServers') renderMcpServers(payload);
-
-    if (type === 'sessions') renderSessions(payload);
+    if (type === 'runtimeSummary') { renderSummary(payload); return; }
+    if (type === 'models')         { updateModels(payload); return; }
+    if (type === 'mcpServers')     { renderMcpServers(payload); return; }
+    if (type === 'sessions')       { renderSessions(payload); return; }
 
     if (type === 'taskResult') {
       typing.classList.remove('on');
-      const text = payload?.responseText || JSON.stringify(payload, null, 2);
-      history.push({ role: 'agent', text, ts: Date.now() });
+      const text = (payload && payload.responseText) || JSON.stringify(payload, null, 2);
+      chatHistory.push({ role: 'agent', text: text, ts: Date.now() });
       renderMessages();
       scrollBottom();
-      statusLine.textContent = payload?.proposedEdits
+      statusLine.textContent = (payload && payload.proposedEdits)
         ? payload.proposedEdits + ' file edit(s) pending'
         : 'Done';
-      vscode.postMessage({ type: 'loadDashboard' });
+      vscode.postMessage({ type: 'ping' });
+      return;
     }
 
     if (type === 'actionResult') {
       typing.classList.remove('on');
-      history.push({ role: 'agent', text: String(payload), ts: Date.now() });
+      chatHistory.push({ role: 'agent', text: String(payload), ts: Date.now() });
       renderMessages();
       scrollBottom();
-      const text = String(payload || 'Done');
-      const isError = text.toLowerCase().startsWith('error:');
-      statusLine.textContent = isError ? 'Error' : 'Done';
-
-      // Avoid recursive load loops when dashboard refresh itself fails.
-      if (!isError) {
-        vscode.postMessage({ type: 'loadDashboard' });
-      }
+      const txt = String(payload || 'Done');
+      const isError = txt.toLowerCase().indexOf('error:') === 0;
+      statusLine.textContent = isError ? txt.slice(0, 60) : 'Done';
+      if (!isError) { vscode.postMessage({ type: 'ping' }); }
+      return;
     }
   });
 
-  // ── Bootstrap ─────────────────────────────────────────────────────────
+  // ── Bootstrap: signal ready, request state, then auto-refresh ──────
+  vscode.postMessage({ type: 'webviewReady' });
   vscode.postMessage({ type: 'loadDashboard' });
+  // Retry shortly in case the initial messages were lost due to timing
+  setTimeout(function() {
+    if (!summary) { vscode.postMessage({ type: 'ping' }); }
+  }, 800);
+  setTimeout(function() {
+    if (!summary) { vscode.postMessage({ type: 'ping' }); }
+  }, 3000);
+  setInterval(function() { vscode.postMessage({ type: 'ping' }); }, 30000);
+
 }());
 </script>
 </body>
