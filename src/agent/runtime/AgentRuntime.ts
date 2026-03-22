@@ -18,6 +18,7 @@ import { VerificationRunner } from "../verification/VerificationRunner";
 
 export interface RuntimeSummary {
   status: "ready" | "degraded";
+  ollamaReachable: boolean;
   plannerModel: string;
   editorModel: string;
   fastModel: string;
@@ -582,6 +583,7 @@ export class AgentRuntime {
 
     return {
       status: this.health.ok ? "ready" : "degraded",
+      ollamaReachable: this.health.ok,
       plannerModel: this.currentConfig.plannerModel,
       editorModel: this.currentConfig.editorModel,
       fastModel: this.currentConfig.fastModel,

@@ -25,6 +25,7 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
       async (message: { type?: string; payload?: unknown }) => {
         try {
           if (message.type === "loadDashboard") {
+            await this.runtime.refreshProviderState();
             const summary = await this.runtime.summary();
             const sessions = await this.runtime.listRecentSessions();
             const mcpServers = this.runtime.getConfiguredMcpServers();
@@ -41,7 +42,7 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
               payload: mcpServers,
             });
 
-            if (summary.ollamaHealth.toLowerCase().includes("reachable")) {
+            if (summary.ollamaReachable) {
               const models = await this.runtime.listAvailableModels();
               await webviewView.webview.postMessage({
                 type: "models",
@@ -52,6 +53,7 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
           }
 
           if (message.type === "ping") {
+            await this.runtime.refreshProviderState();
             const summary = await this.runtime.summary();
             await webviewView.webview.postMessage({
               type: "runtimeSummary",
@@ -280,13 +282,6 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
       padding: 10px 12px 9px;
       border-bottom: 1px solid var(--vscode-sideBarSectionHeader-border, rgba(128,128,128,.18));
       flex-shrink: 0;
-    }
-
-    .hdr-left { display: flex; align-items: center; gap: 7px; }
-
-    .brand {
-      font-size: 13px; font-weight: 700;
-      letter-spacing: 0.8px; text-transform: uppercase;
     }
 
     .hdr-right { display: flex; align-items: center; gap: 6px; }
@@ -694,9 +689,6 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
 
   <!-- ── Header ──────────────────────────────────────────────── -->
   <header class="hdr">
-    <div class="hdr-left">
-      <span class="brand">Pulse</span>
-    </div>
     <div class="hdr-right">
       <span id="statusBadge" class="badge off">
         <span class="badge-dot"></span><span id="statusTxt">Offline</span>
@@ -1115,7 +1107,7 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
   // ── Render summary ────────────────────────────────────────────────────
   function renderSummary(s) {
     summary = s;
-    const ok = String(s?.ollamaHealth || '').toLowerCase().includes('reachable');
+    const ok = Boolean(s?.ollamaReachable) || s?.status === 'ready';
     statusBadge.className = 'badge ' + (ok ? 'on' : 'off');
     statusTxt.textContent  = ok ? 'Online' : 'Offline';
 
