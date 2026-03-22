@@ -138,17 +138,27 @@ export class OllamaProvider implements ModelProvider {
 
       const data = (await response.json()) as OllamaPsResponse;
       const models = data.models ?? [];
-      return models
-        .map((model) => ({
-          name: typeof model.name === "string" ? model.name : model.model,
-          sizeBytes: model.size,
-          modifiedAt: model.modified_at,
-          source: "running" as const,
-        }))
-        .filter(
-          (model): model is ModelSummary =>
-            typeof model.name === "string" && model.name.length > 0,
-        );
+      return models.flatMap((model) => {
+        const name =
+          typeof model.name === "string" && model.name.length > 0
+            ? model.name
+            : typeof model.model === "string" && model.model.length > 0
+              ? model.model
+              : "";
+
+        if (!name) {
+          return [];
+        }
+
+        return [
+          {
+            name,
+            sizeBytes: model.size,
+            modifiedAt: model.modified_at,
+            source: "running" as const,
+          },
+        ];
+      });
     } catch {
       return [];
     }

@@ -2,6 +2,17 @@ import * as vscode from "vscode";
 
 export type ApprovalMode = "strict" | "balanced" | "fast";
 
+export interface McpServerConfig {
+  id?: string;
+  enabled?: boolean;
+  trust?: string;
+  transport?: string;
+  command?: string;
+  args?: string[];
+  url?: string;
+  [key: string]: unknown;
+}
+
 export interface AgentConfig {
   ollamaBaseUrl: string;
   plannerModel: string;
@@ -16,7 +27,7 @@ export interface AgentConfig {
   memoryMode: "off" | "session" | "workspace+episodic";
   indexingEnabled: boolean;
   indexingMode: "light" | "hybrid";
-  mcpServers: Array<Record<string, unknown>>;
+  mcpServers: McpServerConfig[];
   telemetryOptIn: boolean;
 }
 
@@ -43,7 +54,7 @@ export function getAgentConfig(): AgentConfig {
     ),
     indexingEnabled: cfg.get<boolean>("indexing.enabled", true),
     indexingMode: cfg.get<"light" | "hybrid">("indexing.mode", "hybrid"),
-    mcpServers: cfg.get<Array<Record<string, unknown>>>("mcp.servers", []),
+    mcpServers: cfg.get<McpServerConfig[]>("mcp.servers", []),
     telemetryOptIn: cfg.get<boolean>("telemetry.optIn", false),
   };
 }

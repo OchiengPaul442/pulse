@@ -20,4 +20,23 @@ describe("McpManager", () => {
     expect(rows[0]?.state).toBe("configured");
     expect(rows[1]?.state).toBe("disabled");
   });
+
+  it("updates server definitions in place", async () => {
+    const manager = new McpManager([]);
+
+    manager.updateServerDefinitions([
+      {
+        id: "docs",
+        enabled: true,
+        trust: "workspace",
+        transport: "http",
+        url: "https://example.com/mcp",
+      },
+    ]);
+
+    const rows = await manager.listServerStatus();
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.id).toBe("docs");
+    expect(rows[0]?.state).toBe("configured");
+  });
 });

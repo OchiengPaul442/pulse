@@ -58,6 +58,10 @@
         "title": "Pulse: Manage MCP Connections"
       },
       {
+        "command": "pulse.configureMcpServers",
+        "title": "Pulse: Configure MCP Servers"
+      },
+      {
         "command": "pulse.openDiagnosticsReport",
         "title": "Pulse: Open Diagnostics Report"
       },

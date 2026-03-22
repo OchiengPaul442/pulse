@@ -18,6 +18,7 @@ Do not perform heavy indexing in the activation path. Start minimal, then defer 
 ## Extension contributions
 
 ### Commands
+
 Provide commands such as:
 
 - Agent: Open Panel
@@ -30,8 +31,10 @@ Provide commands such as:
 - Agent: Revert Last Agent Changes
 - Agent: Reindex Workspace
 - Agent: Manage MCP Connections
+- Agent: Configure MCP Servers
 
 ### Views
+
 Recommended view containers:
 
 - **Activity Bar view** for sessions/tasks/history
@@ -39,6 +42,7 @@ Recommended view containers:
 - **Webview panel** for richer chat/task workflow and diff summaries
 
 ### Settings
+
 Contribute settings for:
 
 - default planner model
@@ -51,6 +55,7 @@ Contribute settings for:
 - max context tokens
 - indexing strategy
 - MCP server definitions
+- MCP setup shortcut in the sidebar
 - telemetry opt-in
 - memory mode
 - approval mode
@@ -113,12 +118,14 @@ Keep webview logic separate from core agent runtime. The UI should consume messa
 ## Commands and workflows
 
 ### Explain selection
+
 - user highlights code
 - command gathers selection + surrounding symbols
 - model produces explanation and dependencies
 - response appears in panel
 
 ### Fix diagnostics in current file
+
 - gather active diagnostics
 - read file and nearby symbols
 - plan fix
@@ -127,6 +134,7 @@ Keep webview logic separate from core agent runtime. The UI should consume messa
 - show diff and summary
 
 ### Workspace feature implementation
+
 - request clarified into acceptance criteria
 - planner creates phased steps
 - context builder gathers relevant files

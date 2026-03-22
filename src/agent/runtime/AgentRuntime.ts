@@ -1,7 +1,7 @@
 import * as path from "path";
 import * as vscode from "vscode";
 
-import type { AgentConfig } from "../../config/AgentConfig";
+import type { AgentConfig, McpServerConfig } from "../../config/AgentConfig";
 import type { StorageState } from "../../db/StorageBootstrap";
 import type { Logger } from "../../platform/vscode/Logger";
 import { EditManager, type ProposedEdit } from "../edits/EditManager";
@@ -166,6 +166,25 @@ export class AgentRuntime {
 
     await this.memoryStore.setPreference(`model.${role}`, modelName);
     this.logger.info(`Updated ${role} model to ${modelName}`);
+  }
+
+  public getConfiguredMcpServers(): McpServerConfig[] {
+    return [...this.currentConfig.mcpServers];
+  }
+
+  public async setConfiguredMcpServers(
+    servers: McpServerConfig[],
+  ): Promise<void> {
+    const cfg = vscode.workspace.getConfiguration("pulse");
+    await cfg.update(
+      "mcp.servers",
+      servers,
+      vscode.ConfigurationTarget.Workspace,
+    );
+
+    this.currentConfig.mcpServers = [...servers];
+    this.mcpManager.updateServerDefinitions(servers);
+    this.logger.info(`Updated MCP server definitions (${servers.length})`);
   }
 
   public async explainText(input: string): Promise<ExplainResult> {

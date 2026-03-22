@@ -7,7 +7,7 @@ MCP turns the agent into a platform instead of a closed tool. It lets the agent 
 ## MCP roles in this system
 
 Your extension acts as an **MCP client**.
-It can connect to one or more MCP servers that provide:
+It reads MCP server definitions from the Pulse settings namespace and can connect to one or more MCP servers that provide:
 
 - tools
 - resources
@@ -44,30 +44,34 @@ src/agent/mcp/
 ## Responsibilities
 
 ### McpManager
+
 - load server configs
 - connect/disconnect/retry
 - keep capability registry
 - expose tools/resources/prompts to the runtime
 
 ### McpToolAdapter
+
 - normalize tool schemas
 - validate inputs
 - execute tool calls
 - capture logs and errors
 
 ### McpResourceAdapter
+
 - fetch resource content
 - cache content where safe
 - convert resources into retrieval context
 
 ### McpPromptAdapter
+
 - expose reusable prompt workflows to the agent
 
 ## Server configuration example
 
 ```json
 {
-  "agent.mcp.servers": [
+  "pulse.mcp.servers": [
     {
       "id": "filesystem",
       "transport": "stdio",
@@ -130,6 +134,7 @@ load config
 Treat MCP resources as retrieval inputs, not absolute truth.
 
 Store:
+
 - server id
 - resource uri
 - last fetched time
@@ -156,3 +161,12 @@ Wrap all MCP outputs in a standard envelope:
 
 Prefer a small number of trustworthy MCP servers first.
 Get the client abstraction right before adding many servers.
+
+## How users add MCP servers in Pulse
+
+1. Open the Pulse sidebar.
+2. Click the settings gear.
+3. Add or edit servers directly in the MCP editor cards.
+4. Click **Save changes** to write to `pulse.mcp.servers` in VS Code settings.
+5. Reopen **View status** or **Pulse: Manage MCP Connections** to confirm the server health.
+6. If you prefer JSON, use the raw settings command from the MCP section.

@@ -19,6 +19,7 @@ export function registerCommands(
     ["pulse.revertLastAgentChanges", () => revertLastChanges(runtime)],
     ["pulse.reindexWorkspace", () => reindexWorkspace(runtime)],
     ["pulse.manageMcpConnections", () => manageMcpConnections(runtime)],
+    ["pulse.configureMcpServers", () => configureMcpServers()],
     ["pulse.openDiagnosticsReport", () => openDiagnostics(runtime)],
     ["pulse.selectModels", () => selectModels(runtime)],
     ["pulse.setApprovalMode", () => setApprovalMode(runtime)],
@@ -197,6 +198,19 @@ async function manageMcpConnections(runtime: AgentRuntime): Promise<void> {
     content: `# Pulse MCP Status\n\n\`\`\`text\n${summary}\n\`\`\`\n`,
   });
   await vscode.window.showTextDocument(doc, { preview: false });
+}
+
+async function configureMcpServers(): Promise<void> {
+  try {
+    await vscode.commands.executeCommand(
+      "workbench.action.openSettings",
+      "pulse.mcp.servers",
+    );
+  } catch {
+    void vscode.window.showWarningMessage(
+      "Pulse: open Settings and search for pulse.mcp.servers to configure MCP servers.",
+    );
+  }
 }
 
 async function showDiagnosticsSummary(runtime: AgentRuntime): Promise<void> {

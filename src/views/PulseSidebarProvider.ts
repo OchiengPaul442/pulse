@@ -26,6 +26,7 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
           if (message.type === "loadDashboard") {
             const summary = await this.runtime.summary();
             const sessions = await this.runtime.listRecentSessions();
+            const mcpServers = this.runtime.getConfiguredMcpServers();
             await webviewView.webview.postMessage({
               type: "runtimeSummary",
               payload: summary,
@@ -33,6 +34,10 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
             await webviewView.webview.postMessage({
               type: "sessions",
               payload: sessions,
+            });
+            await webviewView.webview.postMessage({
+              type: "mcpServers",
+              payload: mcpServers,
             });
 
             if (summary.ollamaHealth.toLowerCase().includes("reachable")) {
@@ -170,6 +175,44 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
             }
             return;
           }
+
+          if (
+            message.type === "saveMcpServers" &&
+            Array.isArray(message.payload)
+          ) {
+            await this.runtime.setConfiguredMcpServers(
+              message.payload as Array<Record<string, unknown>>,
+            );
+            const summary = await this.runtime.summary();
+            await webviewView.webview.postMessage({
+              type: "runtimeSummary",
+              payload: summary,
+            });
+            await webviewView.webview.postMessage({
+              type: "actionResult",
+              payload: "MCP servers updated.",
+            });
+            return;
+          }
+
+          if (message.type === "reloadMcpServers") {
+            const mcpServers = this.runtime.getConfiguredMcpServers();
+            await webviewView.webview.postMessage({
+              type: "mcpServers",
+              payload: mcpServers,
+            });
+            return;
+          }
+
+          if (message.type === "manageMcpConnections") {
+            await vscode.commands.executeCommand("pulse.manageMcpConnections");
+            return;
+          }
+
+          if (message.type === "configureMcpServers") {
+            await vscode.commands.executeCommand("pulse.configureMcpServers");
+            return;
+          }
         } catch (error) {
           this.logger.error("Sidebar message handling failed", error);
           await webviewView.webview.postMessage({
@@ -240,16 +283,6 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
 
     .hdr-left { display: flex; align-items: center; gap: 7px; }
 
-    .logo {
-      width: 24px; height: 24px;
-      background: var(--amber);
-      border-radius: 7px;
-      display: flex; align-items: center; justify-content: center;
-      font-size: 13px; font-weight: 900; color: #fff;
-      letter-spacing: -0.5px;
-      flex-shrink: 0;
-    }
-
     .brand {
       font-size: 13px; font-weight: 700;
       letter-spacing: 0.8px; text-transform: uppercase;
@@ -292,16 +325,131 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
       letter-spacing: .5px; color: var(--vscode-descriptionForeground);
     }
 
-    select {
-      width: 100%; padding: 5px 7px;
+    input[type="text"], select, textarea {
+      width: 100%;
+      padding: 5px 7px;
       border-radius: var(--r-sm);
       border: 1px solid var(--vscode-input-border, rgba(128,128,128,.2));
       background: var(--vscode-input-background);
       color: var(--vscode-input-foreground);
-      font: 12px var(--vscode-font-family); cursor: pointer;
+      font: 12px var(--vscode-font-family);
+    }
+
+    input[type="text"]::placeholder, textarea::placeholder {
+      color: var(--vscode-input-placeholderForeground);
+    }
+
+    select { cursor: pointer; }
+
+    textarea {
+      resize: vertical;
+      min-height: 38px;
     }
 
     .sbtns { display: flex; justify-content: flex-end; gap: 6px; margin-top: 2px; }
+
+    .section {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      padding-top: 8px;
+      border-top: 1px solid var(--vscode-sideBarSectionHeader-border, rgba(128,128,128,.12));
+    }
+
+    .section-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+    }
+
+    .section-copy {
+      color: var(--vscode-descriptionForeground);
+      font-size: 11px;
+      line-height: 1.45;
+    }
+
+    .mcp-toolbar {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .mcp-count {
+      margin-left: auto;
+      font-size: 10px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: .6px;
+      color: var(--vscode-descriptionForeground);
+    }
+
+    .mcp-list {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      max-height: 230px;
+      overflow: auto;
+      padding-right: 2px;
+    }
+
+    .mcp-card {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      padding: 10px;
+      border-radius: var(--r-md);
+      border: 1px solid var(--vscode-sideBarSectionHeader-border, rgba(128,128,128,.18));
+      background: linear-gradient(180deg, rgba(128,128,128,.04), rgba(128,128,128,.01));
+    }
+
+    .mcp-card-head {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .mcp-card-title { flex: 1; min-width: 0; }
+
+    .mcp-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      padding: 2px 7px;
+      border-radius: 999px;
+      border: 1px solid var(--vscode-sideBarSectionHeader-border, rgba(128,128,128,.18));
+      font-size: 10px;
+      font-weight: 700;
+      color: var(--vscode-descriptionForeground);
+      text-transform: uppercase;
+      letter-spacing: .5px;
+    }
+
+    .mcp-grid {
+      display: grid;
+      grid-template-columns: 1fr 130px;
+      gap: 6px;
+    }
+
+    .mcp-grid.triple {
+      grid-template-columns: 1fr 1fr 1fr;
+    }
+
+    .mcp-note {
+      font-size: 10px;
+      color: var(--vscode-descriptionForeground);
+      line-height: 1.35;
+    }
+
+    .mcp-empty {
+      padding: 12px;
+      border-radius: var(--r-md);
+      border: 1px dashed var(--vscode-sideBarSectionHeader-border, rgba(128,128,128,.22));
+      color: var(--vscode-descriptionForeground);
+      font-size: 11px;
+      text-align: center;
+    }
 
     /* ─── Main scroll area ─────────────────────────────────────── */
     #main {
@@ -546,14 +694,13 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
   <!-- ── Header ──────────────────────────────────────────────── -->
   <header class="hdr">
     <div class="hdr-left">
-      <div class="logo">P</div>
-      <span class="brand">Pulse</span>
+      <span class="brand">Workspace Agent</span>
     </div>
     <div class="hdr-right">
       <span id="statusBadge" class="badge off">
         <span class="badge-dot"></span><span id="statusTxt">Offline</span>
       </span>
-      <button id="btnSettings" class="icon-btn" title="Model settings">&#9881;</button>
+      <button id="btnSettings" class="icon-btn" title="Model and MCP settings">&#9881;</button>
       <button id="btnRefresh"  class="icon-btn" title="Refresh">&#8635;</button>
     </div>
   </header>
@@ -576,6 +723,25 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
     <div class="sbtns">
       <button id="btnSyncModels" class="btn">Sync models</button>
       <button id="btnApplyModel" class="btn primary">Apply</button>
+    </div>
+
+    <div class="section">
+      <div class="section-head">
+        <span class="slabel">MCP Servers</span>
+        <span id="mcpCount" class="mcp-count">0 configured</span>
+      </div>
+      <div class="section-copy">
+        Edit servers inline, save to workspace settings, then use the status report to verify transport health.
+      </div>
+      <div class="mcp-toolbar">
+        <button id="btnAddMcp" class="btn">Add server</button>
+        <button id="btnReloadMcp" class="btn">Reload</button>
+        <button id="btnSaveMcp" class="btn primary">Save changes</button>
+        <button id="btnOpenMcpSettings" class="btn">Open settings</button>
+        <button id="btnManageMcp" class="btn">View status</button>
+      </div>
+      <div id="mcpList" class="mcp-list"></div>
+      <div class="mcp-note">Stdio servers use a command and optional args. HTTP/SSE servers use a URL.</div>
     </div>
   </div>
 
@@ -662,6 +828,13 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
   const modelSelect  = $('modelSelect');
   const btnSyncModels= $('btnSyncModels');
   const btnApplyModel= $('btnApplyModel');
+  const btnAddMcp    = $('btnAddMcp');
+  const btnReloadMcp = $('btnReloadMcp');
+  const btnSaveMcp   = $('btnSaveMcp');
+  const btnOpenMcpSettings = $('btnOpenMcpSettings');
+  const btnManageMcp = $('btnManageMcp');
+  const mcpList      = $('mcpList');
+  const mcpCount     = $('mcpCount');
   const homeView     = $('homeView');
   const chatView     = $('chatView');
   const btnNewChat   = $('btnNewChat');
@@ -685,6 +858,7 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
   // ── State ─────────────────────────────────────────────────────────────
   let summary  = null;
   let models   = [];
+  let mcpServers = [];
   let history  = [];   // { role:'user'|'agent', text:string, ts:number }
   let inChat   = false;
 
@@ -711,6 +885,165 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
 
   function scrollBottom() {
     requestAnimationFrame(() => { $('main').scrollTop = 9999999; });
+  }
+
+  function normalizeMcpServer(server) {
+    const transport = String(server?.transport || 'stdio');
+    const args = Array.isArray(server?.args)
+      ? server.args.map((item) => String(item))
+      : typeof server?.args === 'string'
+        ? server.args.split(/\r?\n/).map((item) => item.trim()).filter(Boolean)
+        : [];
+
+    return {
+      id: String(server?.id || ''),
+      enabled: server?.enabled !== false,
+      trust: String(server?.trust || 'workspace'),
+      transport,
+      command: String(server?.command || ''),
+      url: String(server?.url || ''),
+      args,
+    };
+  }
+
+  function parseArgs(text) {
+    const raw = String(text || '').trim();
+    if (!raw) {
+      return [];
+    }
+
+    if (raw.startsWith('[')) {
+      const parsed = JSON.parse(raw);
+      if (!Array.isArray(parsed)) {
+        throw new Error('Arguments must be a JSON array or one argument per line.');
+      }
+      return parsed.map((item) => String(item));
+    }
+
+    return raw.split(/\r?\n/).map((item) => item.trim()).filter(Boolean);
+  }
+
+  function renderMcpServers(list) {
+    mcpServers = (list || []).map(normalizeMcpServer);
+    mcpCount.textContent = mcpServers.length === 1 ? '1 configured' : mcpServers.length + ' configured';
+
+    if (!mcpServers.length) {
+      mcpList.innerHTML = '<div class="mcp-empty fadein">No MCP servers yet. Add one to connect Pulse to tools, resources, and prompts.</div>';
+      return;
+    }
+
+    mcpList.innerHTML = '';
+    mcpServers.forEach((server, index) => {
+      const card = document.createElement('div');
+      card.className = 'mcp-card fadein';
+      card.dataset.index = String(index);
+
+      const endpointLabel = server.transport === 'stdio' ? 'Command' : 'URL';
+      const endpointValue = server.transport === 'stdio' ? server.command : server.url;
+      const note = server.transport === 'stdio'
+        ? 'Use one argument per line or paste JSON array syntax.'
+        : 'Remote servers should use a valid URL.';
+
+      card.innerHTML = [
+        '<div class="mcp-card-head">',
+        '  <div class="mcp-card-title">',
+        '    <input type="text" data-field="id" placeholder="filesystem" value="' + esc(server.id) + '" />',
+        '  </div>',
+        '  <label class="mcp-chip" title="Enable or disable this server">',
+        '    <input type="checkbox" data-field="enabled" ' + (server.enabled ? 'checked' : '') + ' />',
+        '    Enabled',
+        '  </label>',
+        '  <button type="button" class="btn danger sm" data-action="remove">Remove</button>',
+        '</div>',
+        '<div class="mcp-grid triple">',
+        '  <select data-field="transport">',
+        '    <option value="stdio">stdio</option>',
+        '    <option value="http">http</option>',
+        '    <option value="sse">sse</option>',
+        '  </select>',
+        '  <select data-field="trust">',
+        '    <option value="workspace">workspace</option>',
+        '    <option value="user">user</option>',
+        '    <option value="system">system</option>',
+        '  </select>',
+        '  <div class="mcp-chip">' + esc(endpointLabel) + '</div>',
+        '</div>',
+        '<input type="text" data-field="endpoint" placeholder="' + esc(endpointLabel) + '" value="' + esc(endpointValue) + '" />',
+        '<textarea data-field="args" placeholder="[&quot;-y&quot;, &quot;@modelcontextprotocol/server-filesystem&quot;, &quot;\${workspaceFolder}&quot;]">' + esc((server.args || []).join('\n')) + '</textarea>',
+        '<div class="mcp-note">' + esc(note) + '</div>',
+      ].join('');
+
+      const transportSelect = card.querySelector('select[data-field="transport"]');
+      const trustSelect = card.querySelector('select[data-field="trust"]');
+      const endpointInput = card.querySelector('input[data-field="endpoint"]');
+      const argsInput = card.querySelector('textarea[data-field="args"]');
+      const enabledInput = card.querySelector('input[data-field="enabled"]');
+      transportSelect.value = server.transport;
+      trustSelect.value = server.trust;
+
+      const syncEndpointState = () => {
+        const isStdio = transportSelect.value === 'stdio';
+        endpointInput.placeholder = isStdio ? 'Command' : 'URL';
+        argsInput.style.display = isStdio ? 'block' : 'none';
+      };
+
+      transportSelect.addEventListener('change', syncEndpointState);
+      syncEndpointState();
+
+      card._read = () => ({
+        id: String(card.querySelector('input[data-field="id"]').value || '').trim(),
+        enabled: Boolean(enabledInput.checked),
+        trust: String(trustSelect.value || 'workspace'),
+        transport: String(transportSelect.value || 'stdio'),
+        command: String(transportSelect.value === 'stdio' ? endpointInput.value || '' : ''),
+        url: String(transportSelect.value === 'stdio' ? '' : endpointInput.value || ''),
+        args: parseArgs(String(argsInput.value || '')),
+      });
+
+      card.querySelector('[data-action="remove"]').addEventListener('click', () => {
+        const currentServers = snapshotMcpServers();
+        currentServers.splice(index, 1);
+        renderMcpServers(currentServers);
+      });
+
+      mcpList.appendChild(card);
+    });
+  }
+
+  function collectMcpServers() {
+    const cards = [...mcpList.querySelectorAll('.mcp-card')];
+    const collected = [];
+
+    for (const card of cards) {
+      const reader = card._read;
+      if (typeof reader !== 'function') {
+        continue;
+      }
+
+      const server = reader();
+      if (!server.id) {
+        continue;
+      }
+
+      if (server.transport === 'stdio' && !server.command) {
+        throw new Error('Each stdio MCP server needs a command.');
+      }
+
+      if ((server.transport === 'http' || server.transport === 'sse') && !server.url) {
+        throw new Error('Each HTTP or SSE MCP server needs a URL.');
+      }
+
+      collected.push(server);
+    }
+
+    return collected;
+  }
+
+  function snapshotMcpServers() {
+    const cards = [...mcpList.querySelectorAll('.mcp-card')];
+    return cards
+      .map((card) => (typeof card._read === 'function' ? card._read() : null))
+      .filter(Boolean);
   }
 
   // ── Navigation ────────────────────────────────────────────────────────
@@ -872,6 +1205,32 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
 
   btnSyncModels.addEventListener('click', () => vscode.postMessage({ type: 'refreshModels' }));
 
+  btnAddMcp.addEventListener('click', () => {
+    mcpServers = [...snapshotMcpServers(), normalizeMcpServer({ enabled: true, trust: 'workspace', transport: 'stdio', args: [] })];
+    renderMcpServers(mcpServers);
+  });
+
+  btnReloadMcp.addEventListener('click', () => {
+    vscode.postMessage({ type: 'reloadMcpServers' });
+  });
+
+  btnSaveMcp.addEventListener('click', () => {
+    try {
+      const collected = collectMcpServers();
+      vscode.postMessage({ type: 'saveMcpServers', payload: collected });
+    } catch (error) {
+      vscode.postMessage({ type: 'actionResult', payload: 'Error: ' + (error instanceof Error ? error.message : String(error)) });
+    }
+  });
+
+  btnOpenMcpSettings.addEventListener('click', () => {
+    vscode.postMessage({ type: 'configureMcpServers' });
+  });
+
+  btnManageMcp.addEventListener('click', () => {
+    vscode.postMessage({ type: 'manageMcpConnections' });
+  });
+
   btnApplyModel.addEventListener('click', () => {
     const role  = roleSelect.value;
     const model = modelSelect.value;
@@ -903,6 +1262,8 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
     if (type === 'runtimeSummary') renderSummary(payload);
 
     if (type === 'models') updateModels(payload);
+
+    if (type === 'mcpServers') renderMcpServers(payload);
 
     if (type === 'sessions') renderSessions(payload);
 

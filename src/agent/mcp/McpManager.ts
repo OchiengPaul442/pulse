@@ -20,7 +20,11 @@ interface McpServerDefinition {
 }
 
 export class McpManager {
-  public constructor(private readonly serverDefs: McpServerDefinition[]) {}
+  public constructor(private serverDefs: McpServerDefinition[]) {}
+
+  public updateServerDefinitions(serverDefs: McpServerDefinition[]): void {
+    this.serverDefs = [...serverDefs];
+  }
 
   public async listServerStatus(): Promise<McpServerStatus[]> {
     const statuses: McpServerStatus[] = [];

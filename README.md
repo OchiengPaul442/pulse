@@ -23,7 +23,7 @@ Pulse is a VS Code extension that gives you a personal AI coding assistant that 
 | **Episodic learning**      | Builds a rolling memory of past tasks to improve future responses          |
 | **Approval modes**         | Strict (always confirm), Balanced, or Fast (auto-apply)                    |
 | **Safe reverts**           | Every applied edit creates a snapshot — one click to undo                  |
-| **MCP support**            | Visibility into configured MCP servers                                     |
+| **MCP support**            | Visibility into configured MCP servers and direct setup entry points       |
 | **Skills registry**        | Built-in skill manifests with objective-based skill routing                |
 | **Prepublish guard**       | One-command release readiness checks for model/MCP/diagnostics state       |
 | **Workspace diagnostics**  | Reads VS Code error diagnostics into context                               |
@@ -79,6 +79,12 @@ Click the **approval mode chip** (bottom left of the composer) to cycle through:
 
 Click the **⚙ gear icon** in the header to open the model settings drawer. Select a role (Planner, Editor, Fast, Embedding) and a model from your local Ollama library, then click **Apply**.
 
+### MCP setup
+
+Click the **⚙ gear icon** to open the settings drawer, then use the inline MCP server cards to add, edit, and save server definitions in `pulse.mcp.servers`. Use **View status** to inspect MCP transport health after you save.
+
+If you prefer raw JSON editing, use the **Open settings** command from the MCP section.
+
 ---
 
 ## Command Palette
@@ -98,6 +104,7 @@ All actions are also available via `Ctrl+Shift+P` / `Cmd+Shift+P`:
 | `Pulse: Run Prepublish Guard`      | Run publish-readiness checks and open report |
 | `Pulse: Re-index Workspace`        | Re-scan workspace files                      |
 | `Pulse: Open Diagnostics Report`   | View a full runtime diagnostic report        |
+| `Pulse: Configure MCP Servers`     | Open settings focused on `pulse.mcp.servers` |
 
 ---
 
@@ -143,12 +150,12 @@ All settings live under the `pulse.*` namespace in VS Code settings:
 
 ### Verify MCP configuration
 
-Pulse validates each enabled MCP server in diagnostics:
+Pulse validates each enabled MCP server in diagnostics and from the sidebar status view:
 
 - `stdio` transport: command must exist in `PATH`
 - `http` / `sse` transport: URL must be syntactically valid
 
-Open `Pulse: Manage MCP Connections` or `Pulse: Open Diagnostics Report` to inspect status and details.
+Use the sidebar MCP editor for the default workflow, or open `Pulse: Configure MCP Servers` to jump to the settings entry, then use `Pulse: Manage MCP Connections` or `Pulse: Open Diagnostics Report` to inspect status and details.
 
 ---
 
