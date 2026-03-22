@@ -1,3 +1,4 @@
 {
-  "pulse.behavior.approvalMode": "balanced"
+  "pulse.behavior.approvalMode": "balanced",
+  "pulse.ollama.baseUrl": "http://127.0.0.1:11434"
 }

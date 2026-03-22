@@ -124,8 +124,19 @@ export class AgentRuntime {
   public async refreshProviderState(): Promise<void> {
     this.health = await this.provider.healthCheck();
     if (this.health.ok) {
-      this.availableModels = await this.provider.listModels();
-      this.availableModels = this.mergeConfiguredModels(this.availableModels);
+      try {
+        this.availableModels = await this.provider.listModels();
+        this.availableModels = this.mergeConfiguredModels(this.availableModels);
+      } catch (error) {
+        this.logger.warn(
+          `Failed to refresh Ollama models: ${stringifyError(error)}`,
+        );
+        this.availableModels = this.mergeConfiguredModels([]);
+        this.health = {
+          ok: true,
+          message: `Ollama reachable (model discovery failed: ${stringifyError(error)})`,
+        };
+      }
       return;
     }
 

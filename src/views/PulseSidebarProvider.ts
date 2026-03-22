@@ -27,12 +27,35 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
           if (message.type === "loadDashboard") {
             await this.runtime.refreshProviderState();
             const summary = await this.runtime.summary();
-            const sessions = await this.runtime.listRecentSessions();
-            const mcpServers = this.runtime.getConfiguredMcpServers();
             await webviewView.webview.postMessage({
               type: "runtimeSummary",
               payload: summary,
             });
+
+            let sessions: Array<{
+              id: string;
+              title: string;
+              updatedAt: string;
+            }> = [];
+            try {
+              sessions = await this.runtime.listRecentSessions();
+            } catch (error) {
+              this.logger.warn(
+                `Failed to load recent sessions: ${error instanceof Error ? error.message : String(error)}`,
+              );
+            }
+
+            let mcpServers: Array<Record<string, unknown>> = [];
+            try {
+              mcpServers = this.runtime.getConfiguredMcpServers() as Array<
+                Record<string, unknown>
+              >;
+            } catch (error) {
+              this.logger.warn(
+                `Failed to load MCP configuration: ${error instanceof Error ? error.message : String(error)}`,
+              );
+            }
+
             await webviewView.webview.postMessage({
               type: "sessions",
               payload: sessions,
@@ -43,11 +66,17 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
             });
 
             if (summary.ollamaReachable) {
-              const models = await this.runtime.listAvailableModels();
-              await webviewView.webview.postMessage({
-                type: "models",
-                payload: models,
-              });
+              try {
+                const models = await this.runtime.listAvailableModels();
+                await webviewView.webview.postMessage({
+                  type: "models",
+                  payload: models,
+                });
+              } catch (error) {
+                this.logger.warn(
+                  `Failed to load Ollama models for sidebar: ${error instanceof Error ? error.message : String(error)}`,
+                );
+              }
             }
             return;
           }
@@ -1302,8 +1331,14 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
       history.push({ role: 'agent', text: String(payload), ts: Date.now() });
       renderMessages();
       scrollBottom();
-      statusLine.textContent = 'Done';
-      vscode.postMessage({ type: 'loadDashboard' });
+      const text = String(payload || 'Done');
+      const isError = text.toLowerCase().startsWith('error:');
+      statusLine.textContent = isError ? 'Error' : 'Done';
+
+      // Avoid recursive load loops when dashboard refresh itself fails.
+      if (!isError) {
+        vscode.postMessage({ type: 'loadDashboard' });
+      }
     }
   });
 
