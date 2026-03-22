@@ -16,6 +16,7 @@ import {
   type WebSearchResponse,
 } from "../search/WebSearchService";
 import { SkillRegistry, type SkillManifest } from "../skills/SkillRegistry";
+import type { TaskPlan } from "../planner/Planner";
 import type {
   ConversationMessage,
   ExplainResult,
@@ -275,6 +276,7 @@ export class AgentRuntime {
       const model = await this.resolveModelOrFallback(
         this.currentConfig.fastModel,
       );
+      const webResearch = await this.collectWebResearch(objective, mode);
       const response = await this.provider.chat({
         model,
         messages: [
@@ -284,6 +286,14 @@ export class AgentRuntime {
               "You are Pulse in Ask mode. Be conversational, answer questions, and explain context. Do not propose code edits, terminal commands, or plan artifacts.",
           },
           ...conversationHistory,
+          ...(webResearch
+            ? [
+                {
+                  role: "system",
+                  content: this.formatWebResearchContext(webResearch),
+                },
+              ]
+            : []),
           ...(attachedContext.length > 0
             ? [
                 {
@@ -320,7 +330,12 @@ export class AgentRuntime {
         plan: {
           objective,
           assumptions: ["Ask mode used; no edits or plan artifacts requested."],
+          acceptanceCriteria: [
+            "The answer stays conversational and accurate.",
+            "No file edits, terminal commands, or plan artifacts are produced.",
+          ],
           steps: [],
+          taskSlices: [],
           verification: [],
         },
         responseText: response.text,
@@ -332,11 +347,19 @@ export class AgentRuntime {
       const plannerModel = await this.resolveModelOrFallback(
         this.currentConfig.plannerModel,
       );
+      const webResearch = await this.collectWebResearch(objective, mode);
       const plan = await this.planner.createPlan(objective, plannerModel);
-      const artifactPath = await this.writePlanArtifact(objective, plan);
+      const artifactPath = await this.writePlanArtifact(
+        objective,
+        plan,
+        webResearch,
+      );
       const responseText = [
         `Plan mode active. Wrote ${artifactPath ? `plan artifact to ${artifactPath}` : "a plan summary"}.`,
         "This mode does not make code changes.",
+        webResearch
+          ? "Latest web research was included in the plan artifact."
+          : "No web research was needed for this plan.",
         "",
         JSON.stringify(plan, null, 2),
       ].join("\n");
@@ -421,7 +444,12 @@ export class AgentRuntime {
           assumptions: [
             "General conversation path used; no file edits requested.",
           ],
+          acceptanceCriteria: [
+            "The response directly answers the request.",
+            "No file edits are proposed unless explicitly requested.",
+          ],
           steps: [],
+          taskSlices: [],
           verification: [],
         },
         responseText: response.text,
@@ -447,7 +475,7 @@ export class AgentRuntime {
       this.currentConfig.memoryMode === "off"
         ? []
         : await this.memoryStore.latestEpisodes(3);
-    const webResearch = await this.collectWebResearch(objective);
+    const webResearch = await this.collectWebResearch(objective, mode);
 
     const prompt = [
       "You are Pulse, an agentic coding assistant working inside VS Code.",
@@ -466,6 +494,8 @@ export class AgentRuntime {
       "- write: create or replace a file",
       "- delete: remove a file or folder",
       "- move: move/rename a file path to targetPath",
+      webResearch ? "Latest web research:" : "No web research used.",
+      webResearch ? JSON.stringify(webResearch, null, 2) : "",
       `Objective: ${objective}`,
       "Selected skills:",
       this.skillRegistry.summarizeSelection(selectedSkills),
@@ -1171,17 +1201,8 @@ export class AgentRuntime {
 
   private async writePlanArtifact(
     objective: string,
-    plan: {
-      objective: string;
-      assumptions: string[];
-      steps: Array<{
-        id: string;
-        goal: string;
-        tools: string[];
-        expectedOutput: string;
-      }>;
-      verification: Array<{ type: string; command: string }>;
-    },
+    plan: TaskPlan,
+    webResearch: WebSearchResponse | null,
   ): Promise<string | null> {
     const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
     if (!workspaceFolder) {
@@ -1210,12 +1231,50 @@ export class AgentRuntime {
       "",
       ...plan.assumptions.map((item) => `- ${item}`),
       "",
+      "## Acceptance Criteria",
+      "",
+      ...plan.acceptanceCriteria.map((item) => `- ${item}`),
+      "",
       "## Steps",
       "",
       ...plan.steps.map(
         (step, index) =>
           `${index + 1}. ${step.goal} (${step.tools.join(", ")})\n   - Expected: ${step.expectedOutput}`,
       ),
+      "",
+      "## Task Slices",
+      "",
+      ...plan.taskSlices.map((slice, index) =>
+        [
+          `${index + 1}. ${slice.title}`,
+          `   - Scope: ${slice.scope}`,
+          `   - Deliverable: ${slice.deliverable}`,
+          `   - Steps: ${slice.steps.join("; ")}`,
+          `   - Acceptance: ${slice.acceptanceCriteria.join("; ")}`,
+        ].join("\n"),
+      ),
+      webResearch
+        ? [
+            "",
+            "## Web Research",
+            "",
+            `Provider: ${webResearch.provider}`,
+            `Query: ${webResearch.query}`,
+            webResearch.answer ? `Answer: ${webResearch.answer}` : null,
+            webResearch.note ? `Note: ${webResearch.note}` : null,
+            ...(webResearch.results.length > 0
+              ? [
+                  "Results:",
+                  ...webResearch.results.map(
+                    (result) =>
+                      `- ${result.title}\n  ${result.url}\n  ${result.content}`,
+                  ),
+                ]
+              : []),
+          ]
+            .filter((line): line is string => Boolean(line))
+            .join("\n")
+        : "",
       "",
       "## Verification",
       "",
@@ -1261,8 +1320,9 @@ export class AgentRuntime {
 
   private async collectWebResearch(
     objective: string,
+    mode: ConversationMode,
   ): Promise<WebSearchResponse | null> {
-    if (!this.shouldUseWebSearch(objective)) {
+    if (!this.shouldUseWebSearch(objective, mode)) {
       return null;
     }
 
@@ -1276,12 +1336,18 @@ export class AgentRuntime {
     }
   }
 
-  private shouldUseWebSearch(objective: string): boolean {
+  private shouldUseWebSearch(
+    objective: string,
+    mode: ConversationMode,
+  ): boolean {
     const normalized = objective.toLowerCase();
-    return [
+    const timeSensitiveSignals = [
       "latest",
       "current",
       "recent",
+      "today",
+      "this week",
+      "this month",
       "web",
       "online",
       "internet",
@@ -1289,11 +1355,66 @@ export class AgentRuntime {
       "docs",
       "documentation",
       "release",
+      "release notes",
       "version",
       "news",
       "pricing",
       "api",
-    ].some((token) => normalized.includes(token));
+      "what changed",
+      "up to date",
+      "up-to-date",
+      "official",
+    ];
+
+    if (timeSensitiveSignals.some((token) => normalized.includes(token))) {
+      return true;
+    }
+
+    if (mode === "ask") {
+      return [
+        "what is",
+        "who is",
+        "how to",
+        "how do i",
+        "compare",
+        "recommend",
+        "best",
+        "should i",
+      ].some((token) => normalized.includes(token));
+    }
+
+    return (
+      mode === "agent" &&
+      ["package", "dependency", "sdk", "library", "framework", "docs"].some(
+        (token) => normalized.includes(token),
+      )
+    );
+  }
+
+  private formatWebResearchContext(result: WebSearchResponse): string {
+    const lines = [
+      `Web search provider: ${result.provider}`,
+      `Query: ${result.query}`,
+    ];
+
+    if (result.answer) {
+      lines.push(`Answer: ${result.answer}`);
+    }
+
+    if (result.note) {
+      lines.push(`Note: ${result.note}`);
+    }
+
+    if (result.results.length > 0) {
+      lines.push("Results:");
+      for (const entry of result.results.slice(0, 5)) {
+        lines.push(`- ${entry.title}`);
+        lines.push(`  ${entry.url}`);
+        lines.push(`  ${entry.content}`);
+      }
+    }
+
+    return lines.join("\n");
   }
 
   private getWebSearchResultLimit(): number {
