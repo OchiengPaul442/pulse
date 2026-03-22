@@ -262,6 +262,26 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
             return;
           }
 
+          if (
+            message.type === "openSession" &&
+            typeof message.payload === "string"
+          ) {
+            const session = await this.runtime.openSession(message.payload);
+            if (!session) {
+              await webviewView.webview.postMessage({
+                type: "actionResult",
+                payload: "Session not found.",
+              });
+              return;
+            }
+
+            await webviewView.webview.postMessage({
+              type: "sessionLoaded",
+              payload: session,
+            });
+            return;
+          }
+
           if (message.type === "webviewError") {
             this.logger.error(
               `Sidebar webview error: ${String(message.payload ?? "unknown error")}`,
@@ -1096,11 +1116,38 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
     for (const s of list) {
       const d = document.createElement('div');
       d.className = 'sitem';
+      d.dataset.sessionId = String(s.id || '');
       d.innerHTML =
         '<span class="sitem-title">' + esc(s.title || s.id) + '</span>' +
         '<span class="sitem-time">'  + esc(relTime(s.updatedAt)) + '</span>';
+      d.addEventListener('click', function() {
+        if (s.id) {
+          vscode.postMessage({ type: 'openSession', payload: s.id });
+        }
+      });
       sessionList.appendChild(d);
     }
+  }
+
+  function renderLoadedSession(session) {
+    if (!session) return;
+    chatHistory = [{
+      role: 'user',
+      text: session.objective || session.title || 'Session',
+      ts: session.updatedAt || Date.now(),
+    }];
+
+    if (session.lastResult) {
+      chatHistory.push({
+        role: 'agent',
+        text: session.lastResult,
+        ts: session.updatedAt || Date.now(),
+      });
+    }
+
+    renderMessages();
+    showChat();
+    statusLine.textContent = 'Loaded session';
   }
 
   // ── Render runtime summary ────────────────────────────────────────────
@@ -1257,6 +1304,7 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
     if (type === 'models')         { updateModels(payload); return; }
     if (type === 'mcpServers')     { renderMcpServers(payload); return; }
     if (type === 'sessions')       { renderSessions(payload); return; }
+    if (type === 'sessionLoaded')  { renderLoadedSession(payload); return; }
 
     if (type === 'taskResult') {
       typing.classList.remove('on');

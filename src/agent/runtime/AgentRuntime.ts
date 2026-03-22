@@ -18,6 +18,7 @@ import {
 import { SkillRegistry, type SkillManifest } from "../skills/SkillRegistry";
 import type { ExplainResult, RuntimeTaskResult } from "./RuntimeTypes";
 import { SessionStore } from "../sessions/SessionStore";
+import type { SessionRecord } from "../sessions/SessionStore";
 import { VerificationRunner } from "../verification/VerificationRunner";
 
 export interface RuntimeSummary {
@@ -108,6 +109,7 @@ export class AgentRuntime {
       try {
         this.availableModels = await this.provider.listModels();
         this.availableModels = this.mergeConfiguredModels(this.availableModels);
+        await this.alignConfiguredModelsToAvailableModels();
       } catch (error) {
         this.logger.warn(`Failed to list models: ${stringifyError(error)}`);
       }
@@ -127,6 +129,7 @@ export class AgentRuntime {
       try {
         this.availableModels = await this.provider.listModels();
         this.availableModels = this.mergeConfiguredModels(this.availableModels);
+        await this.alignConfiguredModelsToAvailableModels();
       } catch (error) {
         this.logger.warn(
           `Failed to refresh Ollama models: ${stringifyError(error)}`,
@@ -208,6 +211,7 @@ export class AgentRuntime {
   }
 
   public async explainText(input: string): Promise<ExplainResult> {
+    this.resetTokenUsage();
     const model = await this.resolveModelOrFallback(
       this.currentConfig.fastModel,
     );
@@ -234,11 +238,58 @@ export class AgentRuntime {
   }
 
   public async runTask(objective: string): Promise<RuntimeTaskResult> {
+    this.resetTokenUsage();
     const session = await this.sessionStore.createSession(objective, {
       planner: this.currentConfig.plannerModel,
       editor: this.currentConfig.editorModel,
       fast: this.currentConfig.fastModel,
     });
+
+    const allowEdits = this.shouldAllowEdits(objective);
+
+    if (!allowEdits) {
+      const model = await this.resolveModelOrFallback(
+        this.currentConfig.fastModel,
+      );
+      const response = await this.provider.chat({
+        model,
+        messages: [
+          {
+            role: "system",
+            content:
+              "You are Pulse, a concise VS Code coding assistant. Reply conversationally to greetings and general questions. Do not propose file edits unless the user explicitly asks for code changes.",
+          },
+          {
+            role: "user",
+            content: objective,
+          },
+        ],
+      });
+      this.consumeTokens(response.tokenUsage);
+
+      await this.sessionStore.updateSessionResult(session.id, response.text);
+      if (this.currentConfig.memoryMode !== "off") {
+        await this.memoryStore.addEpisode(
+          objective,
+          response.text.slice(0, 400),
+        );
+      }
+
+      return {
+        sessionId: session.id,
+        objective,
+        plan: {
+          objective,
+          assumptions: [
+            "General conversation path used; no file edits requested.",
+          ],
+          steps: [],
+          verification: [],
+        },
+        responseText: response.text,
+        proposal: null,
+      };
+    }
 
     const plannerModel = await this.resolveModelOrFallback(
       this.currentConfig.plannerModel,
@@ -267,6 +318,8 @@ export class AgentRuntime {
       "- Keep behavior backward compatible unless the objective requires change.",
       "- Never propose edits outside the current workspace.",
       "- If requirements are ambiguous, state assumptions explicitly in the response.",
+      "- Only propose edits when the user explicitly asks for coding or file changes.",
+      "- If the user is greeting, chatting, or asking a general question, answer conversationally and return no edits.",
       "Solve the objective using the context below.",
       "If edits are needed, return strict JSON with fields:",
       '{"response":"string","edits":[{"operation":"write|delete|move","filePath":"relative/or/absolute","targetPath":"required for move","content":"required for write","reason":"string"}]}.',
@@ -425,6 +478,16 @@ export class AgentRuntime {
       title: session.title,
       updatedAt: session.updatedAt,
     }));
+  }
+
+  public async openSession(sessionId: string): Promise<SessionRecord | null> {
+    const session = await this.sessionStore.getSession(sessionId);
+    if (!session) {
+      return null;
+    }
+
+    await this.sessionStore.setActiveSession(sessionId);
+    return session;
   }
 
   public listAvailableSkills(): SkillManifest[] {
@@ -673,7 +736,15 @@ export class AgentRuntime {
       return;
     }
 
-    this.tokensConsumed += Math.max(usage.totalTokens, 0);
+    const budget = Math.max(this.currentConfig.maxContextTokens, 1);
+    this.tokensConsumed = Math.min(
+      budget,
+      this.tokensConsumed + Math.max(usage.totalTokens, 0),
+    );
+  }
+
+  private resetTokenUsage(): void {
+    this.tokensConsumed = 0;
   }
 
   private async resolveModelOrFallback(primary: string): Promise<string> {
@@ -704,6 +775,96 @@ export class AgentRuntime {
     }
 
     return primary;
+  }
+
+  private async alignConfiguredModelsToAvailableModels(): Promise<void> {
+    const usableModels = this.availableModels.filter(
+      (model) => model.source === "local" || model.source === "running",
+    );
+    if (usableModels.length === 0) {
+      return;
+    }
+
+    const preferred =
+      usableModels.find((model) => model.name === "qwen2.5-coder:7b") ??
+      usableModels[0];
+
+    const updates: Array<Promise<void>> = [];
+    const cfg = vscode.workspace.getConfiguration("pulse");
+
+    if (
+      !usableModels.some(
+        (model) => model.name === this.currentConfig.plannerModel,
+      )
+    ) {
+      this.currentConfig.plannerModel = preferred.name;
+      updates.push(
+        cfg.update(
+          "models.planner",
+          preferred.name,
+          vscode.ConfigurationTarget.Workspace,
+        ),
+      );
+    }
+
+    if (
+      !usableModels.some(
+        (model) => model.name === this.currentConfig.editorModel,
+      )
+    ) {
+      this.currentConfig.editorModel = preferred.name;
+      updates.push(
+        cfg.update(
+          "models.editor",
+          preferred.name,
+          vscode.ConfigurationTarget.Workspace,
+        ),
+      );
+    }
+
+    if (
+      !usableModels.some((model) => model.name === this.currentConfig.fastModel)
+    ) {
+      this.currentConfig.fastModel = preferred.name;
+      updates.push(
+        cfg.update(
+          "models.fast",
+          preferred.name,
+          vscode.ConfigurationTarget.Workspace,
+        ),
+      );
+    }
+
+    await Promise.all(updates);
+  }
+
+  private shouldAllowEdits(objective: string): boolean {
+    const normalized = objective.toLowerCase();
+    return [
+      "code",
+      "file",
+      "files",
+      "edit",
+      "modify",
+      "change",
+      "fix",
+      "bug",
+      "debug",
+      "refactor",
+      "implement",
+      "update",
+      "remove",
+      "rename",
+      "rewrite",
+      "test",
+      "diagnostic",
+      "error",
+      "issue",
+      "workspace",
+      "build",
+      "compile",
+      "install",
+    ].some((token) => normalized.includes(token));
   }
 
   private async collectWebResearch(

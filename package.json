@@ -2,7 +2,7 @@
   "name": "pulse-agent",
   "displayName": "Pulse Agent",
   "description": "Personal Agentic AI coding assistant for VS Code using local models.",
-  "version": "0.0.21",
+  "version": "0.0.22",
   "publisher": "local",
   "license": "MIT",
   "icon": "media/pulse-icon.png",
@@ -124,12 +124,12 @@
         },
         "pulse.models.planner": {
           "type": "string",
-          "default": "qwen2.5-coder:14b",
+          "default": "qwen2.5-coder:7b",
           "description": "Default planning model."
         },
         "pulse.models.editor": {
           "type": "string",
-          "default": "deepseek-coder-v2:16b",
+          "default": "qwen2.5-coder:7b",
           "description": "Default editing model."
         },
         "pulse.models.fast": {
@@ -174,7 +174,7 @@
         },
         "pulse.behavior.maxContextTokens": {
           "type": "number",
-          "default": 32000,
+          "default": 16384,
           "minimum": 2048,
           "description": "Maximum context budget for model requests."
         },

@@ -53,6 +53,17 @@ export class SessionStore {
     return state.sessions.find((s) => s.id === state.activeSessionId) ?? null;
   }
 
+  public async getSession(sessionId: string): Promise<SessionRecord | null> {
+    const state = await this.load();
+    return state.sessions.find((session) => session.id === sessionId) ?? null;
+  }
+
+  public async setActiveSession(sessionId: string | null): Promise<void> {
+    const state = await this.load();
+    state.activeSessionId = sessionId;
+    await this.save(state);
+  }
+
   public async updateSessionResult(
     sessionId: string,
     result: string,
