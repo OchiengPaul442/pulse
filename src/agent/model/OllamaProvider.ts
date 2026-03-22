@@ -42,7 +42,7 @@ export class OllamaProvider implements ModelProvider {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 5000);
     try {
-      const response = await fetch(`${this.baseUrl}/api/tags`, {
+      const response = await this.fetchFromCandidates("/api/tags", {
         method: "GET",
         signal: controller.signal,
       });
@@ -78,7 +78,7 @@ export class OllamaProvider implements ModelProvider {
   }
 
   public async chat(request: ChatRequest): Promise<ChatResponse> {
-    const response = await fetch(`${this.baseUrl}/api/chat`, {
+    const response = await this.fetchFromCandidates("/api/chat", {
       method: "POST",
       headers: {
         "content-type": "application/json",
@@ -119,7 +119,9 @@ export class OllamaProvider implements ModelProvider {
   }
 
   private async fetchLocalModels(): Promise<ModelSummary[]> {
-    const response = await fetch(`${this.baseUrl}/api/tags`, { method: "GET" });
+    const response = await this.fetchFromCandidates("/api/tags", {
+      method: "GET",
+    });
     if (!response.ok) {
       throw new Error(`Failed to list Ollama models (HTTP ${response.status})`);
     }
@@ -136,7 +138,9 @@ export class OllamaProvider implements ModelProvider {
 
   private async fetchRunningModels(): Promise<ModelSummary[]> {
     try {
-      const response = await fetch(`${this.baseUrl}/api/ps`, { method: "GET" });
+      const response = await this.fetchFromCandidates("/api/ps", {
+        method: "GET",
+      });
       if (!response.ok) {
         return [];
       }
@@ -167,6 +171,69 @@ export class OllamaProvider implements ModelProvider {
     } catch {
       return [];
     }
+  }
+
+  private async fetchFromCandidates(
+    path: string,
+    init: RequestInit,
+  ): Promise<Response> {
+    let lastError: unknown;
+
+    for (const baseUrl of this.getCandidateBaseUrls()) {
+      try {
+        const response = await fetch(this.buildUrl(baseUrl, path), init);
+        return response;
+      } catch (error) {
+        lastError = error;
+      }
+    }
+
+    throw lastError instanceof Error
+      ? lastError
+      : new Error("Failed to connect to Ollama");
+  }
+
+  private getCandidateBaseUrls(): string[] {
+    const candidates = new Set<string>();
+    const normalizedBaseUrl = this.normalizeBaseUrl(this.baseUrl);
+    candidates.add(normalizedBaseUrl);
+
+    try {
+      const parsed = new URL(normalizedBaseUrl);
+      for (const hostname of this.getLoopbackAliases(parsed.hostname)) {
+        const alias = new URL(parsed.toString());
+        alias.hostname = hostname;
+        candidates.add(this.normalizeBaseUrl(alias.toString()));
+      }
+    } catch {
+      return [normalizedBaseUrl];
+    }
+
+    return [...candidates];
+  }
+
+  private getLoopbackAliases(hostname: string): string[] {
+    if (hostname === "localhost") {
+      return ["127.0.0.1", "::1"];
+    }
+
+    if (hostname === "127.0.0.1") {
+      return ["localhost", "::1"];
+    }
+
+    if (hostname === "::1") {
+      return ["localhost", "127.0.0.1"];
+    }
+
+    return [];
+  }
+
+  private normalizeBaseUrl(baseUrl: string): string {
+    return baseUrl.endsWith("/") ? baseUrl.slice(0, -1) : baseUrl;
+  }
+
+  private buildUrl(baseUrl: string, path: string): string {
+    return new URL(path, baseUrl).toString();
   }
 }
 

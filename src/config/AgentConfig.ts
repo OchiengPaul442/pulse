@@ -33,9 +33,13 @@ export interface AgentConfig {
 
 export function getAgentConfig(): AgentConfig {
   const cfg = vscode.workspace.getConfiguration("pulse");
+  const ollamaDefaultUrl =
+    process.platform === "win32"
+      ? "http://127.0.0.1:11434"
+      : "http://localhost:11434";
 
   return {
-    ollamaBaseUrl: cfg.get<string>("ollama.baseUrl", "http://localhost:11434"),
+    ollamaBaseUrl: cfg.get<string>("ollama.baseUrl", ollamaDefaultUrl),
     plannerModel: cfg.get<string>("models.planner", "qwen2.5-coder:14b"),
     editorModel: cfg.get<string>("models.editor", "deepseek-coder-v2:16b"),
     fastModel: cfg.get<string>("models.fast", "qwen2.5-coder:7b"),

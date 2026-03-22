@@ -53,27 +53,35 @@ Support settings like:
 Use different models for different jobs:
 
 ### Planner model
+
 Best for:
+
 - long reasoning
 - task decomposition
 - repo-level change planning
 
 ### Editor model
+
 Best for:
+
 - code patch generation
 - exact API usage
 - test writing
 - refactoring
 
 ### Fast model
+
 Best for:
+
 - quick explanations
 - renaming suggestions
 - command generation
 - short follow-ups
 
 ### Embedding model
+
 Best for:
+
 - semantic retrieval
 - workspace memory
 - change history recall
@@ -153,3 +161,16 @@ On extension startup or first use:
 - use smaller model for triage
 - use larger model only for planning/editing when needed
 - avoid embedding every file on the critical path
+
+## Online research
+
+For research-heavy objectives, enrich the task prompt with web results before planning.
+
+Recommended approach:
+
+1. Try Tavily first for agent-friendly web search and answer synthesis.
+2. Store the Tavily API key in VS Code Secret Storage so it survives reloads and workspace switches.
+3. Fall back to DuckDuckGo Instant Answer API when no Tavily key is present or Tavily fails.
+4. Keep the result count small and only pull search context when the objective suggests current or external information is needed.
+
+For this extension, the user-facing command to save the key is `Pulse: Set Tavily API Key`, and the runtime also honors `PULSE_TAVILY_API_KEY`.

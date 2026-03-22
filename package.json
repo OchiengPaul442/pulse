@@ -2,7 +2,7 @@
   "name": "pulse-agent",
   "displayName": "Pulse Agent",
   "description": "Personal Agentic AI coding assistant for VS Code using local models.",
-  "version": "0.0.3",
+  "version": "0.0.7",
   "publisher": "local",
   "license": "MIT",
   "icon": "media/pulse-icon.png",
@@ -81,6 +81,18 @@
       {
         "command": "pulse.runPrepublishGuard",
         "title": "Pulse: Run Prepublish Guard"
+      },
+      {
+        "command": "pulse.searchWeb",
+        "title": "Pulse: Search the Web"
+      },
+      {
+        "command": "pulse.setTavilyApiKey",
+        "title": "Pulse: Set Tavily API Key"
+      },
+      {
+        "command": "pulse.clearTavilyApiKey",
+        "title": "Pulse: Clear Tavily API Key"
       }
     ],
     "viewsContainers": {
@@ -107,7 +119,7 @@
       "properties": {
         "pulse.ollama.baseUrl": {
           "type": "string",
-          "default": "http://localhost:11434",
+          "default": "http://127.0.0.1:11434",
           "description": "Base URL for Ollama provider."
         },
         "pulse.models.planner": {
@@ -198,6 +210,13 @@
             "type": "object"
           }
         },
+        "pulse.search.maxResults": {
+          "type": "number",
+          "default": 5,
+          "minimum": 1,
+          "maximum": 10,
+          "description": "Maximum number of web search results to include in search summaries."
+        },
         "pulse.telemetry.optIn": {
           "type": "boolean",
           "default": false,
@@ -212,7 +231,12 @@
     "watch": "node esbuild.mjs --watch",
     "check": "tsc --noEmit",
     "test": "vitest run",
-    "package": "vsce package --allow-missing-repository"
+    "package": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File ./scripts/package-to-versions.ps1",
+    "version:patch:local": "npm version patch --no-git-tag-version",
+    "local:reinstall": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File ./scripts/reinstall-local.ps1",
+    "local:reinstall:nobump": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File ./scripts/reinstall-local.ps1 -NoBump",
+    "local:watch-reinstall": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File ./scripts/watch-reinstall-local.ps1",
+    "local:watch-reinstall:nobump": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File ./scripts/watch-reinstall-local.ps1 -NoBump"
   },
   "devDependencies": {
     "@types/node": "^22.14.0",

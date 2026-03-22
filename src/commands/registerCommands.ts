@@ -25,6 +25,9 @@ export function registerCommands(
     ["pulse.setApprovalMode", () => setApprovalMode(runtime)],
     ["pulse.listSkills", () => listSkills(runtime)],
     ["pulse.runPrepublishGuard", () => runPrepublishGuard(runtime)],
+    ["pulse.searchWeb", () => searchWeb(runtime)],
+    ["pulse.setTavilyApiKey", () => setTavilyApiKey(context)],
+    ["pulse.clearTavilyApiKey", () => clearTavilyApiKey(context)],
   ];
 
   for (const [commandId, handler] of commandHandlers) {
@@ -316,4 +319,103 @@ async function runPrepublishGuard(runtime: AgentRuntime): Promise<void> {
       "Pulse: Prepublish guard failed. Review the generated report.",
     );
   }
+}
+
+async function searchWeb(runtime: AgentRuntime): Promise<void> {
+  const query = await vscode.window.showInputBox({
+    title: "Pulse: Search the Web",
+    prompt: "Enter a web search query",
+    ignoreFocusOut: true,
+  });
+
+  if (!query) {
+    return;
+  }
+
+  try {
+    const result = await runtime.researchWeb(query);
+    const doc = await vscode.workspace.openTextDocument({
+      language: "markdown",
+      content: formatWebSearchMarkdown(result),
+    });
+    await vscode.window.showTextDocument(doc, { preview: false });
+  } catch (error) {
+    await vscode.window.showWarningMessage(
+      `Pulse: Web search failed: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+}
+
+async function setTavilyApiKey(
+  context: vscode.ExtensionContext,
+): Promise<void> {
+  const apiKey = await vscode.window.showInputBox({
+    title: "Pulse: Set Tavily API Key",
+    prompt: "Paste your Tavily API key",
+    password: true,
+    ignoreFocusOut: true,
+  });
+
+  if (!apiKey) {
+    return;
+  }
+
+  await context.secrets.store("pulse.tavily.apiKey", apiKey.trim());
+  await vscode.window.showInformationMessage(
+    "Pulse: Tavily API key saved in VS Code Secret Storage. You can also set PULSE_TAVILY_API_KEY as an environment variable.",
+  );
+}
+
+async function clearTavilyApiKey(
+  context: vscode.ExtensionContext,
+): Promise<void> {
+  const decision = await vscode.window.showWarningMessage(
+    "Pulse will remove the saved Tavily API key from VS Code Secret Storage.",
+    { modal: true },
+    "Remove",
+  );
+
+  if (decision !== "Remove") {
+    return;
+  }
+
+  await context.secrets.delete("pulse.tavily.apiKey");
+  await vscode.window.showInformationMessage("Pulse: Tavily API key removed.");
+}
+
+function formatWebSearchMarkdown(
+  result: Awaited<ReturnType<AgentRuntime["researchWeb"]>>,
+): string {
+  const lines = [
+    "# Pulse Web Search",
+    "",
+    `Query: ${result.query}`,
+    `Provider: ${result.provider}`,
+  ];
+
+  if (result.answer) {
+    lines.push(`Answer: ${result.answer}`);
+  }
+
+  if (result.note) {
+    lines.push(`Note: ${result.note}`);
+  }
+
+  lines.push("", "## Results");
+
+  if (result.results.length === 0) {
+    lines.push("- No results returned.");
+    return lines.join("\n");
+  }
+
+  for (const entry of result.results) {
+    lines.push(
+      `- ${entry.title}`,
+      `  - Source: ${entry.source}`,
+      `  - URL: ${entry.url}`,
+      `  - ${entry.content}`,
+    );
+  }
+
+  return lines.join("\n");
 }

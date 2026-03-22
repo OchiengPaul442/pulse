@@ -5,6 +5,7 @@ import { registerCommands } from "./commands/registerCommands";
 import { getAgentConfig } from "./config/AgentConfig";
 import { bootstrapStorage } from "./db/StorageBootstrap";
 import { createLogger } from "./platform/vscode/Logger";
+import { WebSearchService } from "./agent/search/WebSearchService";
 import { PulseSidebarProvider } from "./views/PulseSidebarProvider";
 
 export async function activate(
@@ -17,7 +18,8 @@ export async function activate(
 
   const config = getAgentConfig();
   const storage = await bootstrapStorage(context, logger);
-  const runtime = new AgentRuntime(config, storage, logger);
+  const webSearchService = new WebSearchService(context.secrets, logger);
+  const runtime = new AgentRuntime(config, storage, logger, webSearchService);
   await runtime.initialize();
 
   const sidebarProvider = new PulseSidebarProvider(

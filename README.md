@@ -115,7 +115,7 @@ All settings live under the `pulse.*` namespace in VS Code settings:
 ```jsonc
 {
   // Ollama server URL
-  "pulse.ollama.baseUrl": "http://localhost:11434",
+  "pulse.ollama.baseUrl": "http://127.0.0.1:11434",
 
   // Model assignments
   "pulse.models.planner": "qwen2.5-coder:14b",
@@ -129,8 +129,23 @@ All settings live under the `pulse.*` namespace in VS Code settings:
 
   // Memory: "off" | "session" | "workspace+episodic"
   "pulse.behavior.memoryMode": "workspace+episodic",
+
+  // Search: max results to include in web-search summaries
+  "pulse.search.maxResults": 5,
 }
 ```
+
+### Web search setup
+
+Pulse supports online search through Tavily first, with DuckDuckGo Instant Answer as a free fallback.
+
+1. Open the Command Palette and run `Pulse: Set Tavily API Key`.
+2. Paste your Tavily API key when prompted.
+3. The key is stored in VS Code Secret Storage, so it remains available across restarts and workspace changes.
+4. If you prefer an environment variable, set `PULSE_TAVILY_API_KEY` before launching VS Code.
+5. Run `Pulse: Search the Web` to test search manually.
+
+When Pulse sees objectives that look current or research-oriented, it will try to include web research context automatically.
 
 ### Verify local models
 
@@ -172,7 +187,42 @@ Install the generated VSIX locally:
 
 1. Open VS Code Command Palette.
 2. Run `Extensions: Install from VSIX...`.
-3. Pick the generated `pulse-agent-<version>.vsix`.
+3. Pick the generated `versions/pulse-agent-<version>.vsix`.
+
+### Fast local reinstall workflow
+
+Use the local automation scripts to avoid manual version and install mistakes:
+
+1. One command to bump patch version, rebuild, repackage, and reinstall:
+
+```bash
+npm run local:reinstall
+```
+
+2. If you need to reinstall without changing version:
+
+```bash
+npm run local:reinstall:nobump
+```
+
+3. Auto mode: watch source changes and reinstall automatically:
+
+```bash
+npm run local:watch-reinstall
+```
+
+4. Auto mode without version bump on each change:
+
+```bash
+npm run local:watch-reinstall:nobump
+```
+
+Notes:
+
+- Scripts are in `scripts/reinstall-local.ps1` and `scripts/watch-reinstall-local.ps1`.
+- Packaged extension versions are written to the `versions` folder.
+- The reinstall script resolves VS Code from Program Files and LocalAppData paths and installs with `--force`.
+- After install, use **Developer: Reload Window** in VS Code to ensure the newest extension host is active.
 
 ---
 

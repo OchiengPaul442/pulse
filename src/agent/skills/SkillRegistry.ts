@@ -45,6 +45,14 @@ const BUILTIN_SKILLS: SkillManifest[] = [
     tools: ["mcpManager.listServerStatus"],
   },
   {
+    id: "research",
+    name: "Research",
+    description:
+      "Uses online search to gather current documentation, facts, and external references.",
+    keywords: ["search", "web", "online", "latest", "docs", "internet"],
+    tools: ["webSearch.search"],
+  },
+  {
     id: "memory",
     name: "Memory",
     description:

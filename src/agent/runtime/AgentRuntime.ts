@@ -11,6 +11,10 @@ import { OllamaProvider } from "../model/OllamaProvider";
 import type { ModelSummary, ProviderHealth } from "../model/ModelProvider";
 import { MemoryStore } from "../memory/MemoryStore";
 import { Planner } from "../planner/Planner";
+import {
+  WebSearchService,
+  type WebSearchResponse,
+} from "../search/WebSearchService";
 import { SkillRegistry, type SkillManifest } from "../skills/SkillRegistry";
 import type { ExplainResult, RuntimeTaskResult } from "./RuntimeTypes";
 import { SessionStore } from "../sessions/SessionStore";
@@ -69,6 +73,8 @@ export class AgentRuntime {
 
   private readonly skillRegistry: SkillRegistry;
 
+  private readonly webSearch: WebSearchService;
+
   private currentConfig: AgentConfig;
 
   private health: ProviderHealth = { ok: false, message: "Not checked" };
@@ -81,6 +87,7 @@ export class AgentRuntime {
     config: AgentConfig,
     private readonly storage: StorageState,
     private readonly logger: Logger,
+    webSearch: WebSearchService,
   ) {
     this.currentConfig = { ...config };
     this.provider = new OllamaProvider(config.ollamaBaseUrl);
@@ -92,6 +99,7 @@ export class AgentRuntime {
     this.verifier = new VerificationRunner();
     this.mcpManager = new McpManager(config.mcpServers);
     this.skillRegistry = new SkillRegistry();
+    this.webSearch = webSearch;
   }
 
   public async initialize(): Promise<void> {
@@ -239,6 +247,7 @@ export class AgentRuntime {
       this.currentConfig.memoryMode === "off"
         ? []
         : await this.memoryStore.latestEpisodes(3);
+    const webResearch = await this.collectWebResearch(objective);
 
     const prompt = [
       "You are Pulse, an agentic coding assistant working inside VS Code.",
@@ -264,6 +273,10 @@ export class AgentRuntime {
       JSON.stringify(plan, null, 2),
       "Recent episodic memory:",
       JSON.stringify(episodes, null, 2),
+      "Web research:",
+      webResearch
+        ? JSON.stringify(webResearch, null, 2)
+        : "No web research used.",
       "Context snippets:",
       JSON.stringify(contextSnippets, null, 2),
     ].join("\n\n");
@@ -475,6 +488,12 @@ export class AgentRuntime {
     ].join("\n");
   }
 
+  public async researchWeb(query: string): Promise<WebSearchResponse> {
+    return this.webSearch.search(query, {
+      maxResults: this.getWebSearchResultLimit(),
+    });
+  }
+
   public async runPrepublishGuard(): Promise<PrepublishGuardResult> {
     await this.refreshProviderState();
 
@@ -670,6 +689,55 @@ export class AgentRuntime {
     }
 
     return primary;
+  }
+
+  private async collectWebResearch(
+    objective: string,
+  ): Promise<WebSearchResponse | null> {
+    if (!this.shouldUseWebSearch(objective)) {
+      return null;
+    }
+
+    try {
+      return await this.webSearch.search(objective, {
+        maxResults: this.getWebSearchResultLimit(),
+      });
+    } catch (error) {
+      this.logger.warn(`Web search failed: ${stringifyError(error)}`);
+      return null;
+    }
+  }
+
+  private shouldUseWebSearch(objective: string): boolean {
+    const normalized = objective.toLowerCase();
+    return [
+      "latest",
+      "current",
+      "recent",
+      "web",
+      "online",
+      "internet",
+      "search",
+      "docs",
+      "documentation",
+      "release",
+      "version",
+      "news",
+      "pricing",
+      "api",
+    ].some((token) => normalized.includes(token));
+  }
+
+  private getWebSearchResultLimit(): number {
+    const configured = Number(
+      vscode.workspace
+        .getConfiguration("pulse")
+        .get<number>("search.maxResults", 5),
+    );
+
+    return Number.isFinite(configured)
+      ? Math.max(1, Math.min(10, configured))
+      : 5;
   }
 }
 
