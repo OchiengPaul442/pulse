@@ -19,6 +19,7 @@ import { SkillRegistry, type SkillManifest } from "../skills/SkillRegistry";
 import type {
   ConversationMessage,
   ExplainResult,
+  ConversationMode,
   RuntimeTaskResult,
 } from "./RuntimeTypes";
 import { SessionStore } from "../sessions/SessionStore";
@@ -28,6 +29,7 @@ import { VerificationRunner } from "../verification/VerificationRunner";
 export interface RuntimeSummary {
   status: "ready" | "degraded";
   ollamaReachable: boolean;
+  conversationMode: ConversationMode;
   plannerModel: string;
   editorModel: string;
   fastModel: string;
@@ -89,6 +91,8 @@ export class AgentRuntime {
   private availableModels: ModelSummary[] = [];
 
   private tokensConsumed = 0;
+
+  private readonly workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri;
 
   public constructor(
     config: AgentConfig,
@@ -261,10 +265,105 @@ export class AgentRuntime {
     };
     await this.sessionStore.appendMessage(session.id, userTurn);
 
-    const allowEdits = this.shouldAllowEdits(objective);
+    const mode = this.currentConfig.conversationMode;
+    const allowEdits = mode === "agent" && this.shouldAllowEdits(objective);
     const attachedFiles = session.attachedFiles ?? [];
     const attachedContext = await this.loadAttachedFileContext(attachedFiles);
     const conversationHistory = await this.buildConversationHistory(session.id);
+
+    if (mode === "ask") {
+      const model = await this.resolveModelOrFallback(
+        this.currentConfig.fastModel,
+      );
+      const response = await this.provider.chat({
+        model,
+        messages: [
+          {
+            role: "system",
+            content:
+              "You are Pulse in Ask mode. Be conversational, answer questions, and explain context. Do not propose code edits, terminal commands, or plan artifacts.",
+          },
+          ...conversationHistory,
+          ...(attachedContext.length > 0
+            ? [
+                {
+                  role: "system",
+                  content: this.formatAttachedContext(attachedContext),
+                },
+              ]
+            : []),
+          {
+            role: "user",
+            content: objective,
+          },
+        ],
+      });
+      this.consumeTokens(response.tokenUsage);
+
+      await this.sessionStore.appendMessage(session.id, {
+        role: "assistant",
+        content: response.text,
+        createdAt: new Date().toISOString(),
+      });
+      await this.sessionStore.updateSessionResult(session.id, response.text);
+      await this.editManager.clearPendingProposal();
+      if (this.currentConfig.memoryMode !== "off") {
+        await this.memoryStore.addEpisode(
+          objective,
+          response.text.slice(0, 400),
+        );
+      }
+
+      return {
+        sessionId: session.id,
+        objective,
+        plan: {
+          objective,
+          assumptions: ["Ask mode used; no edits or plan artifacts requested."],
+          steps: [],
+          verification: [],
+        },
+        responseText: response.text,
+        proposal: null,
+      };
+    }
+
+    if (mode === "plan") {
+      const plannerModel = await this.resolveModelOrFallback(
+        this.currentConfig.plannerModel,
+      );
+      const plan = await this.planner.createPlan(objective, plannerModel);
+      const artifactPath = await this.writePlanArtifact(objective, plan);
+      const responseText = [
+        `Plan mode active. Wrote ${artifactPath ? `plan artifact to ${artifactPath}` : "a plan summary"}.`,
+        "This mode does not make code changes.",
+        "",
+        JSON.stringify(plan, null, 2),
+      ].join("\n");
+
+      await this.sessionStore.appendMessage(session.id, {
+        role: "assistant",
+        content: responseText,
+        createdAt: new Date().toISOString(),
+      });
+      await this.sessionStore.updateSessionResult(session.id, responseText);
+      await this.editManager.clearPendingProposal();
+      if (this.currentConfig.memoryMode !== "off") {
+        await this.memoryStore.addEpisode(
+          objective,
+          responseText.slice(0, 400),
+        );
+      }
+
+      return {
+        sessionId: session.id,
+        objective,
+        plan,
+        responseText,
+        proposal: null,
+        artifactPath,
+      };
+    }
 
     if (!allowEdits) {
       const model = await this.resolveModelOrFallback(
@@ -545,7 +644,10 @@ export class AgentRuntime {
   public async attachFilesToActiveSession(
     paths: string[],
   ): Promise<SessionRecord | null> {
-    const trimmed = paths.map((value) => value.trim()).filter(Boolean);
+    const trimmed = paths
+      .map((value) => value.trim())
+      .filter(Boolean)
+      .map((value) => this.normalizeAttachmentPath(value));
     if (trimmed.length === 0) {
       return null;
     }
@@ -564,6 +666,20 @@ export class AgentRuntime {
     );
     await this.sessionStore.setAttachedFiles(session.id, nextFiles);
     return this.sessionStore.getSession(session.id);
+  }
+
+  public getConversationMode(): ConversationMode {
+    return this.currentConfig.conversationMode;
+  }
+
+  public async setConversationMode(mode: ConversationMode): Promise<void> {
+    const cfg = vscode.workspace.getConfiguration("pulse");
+    await cfg.update(
+      "behavior.conversationMode",
+      mode,
+      vscode.ConfigurationTarget.Workspace,
+    );
+    this.currentConfig.conversationMode = mode;
   }
 
   public async deleteSession(sessionId: string): Promise<{
@@ -776,6 +892,7 @@ export class AgentRuntime {
     return {
       status: this.health.ok ? "ready" : "degraded",
       ollamaReachable: this.health.ok,
+      conversationMode: this.currentConfig.conversationMode,
       plannerModel: this.currentConfig.plannerModel,
       editorModel: this.currentConfig.editorModel,
       fastModel: this.currentConfig.fastModel,
@@ -955,7 +1072,162 @@ export class AgentRuntime {
       return [];
     }
 
-    return this.scanner.readContextSnippets(paths.slice(0, 8), 2400);
+    const expandedPaths = await this.expandAttachmentPaths(paths.slice(0, 8));
+    return this.scanner.readContextSnippets(expandedPaths.slice(0, 8), 2400);
+  }
+
+  private async expandAttachmentPaths(paths: string[]): Promise<string[]> {
+    const expanded: string[] = [];
+
+    for (const item of paths) {
+      const absolutePath = this.resolveAttachmentPath(item);
+      if (!absolutePath) {
+        continue;
+      }
+
+      try {
+        const stats = await vscode.workspace.fs.stat(
+          vscode.Uri.file(absolutePath),
+        );
+        if (stats.type === vscode.FileType.Directory) {
+          const folderUri = vscode.Uri.file(absolutePath);
+          const files = await vscode.workspace.findFiles(
+            new vscode.RelativePattern(folderUri, "**/*"),
+            "**/{node_modules,dist,.git}/**",
+            20,
+          );
+          expanded.push(...files.map((file) => file.fsPath));
+          continue;
+        }
+
+        expanded.push(absolutePath);
+      } catch {
+        // Skip unreadable attachments.
+      }
+    }
+
+    return Array.from(new Set(expanded));
+  }
+
+  private resolveAttachmentPath(value: string): string | null {
+    if (path.isAbsolute(value)) {
+      return value;
+    }
+
+    if (!this.workspaceRoot) {
+      return null;
+    }
+
+    return path.join(this.workspaceRoot.fsPath, value);
+  }
+
+  private normalizeAttachmentPath(value: string): string {
+    const absolute = path.isAbsolute(value)
+      ? value
+      : this.workspaceRoot
+        ? path.join(this.workspaceRoot.fsPath, value)
+        : value;
+
+    if (this.workspaceRoot) {
+      const relative = path.relative(this.workspaceRoot.fsPath, absolute);
+      if (
+        relative &&
+        !relative.startsWith("..") &&
+        !path.isAbsolute(relative)
+      ) {
+        return relative;
+      }
+    }
+
+    return absolute;
+  }
+
+  private formatAttachedContext(
+    attachedContext: Array<{ path: string; content: string }>,
+  ): string {
+    return [
+      "Attached workspace context:",
+      ...attachedContext.map(
+        (snippet) =>
+          `File: ${this.normalizeDisplayPath(snippet.path)}\n${snippet.content}`,
+      ),
+    ].join("\n\n");
+  }
+
+  private normalizeDisplayPath(filePath: string): string {
+    if (this.workspaceRoot && path.isAbsolute(filePath)) {
+      const relative = path.relative(this.workspaceRoot.fsPath, filePath);
+      if (
+        relative &&
+        !relative.startsWith("..") &&
+        !path.isAbsolute(relative)
+      ) {
+        return relative;
+      }
+    }
+
+    return filePath;
+  }
+
+  private async writePlanArtifact(
+    objective: string,
+    plan: {
+      objective: string;
+      assumptions: string[];
+      steps: Array<{
+        id: string;
+        goal: string;
+        tools: string[];
+        expectedOutput: string;
+      }>;
+      verification: Array<{ type: string; command: string }>;
+    },
+  ): Promise<string | null> {
+    const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
+    if (!workspaceFolder) {
+      return null;
+    }
+
+    const planDir = vscode.Uri.joinPath(workspaceFolder.uri, ".pulse", "plans");
+    await vscode.workspace.fs.createDirectory(planDir);
+
+    const slug =
+      objective
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, "-")
+        .replace(/^-+|-+$/g, "")
+        .slice(0, 48) || "plan";
+    const fileName = `${new Date().toISOString().replace(/[:.]/g, "-")}-${slug}.md`;
+    const planPath = vscode.Uri.joinPath(planDir, fileName);
+    const markdown = [
+      `# ${objective}`,
+      "",
+      "## Objective",
+      "",
+      plan.objective,
+      "",
+      "## Assumptions",
+      "",
+      ...plan.assumptions.map((item) => `- ${item}`),
+      "",
+      "## Steps",
+      "",
+      ...plan.steps.map(
+        (step, index) =>
+          `${index + 1}. ${step.goal} (${step.tools.join(", ")})\n   - Expected: ${step.expectedOutput}`,
+      ),
+      "",
+      "## Verification",
+      "",
+      ...plan.verification.map((item) => `- ${item.type}: ${item.command}`),
+      "",
+    ].join("\n");
+
+    await vscode.workspace.fs.writeFile(
+      planPath,
+      Buffer.from(markdown, "utf8"),
+    );
+    return this.normalizeDisplayPath(planPath.fsPath);
   }
 
   private shouldAllowEdits(objective: string): boolean {

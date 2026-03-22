@@ -1,4 +1,5 @@
 {
   "pulse.behavior.approvalMode": "balanced",
-  "pulse.ollama.baseUrl": "http://127.0.0.1:11434"
+  "pulse.ollama.baseUrl": "http://127.0.0.1:11434",
+  "pulse.models.planner": "qwen2.5-coder:7b"
 }

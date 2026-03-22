@@ -1,4 +1,5 @@
 import * as crypto from "crypto";
+import * as path from "path";
 import * as vscode from "vscode";
 
 import type { AgentRuntime } from "../agent/runtime/AgentRuntime";
@@ -54,6 +55,7 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
         summary = {
           status: "degraded" as const,
           ollamaReachable: false,
+          conversationMode: "agent" as const,
           plannerModel: "unknown",
           editorModel: "unknown",
           fastModel: "unknown",
@@ -263,6 +265,24 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
           }
 
           if (
+            message.type === "setConversationMode" &&
+            (message.payload === "agent" ||
+              message.payload === "ask" ||
+              message.payload === "plan")
+          ) {
+            await this.runtime.setConversationMode(message.payload);
+            await webviewView.webview.postMessage({
+              type: "runtimeSummary",
+              payload: await this.runtime.summary(),
+            });
+            await webviewView.webview.postMessage({
+              type: "actionResult",
+              payload: `Mode set to ${message.payload}`,
+            });
+            return;
+          }
+
+          if (
             message.type === "openSession" &&
             typeof message.payload === "string"
           ) {
@@ -326,15 +346,40 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
           }
 
           if (message.type === "attachContext") {
-            const picked = await vscode.window.showOpenDialog({
-              canSelectFiles: true,
-              canSelectFolders: true,
-              canSelectMany: true,
-              openLabel: "Attach context",
-              title: "Attach files or folders for Pulse to read",
+            const activeEditorUri =
+              vscode.window.activeTextEditor?.document.uri ?? null;
+            const workspaceFolder =
+              vscode.workspace.workspaceFolders?.[0]?.uri ?? null;
+            const choices: Array<{ label: string; value: string }> = [];
+
+            if (activeEditorUri) {
+              choices.push({
+                label: "Attach current file",
+                value: "current-file",
+              });
+              choices.push({
+                label: "Attach current folder",
+                value: "current-folder",
+              });
+            }
+            if (workspaceFolder) {
+              choices.push({
+                label: "Attach workspace root",
+                value: "workspace-root",
+              });
+            }
+            choices.push({
+              label: "Browse files or folders...",
+              value: "browse",
             });
 
-            if (!picked || picked.length === 0) {
+            const pickedMode = await vscode.window.showQuickPick(choices, {
+              title: "Attach context",
+              placeHolder:
+                "Prefer the current file or folder for faster context",
+            });
+
+            if (!pickedMode) {
               await webviewView.webview.postMessage({
                 type: "actionResult",
                 payload: "Attachment canceled.",
@@ -342,9 +387,44 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
               return;
             }
 
-            const session = await this.runtime.attachFilesToActiveSession(
-              picked.map((item) => item.fsPath),
-            );
+            let attachedPaths: string[] = [];
+            if (pickedMode.value === "current-file" && activeEditorUri) {
+              attachedPaths = [activeEditorUri.fsPath];
+            } else if (
+              pickedMode.value === "current-folder" &&
+              activeEditorUri
+            ) {
+              attachedPaths = [path.dirname(activeEditorUri.fsPath)];
+            } else if (
+              pickedMode.value === "workspace-root" &&
+              workspaceFolder
+            ) {
+              attachedPaths = [workspaceFolder.fsPath];
+            } else {
+              const picked = await vscode.window.showOpenDialog({
+                canSelectFiles: true,
+                canSelectFolders: true,
+                canSelectMany: true,
+                defaultUri: activeEditorUri
+                  ? vscode.Uri.file(path.dirname(activeEditorUri.fsPath))
+                  : (workspaceFolder ?? undefined),
+                openLabel: "Attach context",
+                title: "Attach files or folders for Pulse to read",
+              });
+
+              if (!picked || picked.length === 0) {
+                await webviewView.webview.postMessage({
+                  type: "actionResult",
+                  payload: "Attachment canceled.",
+                });
+                return;
+              }
+
+              attachedPaths = picked.map((item) => item.fsPath);
+            }
+
+            const session =
+              await this.runtime.attachFilesToActiveSession(attachedPaths);
             if (!session) {
               await webviewView.webview.postMessage({
                 type: "actionResult",
@@ -775,6 +855,41 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
 
     .chips { display: flex; gap: 5px; align-items: center; flex-wrap: wrap; }
 
+    .mode-switch {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 6px;
+      padding: 0 10px 8px;
+    }
+    .mode-btn {
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      background: transparent;
+      color: var(--vscode-descriptionForeground);
+      cursor: pointer;
+      font: 700 10px var(--vscode-font-family);
+      letter-spacing: .7px;
+      text-transform: uppercase;
+      padding: 7px 10px;
+      transition: all var(--spd);
+    }
+    .mode-btn:hover {
+      border-color: var(--amber);
+      color: var(--amber);
+      background: var(--amber-bg);
+    }
+    .mode-btn.active {
+      border-color: var(--amber);
+      color: #fff;
+      background: var(--amber);
+    }
+    .mode-help {
+      padding: 0 10px 8px;
+      font-size: 10px;
+      color: var(--vscode-descriptionForeground);
+      line-height: 1.35;
+    }
+
     .chip {
       font-size: 10px; font-weight: 600;
       padding: 3px 8px; border-radius: 999px;
@@ -967,6 +1082,12 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
   <!-- ── Composer (Codex / Copilot-style) ── -->
   <div class="composer">
     <div class="composer-box">
+      <div class="mode-switch" role="tablist" aria-label="Conversation mode">
+        <button id="modeAgent" type="button" class="mode-btn" data-mode="agent">Agent</button>
+        <button id="modeAsk" type="button" class="mode-btn" data-mode="ask">Ask</button>
+        <button id="modePlan" type="button" class="mode-btn" data-mode="plan">Plan</button>
+      </div>
+      <div id="modeHelp" class="mode-help">Agent can edit files. Ask answers only. Plan writes a reviewable plan artifact.</div>
       <textarea id="taskInput"
                 placeholder="Ask Pulse anything about your code\u2026"
                 rows="2"
@@ -1059,6 +1180,10 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
   const bannerTxt      = $('bannerTxt');
   const btnApply       = $('btnApply');
   const btnRevert      = $('btnRevert');
+  const modeAgent      = $('modeAgent');
+  const modeAsk        = $('modeAsk');
+  const modePlan       = $('modePlan');
+  const modeHelp       = $('modeHelp');
   const taskInput      = $('taskInput');
   const btnSend        = $('btnSend');
   const chipModel      = $('chipModel');
@@ -1075,6 +1200,7 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
   let mcpServers  = [];
   let chatHistory = [];
   let attachedFiles = [];
+  let conversationMode = 'agent';
   let inChat      = false;
 
   // ── Helpers ───────────────────────────────────────────────────────────
@@ -1104,6 +1230,35 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
       const el = $('main');
       if (el) el.scrollTop = 999999;
     });
+  }
+
+  function renderConversationMode(mode) {
+    conversationMode = mode || 'agent';
+    const buttons = [modeAgent, modeAsk, modePlan];
+    buttons.forEach(function(button) {
+      if (!button) return;
+      button.classList.toggle('active', button.dataset.mode === conversationMode);
+    });
+
+    if (taskInput) {
+      if (conversationMode === 'ask') {
+        taskInput.placeholder = 'Ask Pulse a question about this project…';
+      } else if (conversationMode === 'plan') {
+        taskInput.placeholder = 'Describe the change you want planned…';
+      } else {
+        taskInput.placeholder = 'Ask Pulse anything about your code…';
+      }
+    }
+
+    if (modeHelp) {
+      if (conversationMode === 'ask') {
+        modeHelp.textContent = 'Ask is conversational and read-only. It uses attached context but does not make code changes.';
+      } else if (conversationMode === 'plan') {
+        modeHelp.textContent = 'Plan generates a persistent markdown plan artifact and does not edit code files.';
+      } else {
+        modeHelp.textContent = 'Agent can edit files and use attached context to act on the workspace.';
+      }
+    }
   }
 
   function on(el, evt, fn) {
@@ -1380,6 +1535,7 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
     const ok = s && (Boolean(s.ollamaReachable) || s.status === 'ready');
     statusBadge.className = 'badge ' + (ok ? 'on' : 'off');
     statusTxt.textContent  = ok ? 'Online' : 'Offline';
+    renderConversationMode((s && s.conversationMode) || 'agent');
 
     const model = (s && s.plannerModel) || '';
     chipModel.textContent = model.split(':')[0].slice(0, 14) || '\u2013';
@@ -1400,11 +1556,19 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
     if (ok) {
       statusLine.textContent = (s && s.modelCount)
         ? s.modelCount + ' model' + (s.modelCount !== 1 ? 's' : '') +
-          ', MCP ' + ((s && s.mcpHealthy) || 0) + '/' + ((s && s.mcpConfigured) || 0)
+          ', MCP ' + ((s && s.mcpHealthy) || 0) + '/' + ((s && s.mcpConfigured) || 0) +
+          ', Mode ' + ((s && s.conversationMode) || 'agent')
         : 'Ollama ready';
     } else {
       statusLine.textContent = 'Ollama offline \u2014 check settings';
     }
+  }
+
+  function setMode(mode) {
+    if (!mode || mode === conversationMode) {
+      return;
+    }
+    vscode.postMessage({ type: 'setConversationMode', payload: mode });
   }
 
   // ── Update model dropdown ─────────────────────────────────────────────
@@ -1470,6 +1634,10 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
   on(btnAttach,   'click', function() { vscode.postMessage({ type: 'attachContext' }); });
   on(btnSettings, 'click', function() { settingsDrawer.classList.toggle('open'); });
   on(btnRefresh,  'click', function() { vscode.postMessage({ type: 'ping' }); });
+
+  on(modeAgent, 'click', function() { setMode('agent'); });
+  on(modeAsk,   'click', function() { setMode('ask'); });
+  on(modePlan,  'click', function() { setMode('plan'); });
 
   on(btnSyncModels, 'click', function() { vscode.postMessage({ type: 'refreshModels' }); });
 

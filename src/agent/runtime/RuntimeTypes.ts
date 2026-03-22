@@ -7,12 +7,15 @@ export interface ConversationMessage {
   createdAt: string;
 }
 
+export type ConversationMode = "agent" | "ask" | "plan";
+
 export interface RuntimeTaskResult {
   sessionId: string;
   objective: string;
   plan: TaskPlan;
   responseText: string;
   proposal: EditProposal | null;
+  artifactPath?: string;
 }
 
 export interface ExplainResult {
