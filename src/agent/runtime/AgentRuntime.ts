@@ -20,12 +20,18 @@ export interface RuntimeSummary {
   plannerModel: string;
   editorModel: string;
   fastModel: string;
+  embeddingModel: string;
   approvalMode: "strict" | "balanced" | "fast";
   storagePath: string;
   ollamaHealth: string;
   modelCount: number;
   activeSessionId: string | null;
   hasPendingEdits: boolean;
+  tokenBudget: number;
+  tokensConsumed: number;
+  tokenUsagePercent: number;
+  mcpConfigured: number;
+  mcpHealthy: number;
 }
 
 export interface RecentSessionItem {
@@ -59,6 +65,8 @@ export class AgentRuntime {
 
   private availableModels: ModelSummary[] = [];
 
+  private tokensConsumed = 0;
+
   public constructor(
     config: AgentConfig,
     private readonly storage: StorageState,
@@ -80,6 +88,7 @@ export class AgentRuntime {
     if (this.health.ok) {
       try {
         this.availableModels = await this.provider.listModels();
+        this.availableModels = this.mergeConfiguredModels(this.availableModels);
       } catch (error) {
         this.logger.warn(`Failed to list models: ${stringifyError(error)}`);
       }
@@ -97,17 +106,28 @@ export class AgentRuntime {
     this.health = await this.provider.healthCheck();
     if (this.health.ok) {
       this.availableModels = await this.provider.listModels();
+      this.availableModels = this.mergeConfiguredModels(this.availableModels);
+      return;
     }
+
+    this.availableModels = this.mergeConfiguredModels([]);
   }
 
   public async listAvailableModels(): Promise<ModelSummary[]> {
-    if (this.availableModels.length === 0 && this.health.ok) {
-      this.availableModels = await this.provider.listModels();
+    if (this.availableModels.length === 0) {
+      await this.refreshProviderState();
     }
     return this.availableModels;
   }
 
   public async selectModel(role: ModelRole, modelName: string): Promise<void> {
+    const models = await this.listAvailableModels();
+    if (!models.some((model) => model.name === modelName)) {
+      throw new Error(
+        `Model ${modelName} is not available locally. Sync models and try again.`,
+      );
+    }
+
     const cfg = vscode.workspace.getConfiguration("pulse");
     const targetKey =
       role === "planner"
@@ -139,8 +159,11 @@ export class AgentRuntime {
   }
 
   public async explainText(input: string): Promise<ExplainResult> {
+    const model = await this.resolveModelOrFallback(
+      this.currentConfig.fastModel,
+    );
     const response = await this.provider.chat({
-      model: this.currentConfig.fastModel,
+      model,
       messages: [
         {
           role: "system",
@@ -153,10 +176,11 @@ export class AgentRuntime {
         },
       ],
     });
+    this.consumeTokens(response.tokenUsage);
 
     return {
       text: response.text,
-      model: this.currentConfig.fastModel,
+      model,
     };
   }
 
@@ -167,10 +191,14 @@ export class AgentRuntime {
       fast: this.currentConfig.fastModel,
     });
 
-    const plan = await this.planner.createPlan(
-      objective,
+    const plannerModel = await this.resolveModelOrFallback(
       this.currentConfig.plannerModel,
     );
+    const editorModel = await this.resolveModelOrFallback(
+      this.currentConfig.editorModel,
+    );
+
+    const plan = await this.planner.createPlan(objective, plannerModel);
     const candidateFiles = await this.scanner.findRelevantFiles(objective, 8);
     const contextSnippets = await this.scanner.readContextSnippets(
       candidateFiles.slice(0, 4),
@@ -183,6 +211,11 @@ export class AgentRuntime {
 
     const prompt = [
       "You are Pulse, an agentic coding assistant working inside VS Code.",
+      "Operating rules:",
+      "- Prefer minimal, targeted edits over broad rewrites.",
+      "- Keep behavior backward compatible unless the objective requires change.",
+      "- Never propose edits outside the current workspace.",
+      "- If requirements are ambiguous, state assumptions explicitly in the response.",
       "Solve the objective using the context below.",
       "If edits are needed, return strict JSON with fields:",
       '{"response":"string","edits":[{"operation":"write|delete|move","filePath":"relative/or/absolute","targetPath":"required for move","content":"required for write","reason":"string"}]}.',
@@ -201,13 +234,13 @@ export class AgentRuntime {
     ].join("\n\n");
 
     const response = await this.provider.chat({
-      model: this.currentConfig.editorModel,
+      model: editorModel,
       format: "json",
       messages: [
         {
           role: "system",
           content:
-            "Follow instructions exactly and produce valid JSON. Do not include markdown fences.",
+            "Follow instructions exactly and produce valid JSON. Do not include markdown fences. Optimize for correctness, minimal diffs, and safe file operations.",
         },
         {
           role: "user",
@@ -215,6 +248,7 @@ export class AgentRuntime {
         },
       ],
     });
+    this.consumeTokens(response.tokenUsage);
 
     const parsed = parseTaskResponse(response.text);
     const normalizedEdits = parsed.edits
@@ -245,7 +279,11 @@ export class AgentRuntime {
     };
   }
 
-  public async applyPendingEdits(): Promise<string> {
+  public async applyPendingEdits(userApproved = false): Promise<string> {
+    if (this.currentConfig.approvalMode !== "fast" && !userApproved) {
+      return "Approval required before applying pending edits.";
+    }
+
     const result = await this.editManager.applyPending();
     if (!result) {
       return "No pending proposal to apply.";
@@ -340,8 +378,8 @@ export class AgentRuntime {
     return result.summary;
   }
 
-  public mcpSummary(): string {
-    const servers = this.mcpManager.listServerStatus();
+  public async mcpSummary(): Promise<string> {
+    const servers = await this.mcpManager.listServerStatus();
     if (servers.length === 0) {
       return "No MCP servers configured.";
     }
@@ -349,7 +387,7 @@ export class AgentRuntime {
     return servers
       .map(
         (server) =>
-          `${server.id}: ${server.state} (transport=${server.transport}, trust=${server.trust})`,
+          `${server.id}: ${server.state} (transport=${server.transport}, trust=${server.trust}) - ${server.detail}`,
       )
       .join("\n");
   }
@@ -357,7 +395,7 @@ export class AgentRuntime {
   public async diagnosticsReportMarkdown(): Promise<string> {
     const pendingSummary = await this.getPendingProposalSummary();
     const activeSession = await this.resumeLastSessionSummary();
-    const mcp = this.mcpSummary();
+    const mcp = await this.mcpSummary();
     const diagnostics = this.diagnosticsSummary();
 
     return [
@@ -400,18 +438,105 @@ export class AgentRuntime {
   public async summary(): Promise<RuntimeSummary> {
     const active = await this.sessionStore.getActiveSession();
     const pending = await this.editManager.getPendingProposal();
+    const mcpStatuses = await this.mcpManager.listServerStatus();
+    const mcpConfigured = mcpStatuses.filter((s) => s.enabled).length;
+    const mcpHealthy = mcpStatuses.filter(
+      (s) => s.state === "configured",
+    ).length;
+    const tokenBudget = Math.max(this.currentConfig.maxContextTokens, 1);
+    const tokenUsagePercent = Math.min(
+      100,
+      Math.round((this.tokensConsumed / tokenBudget) * 100),
+    );
+
     return {
       status: this.health.ok ? "ready" : "degraded",
       plannerModel: this.currentConfig.plannerModel,
       editorModel: this.currentConfig.editorModel,
       fastModel: this.currentConfig.fastModel,
+      embeddingModel: this.currentConfig.embeddingModel,
       approvalMode: this.currentConfig.approvalMode,
       storagePath: this.storage.storageDir,
       ollamaHealth: this.health.message,
       modelCount: this.availableModels.length,
       activeSessionId: active?.id ?? null,
       hasPendingEdits: pending !== null,
+      tokenBudget,
+      tokensConsumed: this.tokensConsumed,
+      tokenUsagePercent,
+      mcpConfigured,
+      mcpHealthy,
     };
+  }
+
+  private mergeConfiguredModels(discovered: ModelSummary[]): ModelSummary[] {
+    const merged = new Map<string, ModelSummary>();
+    for (const model of discovered) {
+      merged.set(model.name, model);
+    }
+
+    const configuredModels = [
+      this.currentConfig.plannerModel,
+      this.currentConfig.editorModel,
+      this.currentConfig.fastModel,
+      this.currentConfig.embeddingModel,
+      ...this.currentConfig.fallbackModels,
+    ];
+
+    for (const configured of configuredModels) {
+      if (!configured || merged.has(configured)) {
+        continue;
+      }
+
+      merged.set(configured, {
+        name: configured,
+        source: "configured",
+      });
+    }
+
+    return [...merged.values()].sort((a, b) => a.name.localeCompare(b.name));
+  }
+
+  private consumeTokens(
+    usage:
+      | {
+          promptTokens: number;
+          completionTokens: number;
+          totalTokens: number;
+        }
+      | undefined,
+  ): void {
+    if (!usage) {
+      return;
+    }
+
+    this.tokensConsumed += Math.max(usage.totalTokens, 0);
+  }
+
+  private async resolveModelOrFallback(primary: string): Promise<string> {
+    const models = await this.listAvailableModels();
+    const names = new Set(models.map((model) => model.name));
+    if (names.has(primary)) {
+      return primary;
+    }
+
+    for (const fallback of this.currentConfig.fallbackModels) {
+      if (names.has(fallback)) {
+        this.logger.warn(
+          `Model ${primary} unavailable. Falling back to ${fallback}.`,
+        );
+        return fallback;
+      }
+    }
+
+    if (models[0]?.name) {
+      this.logger.warn(
+        `Model ${primary} unavailable. Falling back to first discovered model ${models[0].name}.`,
+      );
+      return models[0].name;
+    }
+
+    return primary;
   }
 }
 

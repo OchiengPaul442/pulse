@@ -14,6 +14,11 @@ export interface ChatRequest {
 export interface ChatResponse {
   text: string;
   raw?: unknown;
+  tokenUsage?: {
+    promptTokens: number;
+    completionTokens: number;
+    totalTokens: number;
+  };
 }
 
 export interface ProviderHealth {
@@ -25,6 +30,7 @@ export interface ModelSummary {
   name: string;
   sizeBytes?: number;
   modifiedAt?: string;
+  source?: "local" | "running" | "configured";
 }
 
 export interface ModelProvider {

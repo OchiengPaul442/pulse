@@ -98,7 +98,9 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
               return;
             }
 
-            const applied = await this.runtime.applyPendingEdits();
+            const applied = await this.runtime.applyPendingEdits(
+              message.payload === true,
+            );
             await webviewView.webview.postMessage({
               type: "actionResult",
               payload: applied,
@@ -178,7 +180,6 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
       },
     );
   }
-
 
   private buildHtml(webview: vscode.Webview): string {
     const nonce = String(Date.now());
@@ -484,6 +485,19 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
     .meta { display: flex; align-items: center; justify-content: space-between; padding: 5px 1px 0; }
     .chips { display: flex; gap: 5px; }
 
+    .token-row { display: flex; justify-content: flex-end; padding: 6px 2px 0; }
+    .token-wrap { display: inline-flex; align-items: center; gap: 6px; color: var(--vscode-descriptionForeground); font-size: 10px; }
+    .token-ring {
+      width: 26px; height: 26px; border-radius: 50%;
+      background: conic-gradient(var(--amber) 0deg, rgba(128,128,128,.18) 0deg);
+      display: inline-flex; align-items: center; justify-content: center; position: relative;
+    }
+    .token-ring::after {
+      content: ""; position: absolute; width: 18px; height: 18px; border-radius: 50%;
+      background: var(--vscode-sideBar-background);
+    }
+    .token-value { position: relative; z-index: 1; font-size: 8.5px; font-weight: 700; color: var(--vscode-foreground); }
+
     .chip {
       font-size: 10px; font-weight: 600;
       padding: 2px 7px; border-radius: 999px;
@@ -622,6 +636,12 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
       </div>
       <span id="statusLine" class="status-txt">Ready</span>
     </div>
+    <div class="token-row">
+      <div class="token-wrap" title="Token usage in this Pulse runtime session">
+        <span id="tokenRing" class="token-ring"><span id="tokenValue" class="token-value">0%</span></span>
+        <span id="tokenLabel">0 / 0</span>
+      </div>
+    </div>
   </div>
 
 </div><!-- /root -->
@@ -658,6 +678,9 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
   const chipModel    = $('chipModel');
   const chipMode     = $('chipMode');
   const statusLine   = $('statusLine');
+  const tokenRing    = $('tokenRing');
+  const tokenValue   = $('tokenValue');
+  const tokenLabel   = $('tokenLabel');
 
   // ── State ─────────────────────────────────────────────────────────────
   let summary  = null;
@@ -771,8 +794,18 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
     editsBanner.classList.toggle('on', hasPending);
     if (hasPending) bannerTxt.textContent = 'Pending file edits — review before applying';
 
+    const pct = Number.isFinite(s?.tokenUsagePercent)
+      ? Math.max(0, Math.min(100, s.tokenUsagePercent))
+      : 0;
+    tokenRing.style.background =
+      'conic-gradient(var(--amber) ' + (pct * 3.6) + 'deg, rgba(128,128,128,.18) 0deg)';
+    tokenValue.textContent = pct + '%';
+    tokenLabel.textContent = (s?.tokensConsumed ?? 0) + ' / ' + (s?.tokenBudget ?? 0);
+
     statusLine.textContent = ok
-      ? (s?.modelCount ? s.modelCount + ' models' : 'Ollama ready')
+      ? (s?.modelCount
+          ? s.modelCount + ' models, MCP ' + (s?.mcpHealthy ?? 0) + '/' + (s?.mcpConfigured ?? 0)
+          : 'Ollama ready')
       : 'Ollama offline';
   }
 

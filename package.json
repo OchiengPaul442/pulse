@@ -199,7 +199,7 @@
     "watch": "node esbuild.mjs --watch",
     "check": "tsc --noEmit",
     "test": "vitest run",
-    "package": "vsce package"
+    "package": "vsce package --allow-missing-repository"
   },
   "devDependencies": {
     "@types/node": "^22.14.0",

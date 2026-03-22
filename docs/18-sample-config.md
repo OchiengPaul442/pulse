@@ -2,23 +2,29 @@
 
 ```json
 {
-  "agent.ollama.baseUrl": "http://localhost:11434",
-  "agent.models.planner": "qwen2.5-coder:14b",
-  "agent.models.editor": "deepseek-coder-v2:16b",
-  "agent.models.fast": "qwen2.5-coder:7b",
-  "agent.models.embedding": "nomic-embed-text",
-  "agent.behavior.approvalMode": "balanced",
-  "agent.behavior.autoRunVerification": true,
-  "agent.behavior.memoryMode": "workspace+episodic",
-  "agent.behavior.maxContextTokens": 32000,
-  "agent.indexing.enabled": true,
-  "agent.indexing.mode": "hybrid",
-  "agent.mcp.servers": [
+  "pulse.ollama.baseUrl": "http://localhost:11434",
+  "pulse.models.planner": "qwen2.5-coder:14b",
+  "pulse.models.editor": "deepseek-coder-v2:16b",
+  "pulse.models.fast": "qwen2.5-coder:7b",
+  "pulse.models.embedding": "nomic-embed-text:latest",
+  "pulse.models.fallbacks": ["qwen2.5-coder:7b"],
+  "pulse.behavior.approvalMode": "balanced",
+  "pulse.behavior.allowTerminalExecution": false,
+  "pulse.behavior.autoRunVerification": true,
+  "pulse.behavior.memoryMode": "workspace+episodic",
+  "pulse.behavior.maxContextTokens": 32000,
+  "pulse.indexing.enabled": true,
+  "pulse.indexing.mode": "hybrid",
+  "pulse.mcp.servers": [
     {
       "id": "filesystem",
       "transport": "stdio",
       "command": "npx",
-      "args": ["-y", "@modelcontextprotocol/server-filesystem", "${workspaceFolder}"],
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-filesystem",
+        "${workspaceFolder}"
+      ],
       "enabled": true,
       "trust": "workspace"
     }

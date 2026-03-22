@@ -345,20 +345,118 @@ var WorkspaceScanner = class {
 };
 
 // src/agent/mcp/McpManager.ts
+var import_child_process = require("child_process");
 var McpManager = class {
   constructor(serverDefs) {
     this.serverDefs = serverDefs;
   }
-  listServerStatus() {
-    return this.serverDefs.map((server) => ({
-      id: String(server.id ?? "unknown"),
-      enabled: Boolean(server.enabled ?? false),
-      trust: String(server.trust ?? "unknown"),
-      transport: String(server.transport ?? "stdio"),
-      state: Boolean(server.enabled ?? false) ? "configured" : "disabled"
-    }));
+  async listServerStatus() {
+    const statuses = [];
+    for (const server of this.serverDefs) {
+      const id = String(server.id ?? "unknown");
+      const enabled = Boolean(server.enabled ?? false);
+      const trust = String(server.trust ?? "unknown");
+      const transport = String(server.transport ?? "stdio");
+      if (!enabled) {
+        statuses.push({
+          id,
+          enabled,
+          trust,
+          transport,
+          state: "disabled",
+          detail: "Server is disabled by configuration."
+        });
+        continue;
+      }
+      if (transport === "stdio") {
+        const command = typeof server.command === "string" ? server.command.trim() : "";
+        if (!command) {
+          statuses.push({
+            id,
+            enabled,
+            trust,
+            transport,
+            state: "error",
+            detail: "Missing required stdio command."
+          });
+          continue;
+        }
+        if (!isCommandAvailable(command)) {
+          statuses.push({
+            id,
+            enabled,
+            trust,
+            transport,
+            state: "error",
+            detail: `Command not found in PATH: ${command}`
+          });
+          continue;
+        }
+        statuses.push({
+          id,
+          enabled,
+          trust,
+          transport,
+          state: "configured",
+          detail: "Stdio command is available."
+        });
+        continue;
+      }
+      if (transport === "sse" || transport === "http") {
+        const url = typeof server.url === "string" ? server.url.trim() : "";
+        if (!url) {
+          statuses.push({
+            id,
+            enabled,
+            trust,
+            transport,
+            state: "error",
+            detail: "Missing required server url."
+          });
+          continue;
+        }
+        try {
+          new URL(url);
+          statuses.push({
+            id,
+            enabled,
+            trust,
+            transport,
+            state: "configured",
+            detail: "Remote MCP URL appears valid."
+          });
+        } catch {
+          statuses.push({
+            id,
+            enabled,
+            trust,
+            transport,
+            state: "error",
+            detail: `Invalid URL: ${url}`
+          });
+        }
+        continue;
+      }
+      statuses.push({
+        id,
+        enabled,
+        trust,
+        transport,
+        state: "error",
+        detail: `Unsupported transport: ${transport}`
+      });
+    }
+    return statuses;
   }
 };
+function isCommandAvailable(command) {
+  const probe = process.platform === "win32" ? "where" : "which";
+  const result = (0, import_child_process.spawnSync)(probe, [command], {
+    stdio: "ignore",
+    shell: false
+  });
+  return result.status === 0;
+}
 
 // src/agent/model/OllamaProvider.ts
 var OllamaProvider = class {
@@ -388,17 +486,11 @@ var OllamaProvider = class {
     }
   }
   async listModels() {
-    const response = await fetch(`${this.baseUrl}/api/tags`, { method: "GET" });
-    if (!response.ok) {
-      throw new Error(`Failed to list Ollama models (HTTP ${response.status})`);
-    }
-    const data = await response.json();
-    const models = data.models ?? [];
-    return models.map((model) => ({
-      name: model.name,
-      sizeBytes: model.size,
-      modifiedAt: model.modified_at
-    }));
+    const [localModels, runningModels] = await Promise.all([
+      this.fetchLocalModels(),
+      this.fetchRunningModels()
+    ]);
+    return dedupeAndSortModels([...localModels, ...runningModels]);
   }
   async chat(request) {
     const response = await fetch(`${this.baseUrl}/api/chat`, {
@@ -421,12 +513,70 @@ var OllamaProvider = class {
     }
     const data = await response.json();
     const text = data.message?.content?.trim() ?? "";
+    const promptTokens = Number.isFinite(data.prompt_eval_count) ? Number(data.prompt_eval_count) : 0;
+    const completionTokens = Number.isFinite(data.eval_count) ? Number(data.eval_count) : 0;
     return {
       text,
-      raw: data
+      raw: data,
+      tokenUsage: {
+        promptTokens,
+        completionTokens,
+        totalTokens: promptTokens + completionTokens
+      }
     };
   }
+  async fetchLocalModels() {
+    const response = await fetch(`${this.baseUrl}/api/tags`, { method: "GET" });
+    if (!response.ok) {
+      throw new Error(`Failed to list Ollama models (HTTP ${response.status})`);
+    }
+    const data = await response.json();
+    const models = data.models ?? [];
+    return models.map((model) => ({
+      name: model.name,
+      sizeBytes: model.size,
+      modifiedAt: model.modified_at,
+      source: "local"
+    }));
+  }
+  async fetchRunningModels() {
+    try {
+      const response = await fetch(`${this.baseUrl}/api/ps`, { method: "GET" });
+      if (!response.ok) {
+        return [];
+      }
+      const data = await response.json();
+      const models = data.models ?? [];
+      return models.map((model) => ({
+        name: typeof model.name === "string" ? model.name : model.model,
+        sizeBytes: model.size,
+        modifiedAt: model.modified_at,
+        source: "running"
+      })).filter(
+        (model) => typeof model.name === "string" && model.name.length > 0
+      );
+    } catch {
+      return [];
+    }
+  }
 };
+function dedupeAndSortModels(models) {
+  const byName = /* @__PURE__ */ new Map();
+  for (const model of models) {
+    const existing = byName.get(model.name);
+    if (!existing) {
+      byName.set(model.name, model);
+      continue;
+    }
+    byName.set(model.name, {
+      name: model.name,
+      sizeBytes: model.sizeBytes ?? existing.sizeBytes,
+      modifiedAt: model.modifiedAt ?? existing.modifiedAt,
+      source: existing.source === "local" || model.source === "local" ? "local" : existing.source === "running" || model.source === "running" ? "running" : existing.source
+    });
+  }
+  return [...byName.values()].sort((a, b) => a.name.localeCompare(b.name));
+}
 
 // src/agent/memory/MemoryStore.ts
 var vscode3 = __toESM(require("vscode"));
@@ -673,11 +823,13 @@ var AgentRuntime = class {
   currentConfig;
   health = { ok: false, message: "Not checked" };
   availableModels = [];
+  tokensConsumed = 0;
   async initialize() {
     this.health = await this.provider.healthCheck();
     if (this.health.ok) {
       try {
         this.availableModels = await this.provider.listModels();
+        this.availableModels = this.mergeConfiguredModels(this.availableModels);
       } catch (error) {
         this.logger.warn(`Failed to list models: ${stringifyError(error)}`);
       }
@@ -693,15 +845,24 @@ var AgentRuntime = class {
     this.health = await this.provider.healthCheck();
     if (this.health.ok) {
       this.availableModels = await this.provider.listModels();
+      this.availableModels = this.mergeConfiguredModels(this.availableModels);
+      return;
     }
+    this.availableModels = this.mergeConfiguredModels([]);
   }
   async listAvailableModels() {
-    if (this.availableModels.length === 0 && this.health.ok) {
-      this.availableModels = await this.provider.listModels();
+    if (this.availableModels.length === 0) {
+      await this.refreshProviderState();
     }
     return this.availableModels;
   }
   async selectModel(role, modelName) {
+    const models = await this.listAvailableModels();
+    if (!models.some((model) => model.name === modelName)) {
+      throw new Error(
+        `Model ${modelName} is not available locally. Sync models and try again.`
+      );
+    }
     const cfg = vscode6.workspace.getConfiguration("pulse");
     const targetKey = role === "planner" ? "models.planner" : role === "editor" ? "models.editor" : role === "fast" ? "models.fast" : "models.embedding";
     await cfg.update(
@@ -722,8 +883,11 @@ var AgentRuntime = class {
     this.logger.info(`Updated ${role} model to ${modelName}`);
   }
   async explainText(input) {
+    const model = await this.resolveModelOrFallback(
+      this.currentConfig.fastModel
+    );
     const response = await this.provider.chat({
-      model: this.currentConfig.fastModel,
+      model,
       messages: [
         {
           role: "system",
@@ -735,9 +899,10 @@ var AgentRuntime = class {
         }
       ]
     });
+    this.consumeTokens(response.tokenUsage);
     return {
       text: response.text,
-      model: this.currentConfig.fastModel
+      model
     };
   }
   async runTask(objective) {
@@ -746,10 +911,13 @@ var AgentRuntime = class {
       editor: this.currentConfig.editorModel,
       fast: this.currentConfig.fastModel
     });
-    const plan = await this.planner.createPlan(
-      objective,
+    const plannerModel = await this.resolveModelOrFallback(
       this.currentConfig.plannerModel
     );
+    const editorModel = await this.resolveModelOrFallback(
+      this.currentConfig.editorModel
+    );
+    const plan = await this.planner.createPlan(objective, plannerModel);
     const candidateFiles = await this.scanner.findRelevantFiles(objective, 8);
     const contextSnippets = await this.scanner.readContextSnippets(
       candidateFiles.slice(0, 4),
@@ -758,6 +926,11 @@ var AgentRuntime = class {
     const episodes = this.currentConfig.memoryMode === "off" ? [] : await this.memoryStore.latestEpisodes(3);
     const prompt = [
       "You are Pulse, an agentic coding assistant working inside VS Code.",
+      "Operating rules:",
+      "- Prefer minimal, targeted edits over broad rewrites.",
+      "- Keep behavior backward compatible unless the objective requires change.",
+      "- Never propose edits outside the current workspace.",
+      "- If requirements are ambiguous, state assumptions explicitly in the response.",
       "Solve the objective using the context below.",
       "If edits are needed, return strict JSON with fields:",
       '{"response":"string","edits":[{"operation":"write|delete|move","filePath":"relative/or/absolute","targetPath":"required for move","content":"required for write","reason":"string"}]}.',
@@ -775,12 +948,12 @@ var AgentRuntime = class {
       JSON.stringify(contextSnippets, null, 2)
     ].join("\n\n");
     const response = await this.provider.chat({
-      model: this.currentConfig.editorModel,
+      model: editorModel,
       format: "json",
       messages: [
         {
           role: "system",
-          content: "Follow instructions exactly and produce valid JSON. Do not include markdown fences."
+          content: "Follow instructions exactly and produce valid JSON. Do not include markdown fences. Optimize for correctness, minimal diffs, and safe file operations."
         },
         {
           role: "user",
@@ -788,6 +961,7 @@ var AgentRuntime = class {
         }
       ]
     });
+    this.consumeTokens(response.tokenUsage);
     const parsed = parseTaskResponse(response.text);
     const normalizedEdits = parsed.edits.map(
       (edit) => normalizeEditPath(edit, vscode6.workspace.workspaceFolders ?? [])
@@ -808,7 +982,10 @@ var AgentRuntime = class {
       proposal
     };
   }
-  async applyPendingEdits() {
+  async applyPendingEdits(userApproved = false) {
+    if (this.currentConfig.approvalMode !== "fast" && !userApproved) {
+      return "Approval required before applying pending edits.";
+    }
     const result = await this.editManager.applyPending();
     if (!result) {
       return "No pending proposal to apply.";
@@ -885,19 +1062,19 @@ var AgentRuntime = class {
     const result = this.verifier.runDiagnostics();
     return result.summary;
   }
-  mcpSummary() {
-    const servers = this.mcpManager.listServerStatus();
+  async mcpSummary() {
+    const servers = await this.mcpManager.listServerStatus();
     if (servers.length === 0) {
       return "No MCP servers configured.";
     }
     return servers.map(
-      (server) => `${server.id}: ${server.state} (transport=${server.transport}, trust=${server.trust})`
+      (server) => `${server.id}: ${server.state} (transport=${server.transport}, trust=${server.trust}) - ${server.detail}`
     ).join("\n");
   }
   async diagnosticsReportMarkdown() {
     const pendingSummary = await this.getPendingProposalSummary();
     const activeSession = await this.resumeLastSessionSummary();
-    const mcp = this.mcpSummary();
+    const mcp = await this.mcpSummary();
     const diagnostics = this.diagnosticsSummary();
     return [
       "# Pulse Diagnostics Report",
@@ -938,18 +1115,85 @@ var AgentRuntime = class {
   async summary() {
     const active = await this.sessionStore.getActiveSession();
     const pending = await this.editManager.getPendingProposal();
+    const mcpStatuses = await this.mcpManager.listServerStatus();
+    const mcpConfigured = mcpStatuses.filter((s) => s.enabled).length;
+    const mcpHealthy = mcpStatuses.filter(
+      (s) => s.state === "configured"
+    ).length;
+    const tokenBudget = Math.max(this.currentConfig.maxContextTokens, 1);
+    const tokenUsagePercent = Math.min(
+      100,
+      Math.round(this.tokensConsumed / tokenBudget * 100)
+    );
     return {
       status: this.health.ok ? "ready" : "degraded",
       plannerModel: this.currentConfig.plannerModel,
       editorModel: this.currentConfig.editorModel,
       fastModel: this.currentConfig.fastModel,
+      embeddingModel: this.currentConfig.embeddingModel,
       approvalMode: this.currentConfig.approvalMode,
       storagePath: this.storage.storageDir,
       ollamaHealth: this.health.message,
       modelCount: this.availableModels.length,
       activeSessionId: active?.id ?? null,
-      hasPendingEdits: pending !== null
+      hasPendingEdits: pending !== null,
+      tokenBudget,
+      tokensConsumed: this.tokensConsumed,
+      tokenUsagePercent,
+      mcpConfigured,
+      mcpHealthy
     };
+  }
+  mergeConfiguredModels(discovered) {
+    const merged = /* @__PURE__ */ new Map();
+    for (const model of discovered) {
+      merged.set(model.name, model);
+    }
+    const configuredModels = [
+      this.currentConfig.plannerModel,
+      this.currentConfig.editorModel,
+      this.currentConfig.fastModel,
+      this.currentConfig.embeddingModel,
+      ...this.currentConfig.fallbackModels
+    ];
+    for (const configured of configuredModels) {
+      if (!configured || merged.has(configured)) {
+        continue;
+      }
+      merged.set(configured, {
+        name: configured,
+        source: "configured"
+      });
+    }
+    return [...merged.values()].sort((a, b) => a.name.localeCompare(b.name));
+  }
+  consumeTokens(usage) {
+    if (!usage) {
+      return;
+    }
+    this.tokensConsumed += Math.max(usage.totalTokens, 0);
+  }
+  async resolveModelOrFallback(primary) {
+    const models = await this.listAvailableModels();
+    const names = new Set(models.map((model) => model.name));
+    if (names.has(primary)) {
+      return primary;
+    }
+    for (const fallback of this.currentConfig.fallbackModels) {
+      if (names.has(fallback)) {
+        this.logger.warn(
+          `Model ${primary} unavailable. Falling back to ${fallback}.`
+        );
+        return fallback;
+      }
+    }
+    if (models[0]?.name) {
+      this.logger.warn(
+        `Model ${primary} unavailable. Falling back to first discovered model ${models[0].name}.`
+      );
+      return models[0].name;
+    }
+    return primary;
   }
 };
 function parseTaskResponse(raw) {
@@ -1150,6 +1394,7 @@ async function resumeLastSession(runtime) {
 async function applyProposedChanges(runtime) {
   const mode = runtime.getApprovalMode();
   const pendingSummary = await runtime.getPendingProposalSummary();
+  let approved = false;
   if (mode !== "fast") {
     const decision = await vscode7.window.showWarningMessage(
       `Pulse will apply pending proposal.
@@ -1161,8 +1406,9 @@ ${pendingSummary}`,
     if (decision !== "Apply") {
       return;
     }
+    approved = true;
   }
-  const result = await runtime.applyPendingEdits();
+  const result = await runtime.applyPendingEdits(approved);
   await vscode7.window.showInformationMessage(`Pulse: ${result}`);
 }
 async function revertLastChanges(runtime) {
@@ -1182,7 +1428,7 @@ async function reindexWorkspace(runtime) {
   await vscode7.window.showInformationMessage(`Pulse: ${result}`);
 }
 async function manageMcpConnections(runtime) {
-  const summary = runtime.mcpSummary();
+  const summary = await runtime.mcpSummary();
   const doc = await vscode7.workspace.openTextDocument({
     language: "markdown",
     content: `# Pulse MCP Status
@@ -1441,7 +1687,9 @@ var PulseSidebarProvider = class {
               });
               return;
             }
-            const applied = await this.runtime.applyPendingEdits();
+            const applied = await this.runtime.applyPendingEdits(
+              message.payload === true
+            );
             await webviewView.webview.postMessage({
               type: "actionResult",
               payload: applied
@@ -1800,6 +2048,19 @@ var PulseSidebarProvider = class {
     .meta { display: flex; align-items: center; justify-content: space-between; padding: 5px 1px 0; }
     .chips { display: flex; gap: 5px; }
 
+    .token-row { display: flex; justify-content: flex-end; padding: 6px 2px 0; }
+    .token-wrap { display: inline-flex; align-items: center; gap: 6px; color: var(--vscode-descriptionForeground); font-size: 10px; }
+    .token-ring {
+      width: 26px; height: 26px; border-radius: 50%;
+      background: conic-gradient(var(--amber) 0deg, rgba(128,128,128,.18) 0deg);
+      display: inline-flex; align-items: center; justify-content: center; position: relative;
+    }
+    .token-ring::after {
+      content: ""; position: absolute; width: 18px; height: 18px; border-radius: 50%;
+      background: var(--vscode-sideBar-background);
+    }
+    .token-value { position: relative; z-index: 1; font-size: 8.5px; font-weight: 700; color: var(--vscode-foreground); }
+
     .chip {
       font-size: 10px; font-weight: 600;
       padding: 2px 7px; border-radius: 999px;
@@ -1938,6 +2199,12 @@ var PulseSidebarProvider = class {
       </div>
       <span id="statusLine" class="status-txt">Ready</span>
     </div>
+    <div class="token-row">
+      <div class="token-wrap" title="Token usage in this Pulse runtime session">
+        <span id="tokenRing" class="token-ring"><span id="tokenValue" class="token-value">0%</span></span>
+        <span id="tokenLabel">0 / 0</span>
+      </div>
+    </div>
   </div>
 
 </div><!-- /root -->
@@ -1974,6 +2241,9 @@ var PulseSidebarProvider = class {
   const chipModel    = $('chipModel');
   const chipMode     = $('chipMode');
   const statusLine   = $('statusLine');
+  const tokenRing    = $('tokenRing');
+  const tokenValue   = $('tokenValue');
+  const tokenLabel   = $('tokenLabel');
 
   // \u2500\u2500 State \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
   let summary  = null;
@@ -2087,8 +2357,18 @@ var PulseSidebarProvider = class {
     editsBanner.classList.toggle('on', hasPending);
     if (hasPending) bannerTxt.textContent = 'Pending file edits \u2014 review before applying';
 
+    const pct = Number.isFinite(s?.tokenUsagePercent)
+      ? Math.max(0, Math.min(100, s.tokenUsagePercent))
+      : 0;
+    tokenRing.style.background =
+      'conic-gradient(var(--amber) ' + (pct * 3.6) + 'deg, rgba(128,128,128,.18) 0deg)';
+    tokenValue.textContent = pct + '%';
+    tokenLabel.textContent = (s?.tokensConsumed ?? 0) + ' / ' + (s?.tokenBudget ?? 0);
+
     statusLine.textContent = ok
-      ? (s?.modelCount ? s.modelCount + ' models' : 'Ollama ready')
+      ? (s?.modelCount
+          ? s.modelCount + ' models, MCP ' + (s?.mcpHealthy ?? 0) + '/' + (s?.mcpConfigured ?? 0)
+          : 'Ollama ready')
       : 'Ollama offline';
   }
 

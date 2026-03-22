@@ -12,18 +12,19 @@ Pulse is a VS Code extension that gives you a personal AI coding assistant that 
 
 ## Features
 
-| Capability                | Details                                                                    |
-| ------------------------- | -------------------------------------------------------------------------- |
-| **Chat interface**        | Conversational sidebar with message history                                |
-| **Code editing**          | Create, rewrite, delete, and move files with staged approvals              |
-| **Local models**          | Works with any Ollama model (Llama 3, Mistral, Qwen, DeepSeek Coder, etc.) |
-| **Multi-model routing**   | Assign different models to planner, editor, fast, and embedding roles      |
-| **Session memory**        | Conversations are persisted and resumable across VS Code sessions          |
-| **Episodic learning**     | Builds a rolling memory of past tasks to improve future responses          |
-| **Approval modes**        | Strict (always confirm), Balanced, or Fast (auto-apply)                    |
-| **Safe reverts**          | Every applied edit creates a snapshot — one click to undo                  |
-| **MCP support**           | Visibility into configured MCP servers                                     |
-| **Workspace diagnostics** | Reads VS Code error diagnostics into context                               |
+| Capability                 | Details                                                                    |
+| -------------------------- | -------------------------------------------------------------------------- |
+| **Chat interface**         | Conversational sidebar with message history                                |
+| **Code editing**           | Create, rewrite, delete, and move files with staged approvals              |
+| **Local models**           | Works with any Ollama model (Llama 3, Mistral, Qwen, DeepSeek Coder, etc.) |
+| **Multi-model routing**    | Assign different models to planner, editor, fast, and embedding roles      |
+| **Token budget indicator** | Circular progress indicator in the composer for consumed token budget      |
+| **Session memory**         | Conversations are persisted and resumable across VS Code sessions          |
+| **Episodic learning**      | Builds a rolling memory of past tasks to improve future responses          |
+| **Approval modes**         | Strict (always confirm), Balanced, or Fast (auto-apply)                    |
+| **Safe reverts**           | Every applied edit creates a snapshot — one click to undo                  |
+| **MCP support**            | Visibility into configured MCP servers                                     |
+| **Workspace diagnostics**  | Reads VS Code error diagnostics into context                               |
 
 ---
 
@@ -85,7 +86,7 @@ All actions are also available via `Ctrl+Shift+P` / `Cmd+Shift+P`:
 | Command                            | Description                           |
 | ---------------------------------- | ------------------------------------- |
 | `Pulse: Open Panel`                | Open the Pulse sidebar                |
-| `Pulse: Run Task`                  | Run a task from a quick-pick input    |
+| `Pulse: Start New Task`            | Run a task from a quick-pick input    |
 | `Pulse: Explain Selection`         | Explain the current editor selection  |
 | `Pulse: Apply Proposed Changes`    | Apply staged file edits               |
 | `Pulse: Revert Last Agent Changes` | Undo the last applied transaction     |
@@ -103,21 +104,96 @@ All settings live under the `pulse.*` namespace in VS Code settings:
 ```jsonc
 {
   // Ollama server URL
-  "pulse.ollamaBaseUrl": "http://localhost:11434",
+  "pulse.ollama.baseUrl": "http://localhost:11434",
 
   // Model assignments
   "pulse.models.planner": "qwen2.5-coder:14b",
-  "pulse.models.editor": "deepseek-coder-v2:latest",
+  "pulse.models.editor": "deepseek-coder-v2:16b",
   "pulse.models.fast": "qwen2.5-coder:7b",
   "pulse.models.embedding": "nomic-embed-text:latest",
+  "pulse.models.fallbacks": ["qwen2.5-coder:7b"],
 
   // Approval mode: "strict" | "balanced" | "fast"
   "pulse.behavior.approvalMode": "balanced",
 
-  // Memory: "on" | "off"
-  "pulse.behavior.memoryMode": "on",
+  // Memory: "off" | "session" | "workspace+episodic"
+  "pulse.behavior.memoryMode": "workspace+episodic",
 }
 ```
+
+### Verify local models
+
+1. Start Ollama:
+
+
+    ```bash
+    ollama serve
+    ```
+
+2. Check local tags:
+
+
+    ```bash
+    ollama list
+    ```
+
+3. In Pulse, click **Sync models** in the settings drawer. Pulse merges installed + running models and validates selected model names.
+
+### Verify MCP configuration
+
+Pulse validates each enabled MCP server in diagnostics:
+
+- `stdio` transport: command must exist in `PATH`
+- `http` / `sse` transport: URL must be syntactically valid
+
+Open `Pulse: Manage MCP Connections` or `Pulse: Open Diagnostics Report` to inspect status and details.
+
+---
+
+## Build and Package
+
+```bash
+npm install
+npm run compile
+npm run test
+npm run package
+```
+
+Install the generated VSIX locally:
+
+1. Open VS Code Command Palette.
+2. Run `Extensions: Install from VSIX...`.
+3. Pick the generated `pulse-agent-<version>.vsix`.
+
+---
+
+## Publish to VS Code Marketplace
+
+1. Create a publisher in Azure DevOps Marketplace.
+2. Create a Personal Access Token with Marketplace publish scope.
+3. Login with `vsce`:
+
+
+    ```bash
+    npx vsce login <publisher-name>
+    ```
+
+4. Ensure `publisher` in `package.json` matches your publisher ID.
+5. Bump extension version:
+
+
+    ```bash
+    npm version patch
+    ```
+
+6. Publish:
+
+
+    ```bash
+    npx vsce publish
+    ```
+
+Tip: run `npx vsce package` before publish to validate packaging output.
 
 ---
 

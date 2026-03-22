@@ -148,6 +148,8 @@ async function resumeLastSession(runtime: AgentRuntime): Promise<void> {
 async function applyProposedChanges(runtime: AgentRuntime): Promise<void> {
   const mode = runtime.getApprovalMode();
   const pendingSummary = await runtime.getPendingProposalSummary();
+  let approved = false;
+
   if (mode !== "fast") {
     const decision = await vscode.window.showWarningMessage(
       `Pulse will apply pending proposal.\n\n${pendingSummary}`,
@@ -158,9 +160,11 @@ async function applyProposedChanges(runtime: AgentRuntime): Promise<void> {
     if (decision !== "Apply") {
       return;
     }
+
+    approved = true;
   }
 
-  const result = await runtime.applyPendingEdits();
+  const result = await runtime.applyPendingEdits(approved);
   await vscode.window.showInformationMessage(`Pulse: ${result}`);
 }
 
@@ -185,7 +189,7 @@ async function reindexWorkspace(runtime: AgentRuntime): Promise<void> {
 }
 
 async function manageMcpConnections(runtime: AgentRuntime): Promise<void> {
-  const summary = runtime.mcpSummary();
+  const summary = await runtime.mcpSummary();
   const doc = await vscode.workspace.openTextDocument({
     language: "markdown",
     content: `# Pulse MCP Status\n\n\`\`\`text\n${summary}\n\`\`\`\n`,
