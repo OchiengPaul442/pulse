@@ -24,6 +24,8 @@ Pulse is a VS Code extension that gives you a personal AI coding assistant that 
 | **Approval modes**         | Strict (always confirm), Balanced, or Fast (auto-apply)                    |
 | **Safe reverts**           | Every applied edit creates a snapshot — one click to undo                  |
 | **MCP support**            | Visibility into configured MCP servers                                     |
+| **Skills registry**        | Built-in skill manifests with objective-based skill routing                |
+| **Prepublish guard**       | One-command release readiness checks for model/MCP/diagnostics state       |
 | **Workspace diagnostics**  | Reads VS Code error diagnostics into context                               |
 
 ---
@@ -83,17 +85,19 @@ Click the **⚙ gear icon** in the header to open the model settings drawer. Sel
 
 All actions are also available via `Ctrl+Shift+P` / `Cmd+Shift+P`:
 
-| Command                            | Description                           |
-| ---------------------------------- | ------------------------------------- |
-| `Pulse: Open Panel`                | Open the Pulse sidebar                |
-| `Pulse: Start New Task`            | Run a task from a quick-pick input    |
-| `Pulse: Explain Selection`         | Explain the current editor selection  |
-| `Pulse: Apply Proposed Changes`    | Apply staged file edits               |
-| `Pulse: Revert Last Agent Changes` | Undo the last applied transaction     |
-| `Pulse: Select Models`             | Open model role assignment            |
-| `Pulse: Set Approval Mode`         | Change the approval mode              |
-| `Pulse: Re-index Workspace`        | Re-scan workspace files               |
-| `Pulse: Open Diagnostics Report`   | View a full runtime diagnostic report |
+| Command                            | Description                                  |
+| ---------------------------------- | -------------------------------------------- |
+| `Pulse: Open Panel`                | Open the Pulse sidebar                       |
+| `Pulse: Start New Task`            | Run a task from a quick-pick input           |
+| `Pulse: Explain Selection`         | Explain the current editor selection         |
+| `Pulse: Apply Proposed Changes`    | Apply staged file edits                      |
+| `Pulse: Revert Last Agent Changes` | Undo the last applied transaction            |
+| `Pulse: Select Models`             | Open model role assignment                   |
+| `Pulse: Set Approval Mode`         | Change the approval mode                     |
+| `Pulse: List Skills`               | Show loaded skills and routing metadata      |
+| `Pulse: Run Prepublish Guard`      | Run publish-readiness checks and open report |
+| `Pulse: Re-index Workspace`        | Re-scan workspace files                      |
+| `Pulse: Open Diagnostics Report`   | View a full runtime diagnostic report        |
 
 ---
 
@@ -125,17 +129,15 @@ All settings live under the `pulse.*` namespace in VS Code settings:
 
 1. Start Ollama:
 
-
-    ```bash
-    ollama serve
-    ```
+   ```bash
+   ollama serve
+   ```
 
 2. Check local tags:
 
-
-    ```bash
-    ollama list
-    ```
+   ```bash
+   ollama list
+   ```
 
 3. In Pulse, click **Sync models** in the settings drawer. Pulse merges installed + running models and validates selected model names.
 
@@ -173,25 +175,22 @@ Install the generated VSIX locally:
 2. Create a Personal Access Token with Marketplace publish scope.
 3. Login with `vsce`:
 
-
-    ```bash
-    npx vsce login <publisher-name>
-    ```
+   ```bash
+   npx vsce login <publisher-name>
+   ```
 
 4. Ensure `publisher` in `package.json` matches your publisher ID.
 5. Bump extension version:
 
-
-    ```bash
-    npm version patch
-    ```
+   ```bash
+   npm version patch
+   ```
 
 6. Publish:
 
-
-    ```bash
-    npx vsce publish
-    ```
+   ```bash
+   npx vsce publish
+   ```
 
 Tip: run `npx vsce package` before publish to validate packaging output.
 
@@ -220,6 +219,7 @@ VS Code Extension Host
 │   ├── MemoryStore        — Episodic memory & preferences
 │   ├── VerificationRunner — VS Code diagnostics reader
 │   └── McpManager         — MCP server config visibility
+│   └── SkillRegistry      — Built-in skills and objective routing
 └── registerCommands       — Command palette bindings
 ```
 

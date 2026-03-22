@@ -68,6 +68,14 @@
       {
         "command": "pulse.setApprovalMode",
         "title": "Pulse: Set Approval Mode"
+      },
+      {
+        "command": "pulse.listSkills",
+        "title": "Pulse: List Skills"
+      },
+      {
+        "command": "pulse.runPrepublishGuard",
+        "title": "Pulse: Run Prepublish Guard"
       }
     ],
     "viewsContainers": {

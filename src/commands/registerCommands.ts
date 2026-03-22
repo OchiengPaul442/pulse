@@ -22,6 +22,8 @@ export function registerCommands(
     ["pulse.openDiagnosticsReport", () => openDiagnostics(runtime)],
     ["pulse.selectModels", () => selectModels(runtime)],
     ["pulse.setApprovalMode", () => setApprovalMode(runtime)],
+    ["pulse.listSkills", () => listSkills(runtime)],
+    ["pulse.runPrepublishGuard", () => runPrepublishGuard(runtime)],
   ];
 
   for (const [commandId, handler] of commandHandlers) {
@@ -265,4 +267,39 @@ async function setApprovalMode(runtime: AgentRuntime): Promise<void> {
   await vscode.window.showInformationMessage(
     `Pulse: Approval mode set to ${mode}`,
   );
+}
+
+async function listSkills(runtime: AgentRuntime): Promise<void> {
+  const skills = runtime.listAvailableSkills();
+  const doc = await vscode.workspace.openTextDocument({
+    language: "markdown",
+    content: [
+      "# Pulse Skills Registry",
+      "",
+      ...skills.map(
+        (skill) =>
+          `- **${skill.name}** (\`${skill.id}\`): ${skill.description}\\n  - Keywords: ${skill.keywords.join(", ")}\\n  - Tools: ${skill.tools.join(", ")}`,
+      ),
+    ].join("\n"),
+  });
+  await vscode.window.showTextDocument(doc, { preview: false });
+}
+
+async function runPrepublishGuard(runtime: AgentRuntime): Promise<void> {
+  const report = await runtime.runPrepublishGuard();
+  const doc = await vscode.workspace.openTextDocument({
+    language: "markdown",
+    content: report.markdown,
+  });
+  await vscode.window.showTextDocument(doc, { preview: false });
+
+  if (report.ok) {
+    await vscode.window.showInformationMessage(
+      "Pulse: Prepublish guard passed.",
+    );
+  } else {
+    await vscode.window.showWarningMessage(
+      "Pulse: Prepublish guard failed. Review the generated report.",
+    );
+  }
 }

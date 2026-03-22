@@ -11,6 +11,7 @@ import { OllamaProvider } from "../model/OllamaProvider";
 import type { ModelSummary, ProviderHealth } from "../model/ModelProvider";
 import { MemoryStore } from "../memory/MemoryStore";
 import { Planner } from "../planner/Planner";
+import { SkillRegistry, type SkillManifest } from "../skills/SkillRegistry";
 import type { ExplainResult, RuntimeTaskResult } from "./RuntimeTypes";
 import { SessionStore } from "../sessions/SessionStore";
 import { VerificationRunner } from "../verification/VerificationRunner";
@@ -40,6 +41,12 @@ export interface RecentSessionItem {
   updatedAt: string;
 }
 
+export interface PrepublishGuardResult {
+  ok: boolean;
+  checks: Array<{ name: string; ok: boolean; detail: string }>;
+  markdown: string;
+}
+
 type ModelRole = "planner" | "editor" | "fast" | "embedding";
 
 export class AgentRuntime {
@@ -58,6 +65,8 @@ export class AgentRuntime {
   private readonly verifier: VerificationRunner;
 
   private readonly mcpManager: McpManager;
+
+  private readonly skillRegistry: SkillRegistry;
 
   private currentConfig: AgentConfig;
 
@@ -81,6 +90,7 @@ export class AgentRuntime {
     this.editManager = new EditManager(storage.editsPath, storage.snapshotsDir);
     this.verifier = new VerificationRunner();
     this.mcpManager = new McpManager(config.mcpServers);
+    this.skillRegistry = new SkillRegistry();
   }
 
   public async initialize(): Promise<void> {
@@ -199,6 +209,7 @@ export class AgentRuntime {
     );
 
     const plan = await this.planner.createPlan(objective, plannerModel);
+    const selectedSkills = this.skillRegistry.selectForObjective(objective);
     const candidateFiles = await this.scanner.findRelevantFiles(objective, 8);
     const contextSnippets = await this.scanner.readContextSnippets(
       candidateFiles.slice(0, 4),
@@ -225,6 +236,10 @@ export class AgentRuntime {
       "- delete: remove a file or folder",
       "- move: move/rename a file path to targetPath",
       `Objective: ${objective}`,
+      "Selected skills:",
+      this.skillRegistry.summarizeSelection(selectedSkills),
+      "Skill manifests:",
+      JSON.stringify(selectedSkills.selected, null, 2),
       "Plan:",
       JSON.stringify(plan, null, 2),
       "Recent episodic memory:",
@@ -368,6 +383,10 @@ export class AgentRuntime {
     }));
   }
 
+  public listAvailableSkills(): SkillManifest[] {
+    return this.skillRegistry.list();
+  }
+
   public async reindexWorkspace(): Promise<string> {
     const stats = await this.scanner.scanWorkspace();
     return `Indexed ${stats.totalFiles} files at ${stats.indexedAt}`;
@@ -408,6 +427,7 @@ export class AgentRuntime {
       `- Fast model: ${this.currentConfig.fastModel}`,
       `- Storage: ${this.storage.storageDir}`,
       `- Available models: ${this.availableModels.length}`,
+      `- Skills registry: ${this.skillRegistry.list().length} skills`,
       "",
       "## Active Session",
       "",
@@ -433,6 +453,98 @@ export class AgentRuntime {
       mcp,
       "```",
     ].join("\n");
+  }
+
+  public async runPrepublishGuard(): Promise<PrepublishGuardResult> {
+    await this.refreshProviderState();
+
+    const diagnostics = this.verifier.runDiagnostics();
+    const pending = await this.editManager.getPendingProposal();
+    const mcpStatuses = await this.mcpManager.listServerStatus();
+    const models = await this.listAvailableModels();
+    const modelNames = new Set(models.map((model) => model.name));
+    const requiredModels = [
+      this.currentConfig.plannerModel,
+      this.currentConfig.editorModel,
+      this.currentConfig.fastModel,
+    ];
+    const missingRequired = requiredModels.filter(
+      (model) => !modelNames.has(model),
+    );
+    const enabledMcp = mcpStatuses.filter((row) => row.enabled);
+    const brokenMcp = enabledMcp.filter((row) => row.state === "error");
+    const skills = this.skillRegistry.list();
+
+    const checks: Array<{ name: string; ok: boolean; detail: string }> = [
+      {
+        name: "Ollama reachable",
+        ok: this.health.ok,
+        detail: this.health.message,
+      },
+      {
+        name: "Local models discovered",
+        ok: models.length > 0,
+        detail:
+          models.length > 0
+            ? `${models.length} model(s) available.`
+            : "No local models discovered.",
+      },
+      {
+        name: "Configured models available",
+        ok: missingRequired.length === 0,
+        detail:
+          missingRequired.length === 0
+            ? "Planner/editor/fast models are present locally."
+            : `Missing configured model(s): ${missingRequired.join(", ")}`,
+      },
+      {
+        name: "MCP connections healthy",
+        ok: brokenMcp.length === 0,
+        detail:
+          brokenMcp.length === 0
+            ? `Enabled MCP servers: ${enabledMcp.length}, no errors.`
+            : brokenMcp.map((row) => `${row.id}: ${row.detail}`).join("; "),
+      },
+      {
+        name: "No pending edits",
+        ok: pending === null,
+        detail:
+          pending === null
+            ? "No pending edit proposal in queue."
+            : `Pending proposal exists: ${pending.objective}`,
+      },
+      {
+        name: "Diagnostics are clean",
+        ok: !diagnostics.hasErrors,
+        detail: diagnostics.summary,
+      },
+      {
+        name: "Skills registry loaded",
+        ok: skills.length > 0,
+        detail: `${skills.length} skill(s) available.`,
+      },
+    ];
+
+    const ok = checks.every((check) => check.ok);
+    const markdown = [
+      "# Pulse Prepublish Guard",
+      "",
+      `- Overall: ${ok ? "PASS" : "FAIL"}`,
+      `- Timestamp: ${new Date().toISOString()}`,
+      "",
+      "## Checks",
+      "",
+      ...checks.map(
+        (check) =>
+          `- [${check.ok ? "PASS" : "FAIL"}] ${check.name} - ${check.detail}`,
+      ),
+      "",
+      "## Skills",
+      "",
+      ...skills.map((skill) => `- ${skill.name} (${skill.id})`),
+    ].join("\n");
+
+    return { ok, checks, markdown };
   }
 
   public async summary(): Promise<RuntimeSummary> {
