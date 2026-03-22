@@ -2,6 +2,7 @@ import * as crypto from "crypto";
 import * as vscode from "vscode";
 
 import type { AgentRuntime } from "../agent/runtime/AgentRuntime";
+import type { RuntimeSummary } from "../agent/runtime/AgentRuntime";
 import type { Logger } from "../platform/vscode/Logger";
 
 export class PulseSidebarProvider implements vscode.WebviewViewProvider {
@@ -19,14 +20,20 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
       localResourceRoots: [this.extensionUri],
     };
 
-    webviewView.webview.html = this.buildHtml(webviewView.webview);
+    void this.runtime
+      .summary()
+      .then((summary) => {
+        webviewView.webview.html = this.buildHtml(webviewView.webview, summary);
+      })
+      .catch((error) => {
+        this.logger.warn(
+          `Failed to load initial sidebar summary: ${error instanceof Error ? error.message : String(error)}`,
+        );
+        webviewView.webview.html = this.buildHtml(webviewView.webview, null);
+      });
 
     // ── Push the full runtime state to the webview ─────────────────────
     const pushState = async (): Promise<void> => {
-      if (!webviewView.visible) {
-        return;
-      }
-
       // Refresh Ollama health — errors here are non-fatal
       try {
         await this.runtime.refreshProviderState();
@@ -255,6 +262,13 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
             return;
           }
 
+          if (message.type === "webviewError") {
+            this.logger.error(
+              `Sidebar webview error: ${String(message.payload ?? "unknown error")}`,
+            );
+            return;
+          }
+
           if (message.type === "manageMcpConnections") {
             await vscode.commands.executeCommand("pulse.manageMcpConnections");
             return;
@@ -278,11 +292,32 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
     // Don't rely on the webview's loadDashboard message (race condition).
     // Kick off an initial push from the extension host side.
     void pushState();
+    setTimeout(() => void pushState(), 250);
   }
 
-  private buildHtml(webview: vscode.Webview): string {
+  private buildHtml(
+    webview: vscode.Webview,
+    initialSummary: RuntimeSummary | null,
+  ): string {
     const nonce = crypto.randomBytes(16).toString("base64");
     const csp = webview.cspSource;
+    const initialOnline = Boolean(
+      initialSummary &&
+      (initialSummary.ollamaReachable || initialSummary.status === "ready"),
+    );
+    const initialSummaryJson = JSON.stringify(initialSummary ?? null).replace(
+      /</g,
+      "\\u003c",
+    );
+    const initialStatusText = initialOnline ? "Online" : "Offline";
+    const initialStatusClass = initialOnline ? "on" : "off";
+    const initialStatusLine = initialOnline
+      ? initialSummary && initialSummary.modelCount
+        ? `${initialSummary.modelCount} model${
+            initialSummary.modelCount !== 1 ? "s" : ""
+          }, MCP ${initialSummary.mcpHealthy}/${initialSummary.mcpConfigured}`
+        : "Ollama ready"
+      : "Ollama offline — check settings";
 
     return `<!DOCTYPE html>
 <html lang="en">
@@ -336,6 +371,20 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
     .badge-dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
     .badge.on  { color: var(--green); border-color: var(--green-bdr); background: var(--green-bg); }
     .badge.off { color: var(--red);   border-color: var(--red-bdr);   background: var(--red-bg); }
+
+    .fatal-banner {
+      display: none;
+      margin: 10px 12px 0;
+      padding: 10px 12px;
+      border-radius: var(--r-md);
+      border: 1px solid var(--red-bdr);
+      background: var(--red-bg);
+      color: var(--vscode-foreground);
+      font-size: 12px;
+      line-height: 1.45;
+      white-space: pre-wrap;
+    }
+    .fatal-banner.on { display: block; }
 
     .icon-btn {
       width: 24px; height: 24px; border: none; background: transparent;
@@ -640,14 +689,16 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
 
   <!-- ── Header ── -->
   <header class="hdr">
-    <span id="statusBadge" class="badge off">
-      <span class="badge-dot"></span><span id="statusTxt">Offline</span>
+    <span id="statusBadge" class="badge ${initialStatusClass}">
+      <span class="badge-dot"></span><span id="statusTxt">${initialStatusText}</span>
     </span>
     <div class="hdr-right">
       <button id="btnSettings" class="icon-btn" title="Settings">&#9881;</button>
       <button id="btnRefresh"  class="icon-btn" title="Refresh status">&#8635;</button>
     </div>
   </header>
+
+  <div id="fatalBanner" class="fatal-banner" role="alert"></div>
 
   <!-- ── Settings drawer ── -->
   <div id="settingsDrawer">
@@ -743,7 +794,7 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
       </div>
     </div>
     <div class="composer-foot">
-      <span id="statusLine" class="status-txt">Ready</span>
+      <span id="statusLine" class="status-txt">${initialStatusLine}</span>
       <div class="token-wrap" title="Token usage this session">
         <div id="tokenRing" class="token-ring">
           <span id="tokenValue" class="token-value">0%</span>
@@ -758,7 +809,38 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
 <script nonce="${nonce}">
 (function () {
   'use strict';
-  const vscode = acquireVsCodeApi();
+  let vscode = null;
+
+  function surfaceFatalError(message) {
+    const banner = $('fatalBanner');
+    if (banner) {
+      banner.textContent = message;
+      banner.classList.add('on');
+    }
+    const status = $('statusLine');
+    if (status) {
+      status.textContent = message.slice(0, 120);
+    }
+    const badge = $('statusBadge');
+    const statusTxt = $('statusTxt');
+    if (badge) {
+      badge.className = 'badge off';
+    }
+    if (statusTxt) {
+      statusTxt.textContent = 'Error';
+    }
+    if (vscode) {
+      try {
+        vscode.postMessage({ type: 'webviewError', payload: message });
+      } catch (_) {
+        // Ignore secondary failures while surfacing the original error.
+      }
+    }
+  }
+
+  try {
+    vscode = acquireVsCodeApi();
+  const initialSummary = ${initialSummaryJson};
 
   // ── DOM refs ──────────────────────────────────────────────────────────
   const $ = id => document.getElementById(id);
@@ -1202,17 +1284,42 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
     }
   });
 
-  // ── Bootstrap: signal ready, request state, then auto-refresh ──────
-  vscode.postMessage({ type: 'webviewReady' });
-  vscode.postMessage({ type: 'loadDashboard' });
-  // Retry shortly in case the initial messages were lost due to timing
-  setTimeout(function() {
-    if (!summary) { vscode.postMessage({ type: 'ping' }); }
-  }, 800);
-  setTimeout(function() {
-    if (!summary) { vscode.postMessage({ type: 'ping' }); }
-  }, 3000);
-  setInterval(function() { vscode.postMessage({ type: 'ping' }); }, 30000);
+    // ── Bootstrap: signal ready, request state, then auto-refresh ──────
+    if (initialSummary) {
+      renderSummary(initialSummary);
+    }
+
+    window.addEventListener('error', function(event) {
+      const message = event && event.error
+        ? String(event.error.stack || event.error.message || event.error)
+        : String(event.message || 'Unknown webview error');
+      surfaceFatalError(message);
+    });
+
+    window.addEventListener('unhandledrejection', function(event) {
+      const message = String(
+        event && event.reason
+          ? (event.reason.stack || event.reason.message || event.reason)
+          : 'Unhandled rejection',
+      );
+      surfaceFatalError(message);
+    });
+
+    vscode.postMessage({ type: 'webviewReady' });
+    vscode.postMessage({ type: 'loadDashboard' });
+    // Retry shortly in case the initial messages were lost due to timing
+    setTimeout(function() {
+      if (!summary) { vscode.postMessage({ type: 'ping' }); }
+    }, 800);
+    setTimeout(function() {
+      if (!summary) { vscode.postMessage({ type: 'ping' }); }
+    }, 3000);
+    setInterval(function() { vscode.postMessage({ type: 'ping' }); }, 30000);
+  } catch (error) {
+    surfaceFatalError(
+      error instanceof Error ? error.stack || error.message : String(error),
+    );
+  }
 
 }());
 </script>
