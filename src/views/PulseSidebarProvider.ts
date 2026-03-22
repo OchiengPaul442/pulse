@@ -927,7 +927,7 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
     if (Array.isArray(server && server.args)) {
       args = server.args.map(function(a) { return String(a); });
     } else if (typeof (server && server.args) === 'string') {
-      args = server.args.split(/\r?\n/).map(function(a) { return a.trim(); }).filter(Boolean);
+      args = server.args.split(/\\r?\\n/).map(function(a) { return a.trim(); }).filter(Boolean);
     }
     return {
       id:        String(server && server.id || ''),
@@ -948,7 +948,7 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
       if (!Array.isArray(parsed)) throw new Error('Args must be a JSON array or one per line.');
       return parsed.map(function(a) { return String(a); });
     }
-    return raw.split(/\r?\n/).map(function(a) { return a.trim(); }).filter(Boolean);
+    return raw.split(/\\r?\\n/).map(function(a) { return a.trim(); }).filter(Boolean);
   }
 
   function renderMcpServers(list) {
@@ -980,7 +980,7 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
         '  <div class="mcp-chip">' + esc(endpointLabel) + '</div>',
         '</div>',
         '<input type="text" data-field="endpoint" placeholder="' + esc(endpointLabel) + '" value="' + esc(endpointValue) + '" />',
-        '<textarea data-field="args" placeholder="[\&quot;-y\&quot;, \&quot;@mcp/server\&quot;]">' + esc((server.args || []).join('\n')) + '</textarea>',
+        '<textarea data-field="args" placeholder="[\&quot;-y\&quot;, \&quot;@mcp/server\&quot;]">' + esc((server.args || []).join('\\n')) + '</textarea>',
         '<div class="mcp-note">' + esc(note) + '</div>',
       ].join('');
 
@@ -1071,9 +1071,9 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
       div.className = 'msg ' + m.role + ' fadein';
       let html = esc(m.text);
       // Minimal markdown: fenced code blocks then inline code
-      html = html.replace(/\`\`\`([\s\S]*?)\`\`\`/g, '<pre>$1</pre>');
-      html = html.replace(/\`([^\`\n]+)\`/g, '<code>$1</code>');
-      html = html.replace(/\n/g, '<br>');
+      html = html.replace(/\`\`\`([\\s\\S]*?)\`\`\`/g, '<pre>$1</pre>');
+      html = html.replace(/\`([^\`\\n]+)\`/g, '<code>$1</code>');
+      html = html.replace(/\\n/g, '<br>');
       const ts = m.ts ? relTime(new Date(m.ts).toISOString()) : '';
       div.innerHTML =
         '<div class="bubble">' + html + '</div>' +
