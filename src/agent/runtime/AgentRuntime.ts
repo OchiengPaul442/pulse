@@ -678,7 +678,11 @@ export class AgentRuntime {
 
   private async resolveModelOrFallback(primary: string): Promise<string> {
     const models = await this.listAvailableModels();
-    const names = new Set(models.map((model) => model.name));
+    const usableModels = models.filter(
+      (model) => model.source === "local" || model.source === "running",
+    );
+    const names = new Set(usableModels.map((model) => model.name));
+
     if (names.has(primary)) {
       return primary;
     }
@@ -692,11 +696,11 @@ export class AgentRuntime {
       }
     }
 
-    if (models[0]?.name) {
+    if (usableModels[0]?.name) {
       this.logger.warn(
-        `Model ${primary} unavailable. Falling back to first discovered model ${models[0].name}.`,
+        `Model ${primary} unavailable. Falling back to first discovered model ${usableModels[0].name}.`,
       );
-      return models[0].name;
+      return usableModels[0].name;
     }
 
     return primary;
