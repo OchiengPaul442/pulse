@@ -9,6 +9,12 @@ export interface ConversationMessage {
 
 export type ConversationMode = "agent" | "ask" | "plan";
 
+export interface AgentProgressStep {
+  icon: string;
+  step: string;
+  detail?: string;
+}
+
 export interface RuntimeTaskResult {
   sessionId: string;
   objective: string;

@@ -97,6 +97,14 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
       }
     };
 
+    // Forward agent progress steps to the webview as they arrive
+    this.runtime.setProgressCallback((step) => {
+      void webviewView.webview.postMessage({
+        type: "thinkingStep",
+        payload: step,
+      });
+    });
+
     // Re-push state every time the sidebar panel becomes visible
     webviewView.onDidChangeVisibility(() => {
       if (webviewView.visible) {
@@ -350,33 +358,37 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
               vscode.window.activeTextEditor?.document.uri ?? null;
             const workspaceFolder =
               vscode.workspace.workspaceFolders?.[0]?.uri ?? null;
-            const choices: Array<{ label: string; value: string }> = [];
+
+            const choices: Array<vscode.QuickPickItem & { value: string }> = [];
 
             if (activeEditorUri) {
               choices.push({
-                label: "Attach current file",
+                label: "$(file-code) Current file",
+                description: path.basename(activeEditorUri.fsPath),
                 value: "current-file",
-              });
-              choices.push({
-                label: "Attach current folder",
-                value: "current-folder",
               });
             }
             if (workspaceFolder) {
               choices.push({
-                label: "Attach workspace root",
+                label: "$(search) Search workspace files\u2026",
+                description: "Filter and pick from workspace",
+                value: "search",
+              });
+              choices.push({
+                label: "$(folder) Attach entire workspace",
+                description: path.basename(workspaceFolder.fsPath),
                 value: "workspace-root",
               });
             }
             choices.push({
-              label: "Browse files or folders...",
+              label: "$(folder-opened) Browse filesystem\u2026",
+              description: "Open native file picker",
               value: "browse",
             });
 
             const pickedMode = await vscode.window.showQuickPick(choices, {
               title: "Attach context",
-              placeHolder:
-                "Prefer the current file or folder for faster context",
+              placeHolder: "Choose files or folders to attach as reference",
             });
 
             if (!pickedMode) {
@@ -388,13 +400,50 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
             }
 
             let attachedPaths: string[] = [];
+
             if (pickedMode.value === "current-file" && activeEditorUri) {
               attachedPaths = [activeEditorUri.fsPath];
-            } else if (
-              pickedMode.value === "current-folder" &&
-              activeEditorUri
-            ) {
-              attachedPaths = [path.dirname(activeEditorUri.fsPath)];
+            } else if (pickedMode.value === "search" && workspaceFolder) {
+              const files = await vscode.workspace.findFiles(
+                "**/*.{ts,js,tsx,jsx,mts,mjs,py,go,rs,java,cs,cpp,c,h,md,json,yaml,yml,toml,sh,sql,env,txt,css,html,svelte,vue}",
+                "**/{node_modules,dist,build,.git,out,coverage,.pulse}/**",
+                300,
+              );
+              const fileItems: Array<
+                vscode.QuickPickItem & { fsPath: string }
+              > = files
+                .map((f) => ({
+                  label: path.basename(f.fsPath),
+                  description: path.relative(workspaceFolder.fsPath, f.fsPath),
+                  fsPath: f.fsPath,
+                }))
+                .sort((a, b) =>
+                  (a.description ?? "").localeCompare(b.description ?? ""),
+                );
+
+              if (!fileItems.length) {
+                await webviewView.webview.postMessage({
+                  type: "actionResult",
+                  payload: "No workspace files found to attach.",
+                });
+                return;
+              }
+
+              const pickedFiles = await vscode.window.showQuickPick(fileItems, {
+                canPickMany: true,
+                placeHolder:
+                  "Type to filter \u2014 select one or more files (Space to toggle)",
+                title: "Attach workspace files",
+              });
+
+              if (!pickedFiles || pickedFiles.length === 0) {
+                await webviewView.webview.postMessage({
+                  type: "actionResult",
+                  payload: "Attachment canceled.",
+                });
+                return;
+              }
+              attachedPaths = pickedFiles.map((item) => item.fsPath);
             } else if (
               pickedMode.value === "workspace-root" &&
               workspaceFolder
@@ -405,10 +454,8 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
                 canSelectFiles: true,
                 canSelectFolders: true,
                 canSelectMany: true,
-                defaultUri: activeEditorUri
-                  ? vscode.Uri.file(path.dirname(activeEditorUri.fsPath))
-                  : (workspaceFolder ?? undefined),
-                openLabel: "Attach context",
+                defaultUri: workspaceFolder ?? undefined,
+                openLabel: "Attach",
                 title: "Attach files or folders for Pulse to read",
               });
 
@@ -419,8 +466,15 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
                 });
                 return;
               }
-
               attachedPaths = picked.map((item) => item.fsPath);
+            }
+
+            if (attachedPaths.length === 0) {
+              await webviewView.webview.postMessage({
+                type: "actionResult",
+                payload: "No files selected.",
+              });
+              return;
             }
 
             const session =
@@ -428,7 +482,8 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
             if (!session) {
               await webviewView.webview.postMessage({
                 type: "actionResult",
-                payload: "Unable to attach files.",
+                payload:
+                  "Unable to attach — start a conversation first or send a message.",
               });
               return;
             }
@@ -777,7 +832,7 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
     .msg-time { font-size: 10px; color: var(--vscode-descriptionForeground); margin-top: 3px; padding: 0 2px; }
     .msg.user .msg-time { text-align: right; }
 
-    /* ── Typing indicator ───────────────────────────────────────── */
+    /* ── Typing indicator (legacy, kept for safety) ─────────────── */
     #typing { align-self: flex-start; display: none; }
     #typing.on { display: block; }
     .typing-bubble {
@@ -797,6 +852,93 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
       0%,60%,100% { transform: translateY(0); opacity: .5; }
       30%          { transform: translateY(-5px); opacity: 1; }
     }
+
+    /* ── Thinking panel (GitHub Copilot / Kimi style) ────────────── */
+    .thinking-panel {
+      align-self: flex-start; width: 100%;
+      border-radius: var(--r-md);
+      border: 1px solid var(--border);
+      border-left: 3px solid var(--amber);
+      background: var(--vscode-input-background, rgba(128,128,128,.06));
+      overflow: hidden; font-size: 11px;
+    }
+    .thinking-panel.hidden { display: none; }
+    .thinking-header {
+      display: flex; align-items: center; gap: 7px;
+      padding: 7px 10px; cursor: pointer; user-select: none;
+    }
+    .thinking-header:hover { background: rgba(128,128,128,.06); }
+    .thinking-spinner {
+      width: 12px; height: 12px; border-radius: 50%;
+      border: 2px solid var(--amber); border-top-color: transparent;
+      animation: spin 700ms linear infinite; flex-shrink: 0;
+    }
+    .thinking-panel.done .thinking-spinner {
+      border-color: var(--vscode-descriptionForeground); border-top-color: transparent;
+      animation: none;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    #thinkingTitle { flex: 1; font-size: 11px; font-weight: 600; color: var(--vscode-foreground); }
+    .thinking-chevron { font-size: 9px; color: var(--vscode-descriptionForeground); }
+    .thinking-steps { display: flex; flex-direction: column; padding: 0 10px 8px; max-height: 200px; overflow-y: auto; }
+    .thinking-steps.collapsed { display: none; }
+    .thinking-step {
+      display: flex; align-items: flex-start; gap: 7px; padding: 2px 0;
+      color: var(--vscode-descriptionForeground);
+      animation: fadein 200ms ease forwards;
+    }
+    .thinking-step-icon { flex-shrink: 0; font-size: 11px; margin-top: 1px; }
+    .thinking-step-body { display: flex; flex-direction: column; min-width: 0; }
+    .thinking-step-label { font-size: 11px; font-weight: 500; color: var(--vscode-foreground); }
+    .thinking-step-detail { font-size: 10px; opacity: .65; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .thinking-step-time { font-size: 9px; opacity: .45; margin-left: auto; flex-shrink: 0; padding-top: 2px; }
+
+    /* ── Mode popup ──────────────────────────────────────────────── */
+    .mode-popup {
+      position: absolute; bottom: calc(100% + 6px); left: 0; z-index: 200;
+      background: var(--vscode-input-background);
+      border: 1px solid var(--border); border-radius: var(--r-md);
+      display: flex; flex-direction: column; gap: 2px; padding: 5px;
+      min-width: 130px; box-shadow: 0 6px 24px rgba(0,0,0,.28);
+      animation: fadein 140ms ease forwards;
+    }
+    .mode-popup.hidden { display: none; }
+    .mode-option {
+      display: flex; align-items: center; gap: 8px;
+      padding: 6px 10px; border-radius: var(--r-sm);
+      border: none; background: transparent;
+      color: var(--vscode-foreground); cursor: pointer;
+      font: 12px var(--vscode-font-family); text-align: left;
+      transition: background var(--spd);
+    }
+    .mode-option:hover { background: rgba(128,128,128,.12); }
+    .mode-option.active { color: var(--amber); font-weight: 700; }
+
+    /* ── Model popup ─────────────────────────────────────────────── */
+    .model-popup {
+      position: absolute; bottom: calc(100% + 6px); left: 0; z-index: 200;
+      background: var(--vscode-input-background);
+      border: 1px solid var(--border); border-radius: var(--r-md);
+      min-width: 180px; max-height: 220px; overflow-y: auto;
+      box-shadow: 0 6px 24px rgba(0,0,0,.28);
+      animation: fadein 140ms ease forwards;
+    }
+    .model-popup.hidden { display: none; }
+    .model-popup-title {
+      font-size: 10px; font-weight: 700; text-transform: uppercase;
+      letter-spacing: .6px; color: var(--vscode-descriptionForeground);
+      padding: 8px 10px 4px; border-bottom: 1px solid var(--border);
+    }
+    .model-popup-list { display: flex; flex-direction: column; gap: 1px; padding: 4px 4px 5px; }
+    .model-btn {
+      padding: 6px 8px; border: none; border-radius: var(--r-sm);
+      background: transparent; color: var(--vscode-foreground);
+      cursor: pointer; font: 12px var(--vscode-font-family);
+      text-align: left; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+      transition: background var(--spd);
+    }
+    .model-btn:hover { background: rgba(128,128,128,.12); }
+    .model-btn.active { color: var(--amber); font-weight: 700; }
 
     /* ── Empty state ────────────────────────────────────────────── */
     .empty { text-align: center; padding: 28px 12px; color: var(--vscode-descriptionForeground); }
@@ -855,39 +997,29 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
 
     .chips { display: flex; gap: 5px; align-items: center; flex-wrap: wrap; }
 
-    .mode-switch {
-      display: grid;
-      grid-template-columns: repeat(3, minmax(0, 1fr));
-      gap: 6px;
-      padding: 0 10px 8px;
-    }
-    .mode-btn {
+    .mode-chip {
       border: 1px solid var(--border);
       border-radius: 999px;
       background: transparent;
       color: var(--vscode-descriptionForeground);
       cursor: pointer;
       font: 700 10px var(--vscode-font-family);
-      letter-spacing: .7px;
+      letter-spacing: .5px;
       text-transform: uppercase;
-      padding: 7px 10px;
+      padding: 3px 9px;
       transition: all var(--spd);
+      white-space: nowrap;
+      flex-shrink: 0;
     }
-    .mode-btn:hover {
+    .mode-chip:hover {
       border-color: var(--amber);
       color: var(--amber);
       background: var(--amber-bg);
     }
-    .mode-btn.active {
+    .mode-chip.active {
       border-color: var(--amber);
       color: #fff;
       background: var(--amber);
-    }
-    .mode-help {
-      padding: 0 10px 8px;
-      font-size: 10px;
-      color: var(--vscode-descriptionForeground);
-      line-height: 1.35;
     }
 
     .chip {
@@ -993,6 +1125,7 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
       <span class="badge-dot"></span><span id="statusTxt">${initialStatusText}</span>
     </span>
     <div class="hdr-right">
+      <button id="btnNewChat" class="icon-btn" title="New conversation">&#43;</button>
       <button id="btnSettings" class="icon-btn" title="Settings">&#9881;</button>
       <button id="btnRefresh"  class="icon-btn" title="Refresh status">&#8635;</button>
     </div>
@@ -1044,9 +1177,6 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
   <div id="main">
 
     <div id="homeView">
-      <button id="btnNewChat" class="new-btn">
-        <span style="font-size:16px;line-height:1">+</span> New conversation
-      </button>
       <div class="sec-title">Recent Conversations</div>
       <div id="sessionList" class="sessions">
         <div class="empty">
@@ -1061,10 +1191,13 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
       <button id="btnBack" class="back-btn">&#8592; Back</button>
       <div id="attachmentRow" class="attachment-row"></div>
       <div id="messages"></div>
-      <div id="typing">
-        <div class="typing-bubble">
-          <span class="dot"></span><span class="dot"></span><span class="dot"></span>
+      <div id="thinkingPanel" class="thinking-panel hidden">
+        <div class="thinking-header" id="thinkingToggle">
+          <span class="thinking-spinner"></span>
+          <span id="thinkingTitle">Working…</span>
+          <span id="thinkingChevron" class="thinking-chevron">▾</span>
         </div>
+        <div id="thinkingSteps" class="thinking-steps"></div>
       </div>
     </div>
 
@@ -1079,24 +1212,27 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
     </div>
   </div>
 
-  <!-- ── Composer (Codex / Copilot-style) ── -->
+  <!-- ── Composer ── -->
   <div class="composer">
     <div class="composer-box">
-      <div class="mode-switch" role="tablist" aria-label="Conversation mode">
-        <button id="modeAgent" type="button" class="mode-btn" data-mode="agent">Agent</button>
-        <button id="modeAsk" type="button" class="mode-btn" data-mode="ask">Ask</button>
-        <button id="modePlan" type="button" class="mode-btn" data-mode="plan">Plan</button>
-      </div>
-      <div id="modeHelp" class="mode-help">Agent can edit files. Ask answers only. Plan writes a reviewable plan artifact.</div>
       <textarea id="taskInput"
                 placeholder="Ask Pulse anything about your code\u2026"
                 rows="2"
                 aria-label="Message"></textarea>
       <div class="composer-inner-row">
         <div class="chips">
-          <span id="chipMode"  class="chip" title="Click to cycle approval mode">balanced</span>
-          <span id="chipModel" class="chip" title="Active planner model">\u2013</span>
-          <button id="btnAttach" type="button" class="chip attach" title="Attach files or folders">+ attach</button>
+          <button id="chipMode"  type="button" class="mode-chip active" title="Click to switch mode">AGENT</button>
+          <div id="modePopup" class="mode-popup hidden">
+            <button type="button" class="mode-option" data-mode="agent">&#9889; Agent</button>
+            <button type="button" class="mode-option" data-mode="ask">&#128172; Ask</button>
+            <button type="button" class="mode-option" data-mode="plan">&#128203; Plan</button>
+          </div>
+          <button id="chipModel" type="button" class="chip" title="Active planner model">\u2013</button>
+          <div id="modelPopup" class="model-popup hidden">
+            <div class="model-popup-title">Switch model</div>
+            <div id="modelPopupList" class="model-popup-list"></div>
+          </div>
+          <button id="btnAttach" type="button" class="chip attach" title="Attach files for context">+ attach</button>
         </div>
         <button id="btnSend" class="send-btn" title="Send (Enter)" disabled>&#8593;</button>
       </div>
@@ -1175,19 +1311,14 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
   const attachmentRow  = $('attachmentRow');
   const sessionList    = $('sessionList');
   const messages       = $('messages');
-  const typing         = $('typing');
   const editsBanner    = $('editsBanner');
   const bannerTxt      = $('bannerTxt');
   const btnApply       = $('btnApply');
   const btnRevert      = $('btnRevert');
-  const modeAgent      = $('modeAgent');
-  const modeAsk        = $('modeAsk');
-  const modePlan       = $('modePlan');
-  const modeHelp       = $('modeHelp');
+  const chipMode       = $('chipMode');
   const taskInput      = $('taskInput');
   const btnSend        = $('btnSend');
   const chipModel      = $('chipModel');
-  const chipMode       = $('chipMode');
   const btnAttach      = $('btnAttach');
   const statusLine     = $('statusLine');
   const tokenRing      = $('tokenRing');
@@ -1195,13 +1326,18 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
   const tokenLabel     = $('tokenLabel');
 
   // ── State ─────────────────────────────────────────────────────────────
-  let summary     = null;
-  let models      = [];
-  let mcpServers  = [];
-  let chatHistory = [];
-  let attachedFiles = [];
+  let summary        = null;
+  let models         = [];
+  let mcpServers     = [];
+  let chatHistory    = [];
+  let attachedFiles  = [];
   let conversationMode = 'agent';
-  let inChat      = false;
+  let inChat         = false;
+  let modePopupOpen  = false;
+  let modelPopupOpen = false;
+  let activeModelName = '';
+  let thinkingSteps  = [];
+  let thinkingStartTime = null;
 
   // ── Helpers ───────────────────────────────────────────────────────────
   function esc(s) {
@@ -1234,31 +1370,152 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
 
   function renderConversationMode(mode) {
     conversationMode = mode || 'agent';
-    const buttons = [modeAgent, modeAsk, modePlan];
-    buttons.forEach(function(button) {
-      if (!button) return;
-      button.classList.toggle('active', button.dataset.mode === conversationMode);
-    });
+
+    if (chipMode) {
+      chipMode.textContent = conversationMode.toUpperCase();
+    }
+
+    // Sync the active state inside the popup if open
+    const modePopup = $('modePopup');
+    if (modePopup) {
+      modePopup.querySelectorAll('.mode-option').forEach(function(btn) {
+        btn.classList.toggle('active', btn.dataset.mode === conversationMode);
+      });
+    }
 
     if (taskInput) {
       if (conversationMode === 'ask') {
-        taskInput.placeholder = 'Ask Pulse a question about this project…';
+        taskInput.placeholder = 'Ask Pulse a question about this project\u2026';
       } else if (conversationMode === 'plan') {
-        taskInput.placeholder = 'Describe the change you want planned…';
+        taskInput.placeholder = 'Describe the change you want planned\u2026';
       } else {
-        taskInput.placeholder = 'Ask Pulse anything about your code…';
+        taskInput.placeholder = 'Ask Pulse anything about your code\u2026';
       }
     }
+  }
 
-    if (modeHelp) {
-      if (conversationMode === 'ask') {
-        modeHelp.textContent = 'Ask is conversational and read-only. It uses attached context but does not make code changes.';
-      } else if (conversationMode === 'plan') {
-        modeHelp.textContent = 'Plan generates a persistent markdown plan artifact and does not edit code files.';
-      } else {
-        modeHelp.textContent = 'Agent can edit files and use attached context to act on the workspace.';
-      }
+  // ── Mode popup ────────────────────────────────────────────────────────
+  function openModePopup() {
+    const popup = $('modePopup');
+    if (!popup) return;
+    popup.querySelectorAll('.mode-option').forEach(function(btn) {
+      btn.classList.toggle('active', btn.dataset.mode === conversationMode);
+    });
+    popup.classList.remove('hidden');
+    modePopupOpen = true;
+  }
+
+  function closeModePopup() {
+    const popup = $('modePopup');
+    if (popup) popup.classList.add('hidden');
+    modePopupOpen = false;
+  }
+
+  // ── Model popup ───────────────────────────────────────────────────────
+  function openModelPopup() {
+    const popup = $('modelPopup');
+    const list  = $('modelPopupList');
+    if (!popup || !list) return;
+    list.innerHTML = '';
+    if (!models.length) {
+      list.innerHTML = '<div style="padding:8px 10px;font-size:11px;opacity:.6">No models available</div>';
+    } else {
+      models.forEach(function(m) {
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'model-btn' + (m.name === activeModelName ? ' active' : '');
+        btn.textContent = m.name;
+        btn.title = m.name;
+        btn.addEventListener('click', function(e) {
+          e.stopPropagation();
+          activeModelName = m.name;
+          if (chipModel) {
+            chipModel.textContent = m.name.split(':')[0].slice(0, 14) || '\u2013';
+            chipModel.title = 'Planner: ' + m.name;
+          }
+          vscode.postMessage({ type: 'setModel', payload: { role: 'planner', model: m.name } });
+          closeModelPopup();
+        });
+        list.appendChild(btn);
+      });
     }
+    popup.classList.remove('hidden');
+    modelPopupOpen = true;
+  }
+
+  function closeModelPopup() {
+    const popup = $('modelPopup');
+    if (popup) popup.classList.add('hidden');
+    modelPopupOpen = false;
+  }
+
+  // Close both popups on outside click
+  document.addEventListener('click', function() {
+    if (modePopupOpen)  { closeModePopup();  }
+    if (modelPopupOpen) { closeModelPopup(); }
+  });
+
+  // ── Thinking panel ────────────────────────────────────────────────────
+  function startThinking() {
+    thinkingSteps     = [];
+    thinkingStartTime = Date.now();
+    const panel  = $('thinkingPanel');
+    const steps  = $('thinkingSteps');
+    const title  = $('thinkingTitle');
+    const chevron = $('thinkingChevron');
+    if (!panel) return;
+    panel.classList.remove('hidden', 'done');
+    if (steps)  { steps.innerHTML = ''; steps.classList.remove('collapsed'); }
+    if (title)  { title.textContent = 'Working\u2026'; }
+    if (chevron){ chevron.textContent = '\u25be'; }
+  }
+
+  function addThinkingStep(step) {
+    thinkingSteps.push(step);
+    const steps = $('thinkingSteps');
+    if (!steps) return;
+    const elapsed = thinkingStartTime
+      ? ((Date.now() - thinkingStartTime) / 1000).toFixed(1) + 's'
+      : '';
+    const div = document.createElement('div');
+    div.className = 'thinking-step fadein';
+    div.innerHTML =
+      '<span class="thinking-step-icon">' + esc(step.icon || '\u00b7') + '</span>' +
+      '<div class="thinking-step-body">' +
+        '<span class="thinking-step-label">' + esc(step.step || '') + '</span>' +
+        (step.detail ? '<span class="thinking-step-detail">' + esc(step.detail) + '</span>' : '') +
+      '</div>' +
+      '<span class="thinking-step-time">' + esc(elapsed) + '</span>';
+    steps.appendChild(div);
+    scrollBottom();
+  }
+
+  function finishThinking() {
+    const panel  = $('thinkingPanel');
+    const title  = $('thinkingTitle');
+    const steps  = $('thinkingSteps');
+    const chevron = $('thinkingChevron');
+    if (!panel) return;
+    panel.classList.add('done');
+    const elapsed = thinkingStartTime
+      ? ((Date.now() - thinkingStartTime) / 1000).toFixed(1)
+      : '';
+    const count = thinkingSteps.length;
+    if (title) {
+      title.textContent = count + ' step' + (count !== 1 ? 's' : '') +
+        (elapsed ? ' \u00b7 ' + elapsed + 's' : '') +
+        ' \u2014 click to expand';
+    }
+    if (steps)  { steps.classList.add('collapsed'); }
+    if (chevron){ chevron.textContent = '\u25b8'; }
+  }
+
+  function toggleThinking() {
+    const steps  = $('thinkingSteps');
+    const chevron = $('thinkingChevron');
+    if (!steps) return;
+    const collapsed = steps.classList.toggle('collapsed');
+    if (chevron) chevron.textContent = collapsed ? '\u25b8' : '\u25be';
   }
 
   function on(el, evt, fn) {
@@ -1538,9 +1795,9 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
     renderConversationMode((s && s.conversationMode) || 'agent');
 
     const model = (s && s.plannerModel) || '';
+    activeModelName = model;
     chipModel.textContent = model.split(':')[0].slice(0, 14) || '\u2013';
     chipModel.title       = 'Planner: ' + (model || 'none');
-    chipMode.textContent  = (s && s.approvalMode) || 'balanced';
 
     const hasPending = s && s.hasPendingEdits;
     editsBanner.classList.toggle('on', Boolean(hasPending));
@@ -1601,7 +1858,7 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
     renderMessages();
     showChat();
 
-    typing.classList.add('on');
+    startThinking();
     scrollBottom();
     statusLine.textContent = 'Thinking\u2026';
 
@@ -1635,9 +1892,35 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
   on(btnSettings, 'click', function() { settingsDrawer.classList.toggle('open'); });
   on(btnRefresh,  'click', function() { vscode.postMessage({ type: 'ping' }); });
 
-  on(modeAgent, 'click', function() { setMode('agent'); });
-  on(modeAsk,   'click', function() { setMode('ask'); });
-  on(modePlan,  'click', function() { setMode('plan'); });
+  on(chipMode, 'click', function(e) {
+    e.stopPropagation();
+    if (modePopupOpen) { closeModePopup(); return; }
+    openModePopup();
+  });
+
+  // Mode-option buttons inside the popup
+  (function() {
+    const popup = $('modePopup');
+    if (!popup) return;
+    popup.querySelectorAll('.mode-option').forEach(function(btn) {
+      btn.addEventListener('click', function(e) {
+        e.stopPropagation();
+        setMode(btn.dataset.mode);
+        closeModePopup();
+      });
+    });
+  }());
+
+  on(chipModel, 'click', function(e) {
+    e.stopPropagation();
+    if (modelPopupOpen) { closeModelPopup(); return; }
+    openModelPopup();
+  });
+
+  on($('thinkingToggle'), 'click', function(e) {
+    e.stopPropagation();
+    toggleThinking();
+  });
 
   on(btnSyncModels, 'click', function() { vscode.postMessage({ type: 'refreshModels' }); });
 
@@ -1662,12 +1945,6 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
     const role  = roleSelect.value;
     const model = modelSelect.value;
     if (model) vscode.postMessage({ type: 'setModel', payload: { role: role, model: model } });
-  });
-
-  on(chipMode, 'click', function() {
-    const modes = ['strict','balanced','fast'];
-    const idx   = modes.indexOf((summary && summary.approvalMode) || 'balanced');
-    vscode.postMessage({ type: 'setApprovalMode', payload: modes[(idx + 1) % modes.length] });
   });
 
   // Two-step confirmation (window.confirm is blocked in VS Code webviews)
@@ -1704,8 +1981,10 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
     if (type === 'sessionDeleted') { handleSessionDeleted(payload); return; }
     if (type === 'sessionAttachments') { renderAttachments(payload); return; }
 
+    if (type === 'thinkingStep') { addThinkingStep(payload); return; }
+
     if (type === 'taskResult') {
-      typing.classList.remove('on');
+      finishThinking();
       const text = (payload && payload.responseText) || JSON.stringify(payload, null, 2);
       chatHistory.push({ role: 'agent', text: text, ts: Date.now() });
       renderMessages();
@@ -1718,7 +1997,7 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
     }
 
     if (type === 'actionResult') {
-      typing.classList.remove('on');
+      finishThinking();
       chatHistory.push({ role: 'agent', text: String(payload), ts: Date.now() });
       renderMessages();
       scrollBottom();

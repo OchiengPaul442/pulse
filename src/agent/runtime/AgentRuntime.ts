@@ -22,6 +22,7 @@ import type {
   ExplainResult,
   ConversationMode,
   RuntimeTaskResult,
+  AgentProgressStep,
 } from "./RuntimeTypes";
 import { SessionStore } from "../sessions/SessionStore";
 import type { SessionRecord } from "../sessions/SessionStore";
@@ -93,6 +94,8 @@ export class AgentRuntime {
 
   private tokensConsumed = 0;
 
+  private progressCallback: ((step: AgentProgressStep) => void) | null = null;
+
   private readonly workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri;
 
   public constructor(
@@ -112,6 +115,16 @@ export class AgentRuntime {
     this.mcpManager = new McpManager(config.mcpServers);
     this.skillRegistry = new SkillRegistry();
     this.webSearch = webSearch;
+  }
+
+  public setProgressCallback(
+    cb: ((step: AgentProgressStep) => void) | null,
+  ): void {
+    this.progressCallback = cb;
+  }
+
+  private emitProgress(step: string, detail?: string, icon = "⚡"): void {
+    this.progressCallback?.({ icon, step, detail });
   }
 
   public async initialize(): Promise<void> {
@@ -164,6 +177,18 @@ export class AgentRuntime {
     return this.availableModels;
   }
 
+  private async updateSetting(key: string, value: unknown): Promise<void> {
+    const cfg = vscode.workspace.getConfiguration("pulse");
+    const target = vscode.workspace.workspaceFolders?.length
+      ? vscode.ConfigurationTarget.Workspace
+      : vscode.ConfigurationTarget.Global;
+    try {
+      await cfg.update(key, value, target);
+    } catch {
+      await cfg.update(key, value, vscode.ConfigurationTarget.Global);
+    }
+  }
+
   public async selectModel(role: ModelRole, modelName: string): Promise<void> {
     const models = await this.listAvailableModels();
     if (!models.some((model) => model.name === modelName)) {
@@ -172,7 +197,6 @@ export class AgentRuntime {
       );
     }
 
-    const cfg = vscode.workspace.getConfiguration("pulse");
     const targetKey =
       role === "planner"
         ? "models.planner"
@@ -182,11 +206,7 @@ export class AgentRuntime {
             ? "models.fast"
             : "models.embedding";
 
-    await cfg.update(
-      targetKey,
-      modelName,
-      vscode.ConfigurationTarget.Workspace,
-    );
+    await this.updateSetting(targetKey, modelName);
 
     if (role === "planner") {
       this.currentConfig.plannerModel = modelName;
@@ -209,12 +229,7 @@ export class AgentRuntime {
   public async setConfiguredMcpServers(
     servers: McpServerConfig[],
   ): Promise<void> {
-    const cfg = vscode.workspace.getConfiguration("pulse");
-    await cfg.update(
-      "mcp.servers",
-      servers,
-      vscode.ConfigurationTarget.Workspace,
-    );
+    await this.updateSetting("mcp.servers", servers);
 
     this.currentConfig.mcpServers = [...servers];
     this.mcpManager.updateServerDefinitions(servers);
@@ -248,8 +263,34 @@ export class AgentRuntime {
     };
   }
 
+  private classifyObjective(objective: string): string {
+    const lower = objective.toLowerCase();
+    if (/fix|bug|error|crash|fail/.test(lower)) return "debug";
+    if (/add|create|implement|build|write/.test(lower)) return "feature";
+    if (/explain|how|what|why|describe/.test(lower)) return "explain";
+    if (/refactor|improve|clean|simplify|rename/.test(lower)) return "refactor";
+    return "general";
+  }
+
+  private async learnFromExchange(
+    objective: string,
+    responseText: string,
+    mode: ConversationMode,
+  ): Promise<void> {
+    if (this.currentConfig.memoryMode === "off") return;
+    const hasCode = responseText.includes("```");
+    const isDetailed = responseText.length > 600;
+    const objectiveType = this.classifyObjective(objective);
+    const style = hasCode ? "code" : isDetailed ? "detailed" : "concise";
+    await this.memoryStore.setPreference(
+      `learned.${objectiveType}.${mode}`,
+      JSON.stringify({ style, ts: new Date().toISOString() }),
+    );
+  }
+
   public async runTask(objective: string): Promise<RuntimeTaskResult> {
     this.resetTokenUsage();
+    this.emitProgress("Starting", "Initializing session context", "🚀");
     let session = await this.sessionStore.getActiveSession();
     if (!session) {
       session = await this.sessionStore.createSession(objective, {
@@ -273,10 +314,19 @@ export class AgentRuntime {
     const conversationHistory = await this.buildConversationHistory(session.id);
 
     if (mode === "ask") {
+      this.emitProgress("Ask mode", "Preparing conversational response", "💬");
       const model = await this.resolveModelOrFallback(
         this.currentConfig.fastModel,
       );
       const webResearch = await this.collectWebResearch(objective, mode);
+      if (webResearch) {
+        this.emitProgress(
+          "Web research",
+          webResearch.query ?? "searching",
+          "🌐",
+        );
+      }
+      this.emitProgress("Generating response", model, "✨");
       const response = await this.provider.chat({
         model,
         messages: [
@@ -317,6 +367,7 @@ export class AgentRuntime {
       });
       await this.sessionStore.updateSessionResult(session.id, response.text);
       await this.editManager.clearPendingProposal();
+      await this.learnFromExchange(objective, response.text, mode);
       if (this.currentConfig.memoryMode !== "off") {
         await this.memoryStore.addEpisode(
           objective,
@@ -344,11 +395,21 @@ export class AgentRuntime {
     }
 
     if (mode === "plan") {
+      this.emitProgress("Plan mode", "Preparing structured plan", "📋");
       const plannerModel = await this.resolveModelOrFallback(
         this.currentConfig.plannerModel,
       );
       const webResearch = await this.collectWebResearch(objective, mode);
+      if (webResearch) {
+        this.emitProgress(
+          "Web research",
+          webResearch.query ?? "searching",
+          "🌐",
+        );
+      }
+      this.emitProgress("Building plan", plannerModel, "🧠");
       const plan = await this.planner.createPlan(objective, plannerModel);
+      this.emitProgress("Saving plan artifact", undefined, "💾");
       const artifactPath = await this.writePlanArtifact(
         objective,
         plan,
@@ -371,6 +432,7 @@ export class AgentRuntime {
       });
       await this.sessionStore.updateSessionResult(session.id, responseText);
       await this.editManager.clearPendingProposal();
+      await this.learnFromExchange(objective, responseText, mode);
       if (this.currentConfig.memoryMode !== "off") {
         await this.memoryStore.addEpisode(
           objective,
@@ -389,6 +451,11 @@ export class AgentRuntime {
     }
 
     if (!allowEdits) {
+      this.emitProgress(
+        "Generating response",
+        this.currentConfig.fastModel,
+        "✨",
+      );
       const model = await this.resolveModelOrFallback(
         this.currentConfig.fastModel,
       );
@@ -429,6 +496,7 @@ export class AgentRuntime {
       });
       await this.sessionStore.updateSessionResult(session.id, response.text);
       await this.editManager.clearPendingProposal();
+      await this.learnFromExchange(objective, response.text, mode);
       if (this.currentConfig.memoryMode !== "off") {
         await this.memoryStore.addEpisode(
           objective,
@@ -457,6 +525,7 @@ export class AgentRuntime {
       };
     }
 
+    this.emitProgress("Agent mode", "Analyzing request", "🧠");
     const plannerModel = await this.resolveModelOrFallback(
       this.currentConfig.plannerModel,
     );
@@ -464,8 +533,10 @@ export class AgentRuntime {
       this.currentConfig.editorModel,
     );
 
+    this.emitProgress("Building plan", plannerModel, "📋");
     const plan = await this.planner.createPlan(objective, plannerModel);
     const selectedSkills = this.skillRegistry.selectForObjective(objective);
+    this.emitProgress("Scanning workspace", "Finding relevant files", "🔍");
     const candidateFiles = await this.scanner.findRelevantFiles(objective, 8);
     const contextSnippets = await this.scanner.readContextSnippets(
       candidateFiles.slice(0, 4),
@@ -476,6 +547,9 @@ export class AgentRuntime {
         ? []
         : await this.memoryStore.latestEpisodes(3);
     const webResearch = await this.collectWebResearch(objective, mode);
+    if (webResearch) {
+      this.emitProgress("Web research", webResearch.query ?? "searching", "🌐");
+    }
 
     const prompt = [
       "You are Pulse, an agentic coding assistant working inside VS Code.",
@@ -519,6 +593,7 @@ export class AgentRuntime {
         : "",
     ].join("\n\n");
 
+    this.emitProgress("Generating response", editorModel, "✨");
     const response = await this.provider.chat({
       model: editorModel,
       format: "json",
@@ -543,6 +618,14 @@ export class AgentRuntime {
       )
       .filter((edit): edit is ProposedEdit => edit !== null);
 
+    if (normalizedEdits.length > 0) {
+      this.emitProgress(
+        "Preparing edits",
+        `${normalizedEdits.length} file change(s)`,
+        "✏️",
+      );
+    }
+
     const proposal =
       normalizedEdits.length > 0
         ? await this.editManager.setPendingProposal(objective, normalizedEdits)
@@ -554,6 +637,7 @@ export class AgentRuntime {
       createdAt: new Date().toISOString(),
     });
     await this.sessionStore.updateSessionResult(session.id, parsed.response);
+    await this.learnFromExchange(objective, parsed.response, mode);
     if (this.currentConfig.memoryMode !== "off") {
       await this.memoryStore.addEpisode(
         objective,
@@ -613,12 +697,7 @@ export class AgentRuntime {
   public async setApprovalMode(
     mode: "strict" | "balanced" | "fast",
   ): Promise<void> {
-    const cfg = vscode.workspace.getConfiguration("pulse");
-    await cfg.update(
-      "behavior.approvalMode",
-      mode,
-      vscode.ConfigurationTarget.Workspace,
-    );
+    await this.updateSetting("behavior.approvalMode", mode);
     this.currentConfig.approvalMode = mode;
     await this.memoryStore.setPreference("approval.mode", mode);
   }
@@ -703,12 +782,7 @@ export class AgentRuntime {
   }
 
   public async setConversationMode(mode: ConversationMode): Promise<void> {
-    const cfg = vscode.workspace.getConfiguration("pulse");
-    await cfg.update(
-      "behavior.conversationMode",
-      mode,
-      vscode.ConfigurationTarget.Workspace,
-    );
+    await this.updateSetting("behavior.conversationMode", mode);
     this.currentConfig.conversationMode = mode;
   }
 
