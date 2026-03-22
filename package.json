@@ -1,0 +1,213 @@
+{
+  "name": "pulse-agent",
+  "displayName": "Pulse Agent",
+  "description": "Personal Agentic AI coding assistant for VS Code using local models.",
+  "version": "0.0.1",
+  "publisher": "local",
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "pulse.openPanel",
+        "title": "Pulse: Open Panel"
+      },
+      {
+        "command": "pulse.startNewTask",
+        "title": "Pulse: Start New Task"
+      },
+      {
+        "command": "pulse.explainSelection",
+        "title": "Pulse: Explain Selection"
+      },
+      {
+        "command": "pulse.fixDiagnosticsCurrentFile",
+        "title": "Pulse: Fix Diagnostics in Current File"
+      },
+      {
+        "command": "pulse.refactorWorkspaceScope",
+        "title": "Pulse: Refactor Workspace Scope"
+      },
+      {
+        "command": "pulse.resumeLastSession",
+        "title": "Pulse: Resume Last Session"
+      },
+      {
+        "command": "pulse.applyProposedChanges",
+        "title": "Pulse: Apply Proposed Changes"
+      },
+      {
+        "command": "pulse.revertLastAgentChanges",
+        "title": "Pulse: Revert Last Agent Changes"
+      },
+      {
+        "command": "pulse.reindexWorkspace",
+        "title": "Pulse: Reindex Workspace"
+      },
+      {
+        "command": "pulse.manageMcpConnections",
+        "title": "Pulse: Manage MCP Connections"
+      },
+      {
+        "command": "pulse.openDiagnosticsReport",
+        "title": "Pulse: Open Diagnostics Report"
+      },
+      {
+        "command": "pulse.selectModels",
+        "title": "Pulse: Select Models"
+      },
+      {
+        "command": "pulse.setApprovalMode",
+        "title": "Pulse: Set Approval Mode"
+      }
+    ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "pulse",
+          "title": "Pulse",
+          "icon": "media/pulse.svg"
+        }
+      ]
+    },
+    "views": {
+      "pulse": [
+        {
+          "id": "pulse.sidebar",
+          "name": "Pulse",
+          "type": "webview",
+          "icon": "media/pulse.svg"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "Pulse",
+      "properties": {
+        "pulse.ollama.baseUrl": {
+          "type": "string",
+          "default": "http://localhost:11434",
+          "description": "Base URL for Ollama provider."
+        },
+        "pulse.models.planner": {
+          "type": "string",
+          "default": "qwen2.5-coder:14b",
+          "description": "Default planning model."
+        },
+        "pulse.models.editor": {
+          "type": "string",
+          "default": "deepseek-coder-v2:16b",
+          "description": "Default editing model."
+        },
+        "pulse.models.fast": {
+          "type": "string",
+          "default": "qwen2.5-coder:7b",
+          "description": "Fast model for quick interactions."
+        },
+        "pulse.models.embedding": {
+          "type": "string",
+          "default": "nomic-embed-text",
+          "description": "Embedding model for semantic memory and retrieval."
+        },
+        "pulse.models.fallbacks": {
+          "type": "array",
+          "default": [
+            "qwen2.5-coder:7b"
+          ],
+          "description": "Fallback model list when the primary model fails.",
+          "items": {
+            "type": "string"
+          }
+        },
+        "pulse.behavior.approvalMode": {
+          "type": "string",
+          "enum": [
+            "strict",
+            "balanced",
+            "fast"
+          ],
+          "default": "balanced",
+          "description": "Approval mode for write and tool actions."
+        },
+        "pulse.behavior.allowTerminalExecution": {
+          "type": "boolean",
+          "default": false,
+          "description": "Allow Pulse to run terminal commands after policy checks."
+        },
+        "pulse.behavior.autoRunVerification": {
+          "type": "boolean",
+          "default": true,
+          "description": "Automatically run verification checks after edits."
+        },
+        "pulse.behavior.maxContextTokens": {
+          "type": "number",
+          "default": 32000,
+          "minimum": 2048,
+          "description": "Maximum context budget for model requests."
+        },
+        "pulse.behavior.memoryMode": {
+          "type": "string",
+          "enum": [
+            "off",
+            "session",
+            "workspace+episodic"
+          ],
+          "default": "workspace+episodic",
+          "description": "Memory behavior mode for storing and retrieving prior context."
+        },
+        "pulse.indexing.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable lightweight workspace indexing for faster context retrieval."
+        },
+        "pulse.indexing.mode": {
+          "type": "string",
+          "enum": [
+            "light",
+            "hybrid"
+          ],
+          "default": "hybrid",
+          "description": "Indexing strategy for workspace discovery."
+        },
+        "pulse.mcp.servers": {
+          "type": "array",
+          "default": [],
+          "description": "MCP server definitions.",
+          "items": {
+            "type": "object"
+          }
+        },
+        "pulse.telemetry.optIn": {
+          "type": "boolean",
+          "default": false,
+          "description": "Opt-in telemetry for local diagnostics and quality metrics."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "clean": "rimraf dist",
+    "compile": "npm run clean && node esbuild.mjs",
+    "watch": "node esbuild.mjs --watch",
+    "check": "tsc --noEmit",
+    "test": "vitest run",
+    "package": "vsce package"
+  },
+  "devDependencies": {
+    "@types/node": "^22.14.0",
+    "@types/vscode": "^1.90.0",
+    "@vscode/vsce": "^3.6.0",
+    "esbuild": "^0.25.2",
+    "rimraf": "^6.0.1",
+    "typescript": "^5.8.3",
+    "vitest": "^3.1.1"
+  }
+}
