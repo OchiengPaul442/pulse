@@ -2,9 +2,10 @@
   "name": "pulse-agent",
   "displayName": "Pulse Agent",
   "description": "Personal Agentic AI coding assistant for VS Code using local models.",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "publisher": "local",
   "license": "MIT",
+  "icon": "media/pulse-icon.png",
   "engines": {
     "vscode": "^1.90.0"
   },

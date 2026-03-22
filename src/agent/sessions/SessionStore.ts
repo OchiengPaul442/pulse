@@ -74,15 +74,19 @@ export class SessionStore {
   }
 
   private async load(): Promise<SessionsFile> {
-    const bytes = await vscode.workspace.fs.readFile(
-      vscode.Uri.file(this.sessionsPath),
-    );
-    const raw = Buffer.from(bytes).toString("utf8");
-    const parsed = JSON.parse(raw) as SessionsFile;
-    return {
-      activeSessionId: parsed.activeSessionId ?? null,
-      sessions: parsed.sessions ?? [],
-    };
+    try {
+      const bytes = await vscode.workspace.fs.readFile(
+        vscode.Uri.file(this.sessionsPath),
+      );
+      const raw = Buffer.from(bytes).toString("utf8");
+      const parsed = JSON.parse(raw) as SessionsFile;
+      return {
+        activeSessionId: parsed.activeSessionId ?? null,
+        sessions: parsed.sessions ?? [],
+      };
+    } catch {
+      return { activeSessionId: null, sessions: [] };
+    }
   }
 
   private async save(state: SessionsFile): Promise<void> {

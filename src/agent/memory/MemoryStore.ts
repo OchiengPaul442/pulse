@@ -45,16 +45,20 @@ export class MemoryStore {
   }
 
   private async load(): Promise<MemoryState> {
-    const bytes = await vscode.workspace.fs.readFile(
-      vscode.Uri.file(this.memoriesPath),
-    );
-    const raw = Buffer.from(bytes).toString("utf8");
-    const parsed = JSON.parse(raw) as MemoryState;
-    return {
-      workspaceFacts: parsed.workspaceFacts ?? [],
-      episodic: parsed.episodic ?? [],
-      preferences: parsed.preferences ?? {},
-    };
+    try {
+      const bytes = await vscode.workspace.fs.readFile(
+        vscode.Uri.file(this.memoriesPath),
+      );
+      const raw = Buffer.from(bytes).toString("utf8");
+      const parsed = JSON.parse(raw) as MemoryState;
+      return {
+        workspaceFacts: parsed.workspaceFacts ?? [],
+        episodic: parsed.episodic ?? [],
+        preferences: parsed.preferences ?? {},
+      };
+    } catch {
+      return { workspaceFacts: [], episodic: [], preferences: {} };
+    }
   }
 
   private async save(state: MemoryState): Promise<void> {

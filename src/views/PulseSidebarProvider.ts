@@ -694,7 +694,7 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
   <!-- ── Header ──────────────────────────────────────────────── -->
   <header class="hdr">
     <div class="hdr-left">
-      <span class="brand">Workspace Agent</span>
+      <span class="brand">Pulse</span>
     </div>
     <div class="hdr-right">
       <span id="statusBadge" class="badge off">
