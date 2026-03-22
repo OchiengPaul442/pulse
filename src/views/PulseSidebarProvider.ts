@@ -282,6 +282,34 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
             return;
           }
 
+          if (
+            message.type === "deleteSession" &&
+            typeof message.payload === "string"
+          ) {
+            const result = await this.runtime.deleteSession(message.payload);
+            if (!result.deleted) {
+              await webviewView.webview.postMessage({
+                type: "actionResult",
+                payload: "Session not found.",
+              });
+              return;
+            }
+
+            await webviewView.webview.postMessage({
+              type: "sessions",
+              payload: await this.runtime.listRecentSessions(),
+            });
+            await webviewView.webview.postMessage({
+              type: "runtimeSummary",
+              payload: await this.runtime.summary(),
+            });
+            await webviewView.webview.postMessage({
+              type: "sessionDeleted",
+              payload: { wasActive: result.wasActive },
+            });
+            return;
+          }
+
           if (message.type === "newConversation") {
             await this.runtime.startNewConversation();
             await webviewView.webview.postMessage({
@@ -525,11 +553,43 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
       border-radius: var(--r-sm); transition: background var(--spd);
     }
     .sitem:hover { background: var(--vscode-list-hoverBackground, rgba(128,128,128,.08)); }
+    .sitem {
+      gap: 8px;
+    }
     .sitem-title {
       font-size: 13px; font-weight: 500;
       white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex: 1;
     }
     .sitem-time { font-size: 11px; color: var(--vscode-descriptionForeground); margin-left: 8px; flex-shrink: 0; }
+    .session-actions {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      flex-shrink: 0;
+    }
+    .session-delete {
+      width: 22px;
+      height: 22px;
+      border: 1px solid transparent;
+      border-radius: 999px;
+      background: transparent;
+      color: var(--vscode-descriptionForeground);
+      cursor: pointer;
+      opacity: .7;
+      transition: opacity var(--spd), background var(--spd), color var(--spd), border-color var(--spd);
+    }
+    .session-delete:hover {
+      opacity: 1;
+      color: var(--red);
+      border-color: var(--red-bdr);
+      background: var(--red-bg);
+    }
+    .session-delete.confirming {
+      color: #fff;
+      border-color: var(--red);
+      background: var(--red);
+      opacity: 1;
+    }
 
     /* ── Chat view ──────────────────────────────────────────────── */
     #chatView { padding: 10px 12px 4px; display: flex; flex-direction: column; gap: 10px; }
@@ -1132,11 +1192,28 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
       d.dataset.sessionId = String(s.id || '');
       d.innerHTML =
         '<span class="sitem-title">' + esc(s.title || s.id) + '</span>' +
-        '<span class="sitem-time">'  + esc(relTime(s.updatedAt)) + '</span>';
+        '<div class="session-actions">' +
+          '<span class="sitem-time">'  + esc(relTime(s.updatedAt)) + '</span>' +
+          '<button type="button" class="session-delete" title="Delete conversation" aria-label="Delete conversation">&#128465;</button>' +
+        '</div>';
       d.addEventListener('click', function() {
         if (s.id) {
           vscode.postMessage({ type: 'openSession', payload: s.id });
         }
+      });
+      const deleteButton = d.querySelector('.session-delete');
+      let deleteArmed = false;
+      deleteButton.addEventListener('click', function(event) {
+        event.preventDefault();
+        event.stopPropagation();
+        if (!deleteArmed) {
+          deleteArmed = true;
+          deleteButton.classList.add('confirming');
+          deleteButton.textContent = 'Delete?';
+          return;
+        }
+
+        vscode.postMessage({ type: 'deleteSession', payload: s.id });
       });
       sessionList.appendChild(d);
     }
@@ -1161,6 +1238,15 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
     renderMessages();
     showChat();
     statusLine.textContent = 'Loaded session';
+  }
+
+  function handleSessionDeleted(payload) {
+    if (payload && payload.wasActive) {
+      chatHistory = [];
+      renderMessages();
+      showHome();
+      statusLine.textContent = 'Deleted conversation';
+    }
   }
 
   // ── Render runtime summary ────────────────────────────────────────────
@@ -1319,6 +1405,7 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
     if (type === 'mcpServers')     { renderMcpServers(payload); return; }
     if (type === 'sessions')       { renderSessions(payload); return; }
     if (type === 'sessionLoaded')  { renderLoadedSession(payload); return; }
+    if (type === 'sessionDeleted') { handleSessionDeleted(payload); return; }
 
     if (type === 'taskResult') {
       typing.classList.remove('on');

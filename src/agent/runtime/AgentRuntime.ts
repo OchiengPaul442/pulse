@@ -494,6 +494,23 @@ export class AgentRuntime {
     return session;
   }
 
+  public async deleteSession(sessionId: string): Promise<{
+    deleted: boolean;
+    wasActive: boolean;
+  }> {
+    const active = await this.sessionStore.getActiveSession();
+    const wasActive = active?.id === sessionId;
+    const deleted = await this.sessionStore.deleteSession(sessionId);
+
+    if (deleted && wasActive) {
+      await this.sessionStore.clearActiveSession();
+      await this.editManager.clearPendingProposal();
+      this.resetTokenUsage();
+    }
+
+    return { deleted, wasActive };
+  }
+
   public async startNewConversation(): Promise<void> {
     await this.sessionStore.clearActiveSession();
     await this.editManager.clearPendingProposal();

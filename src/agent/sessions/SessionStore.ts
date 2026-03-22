@@ -68,6 +68,24 @@ export class SessionStore {
     await this.setActiveSession(null);
   }
 
+  public async deleteSession(sessionId: string): Promise<boolean> {
+    const state = await this.load();
+    const nextSessions = state.sessions.filter(
+      (session) => session.id !== sessionId,
+    );
+    if (nextSessions.length === state.sessions.length) {
+      return false;
+    }
+
+    state.sessions = nextSessions;
+    if (state.activeSessionId === sessionId) {
+      state.activeSessionId = null;
+    }
+
+    await this.save(state);
+    return true;
+  }
+
   public async updateSessionResult(
     sessionId: string,
     result: string,
