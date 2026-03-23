@@ -853,92 +853,118 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
       30%          { transform: translateY(-5px); opacity: 1; }
     }
 
-    /* ── Thinking panel (GitHub Copilot / Kimi style) ────────────── */
+    /* ── Thinking panel (ChatGPT / DeepSeek / Kimi style) ─────────── */
     .thinking-panel {
       align-self: flex-start; width: 100%;
-      border-radius: var(--r-md);
-      border: 1px solid var(--border);
-      border-left: 3px solid var(--amber);
-      background: var(--vscode-input-background, rgba(128,128,128,.06));
-      overflow: hidden; font-size: 11px;
+      overflow: hidden; font-size: 12px;
     }
     .thinking-panel.hidden { display: none; }
     .thinking-header {
-      display: flex; align-items: center; gap: 7px;
-      padding: 7px 10px; cursor: pointer; user-select: none;
+      display: flex; align-items: center; gap: 6px;
+      padding: 6px 2px; cursor: pointer; user-select: none;
     }
-    .thinking-header:hover { background: rgba(128,128,128,.06); }
+    .thinking-header:hover .thinking-chevron { opacity: 1; }
     .thinking-spinner {
-      width: 12px; height: 12px; border-radius: 50%;
-      border: 2px solid var(--amber); border-top-color: transparent;
-      animation: spin 700ms linear infinite; flex-shrink: 0;
+      width: 14px; height: 14px; flex-shrink: 0;
+      position: relative;
     }
-    .thinking-panel.done .thinking-spinner {
-      border-color: var(--vscode-descriptionForeground); border-top-color: transparent;
-      animation: none;
+    .thinking-spinner::before {
+      content: ''; position: absolute; inset: 0;
+      border-radius: 50%; border: 2px solid rgba(128,128,128,.2);
+      border-top-color: var(--vscode-foreground);
+      animation: spin 800ms linear infinite;
+    }
+    .thinking-panel.done .thinking-spinner::before {
+      animation: none; border-color: transparent;
+    }
+    .thinking-panel.done .thinking-spinner::after {
+      content: '\\2713'; position: absolute; inset: 0;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 11px; font-weight: 700;
+      color: var(--green, #22c55e);
     }
     @keyframes spin { to { transform: rotate(360deg); } }
-    #thinkingTitle { flex: 1; font-size: 11px; font-weight: 600; color: var(--vscode-foreground); }
-    .thinking-chevron { font-size: 9px; color: var(--vscode-descriptionForeground); }
-    .thinking-steps { display: flex; flex-direction: column; padding: 0 10px 8px; max-height: 200px; overflow-y: auto; }
+    #thinkingTitle {
+      flex: 1; font-size: 12px; font-weight: 500;
+      color: var(--vscode-descriptionForeground);
+    }
+    .thinking-panel:not(.done) #thinkingTitle {
+      color: var(--vscode-foreground);
+    }
+    .thinking-chevron {
+      font-size: 10px; color: var(--vscode-descriptionForeground);
+      opacity: .6; transition: transform 150ms ease, opacity 150ms ease;
+    }
+    .thinking-chevron.expanded { transform: rotate(180deg); }
+    .thinking-steps {
+      display: flex; flex-direction: column; gap: 1px;
+      padding: 2px 0 8px 22px;
+      max-height: 200px; overflow-y: auto;
+      border-left: 1.5px solid rgba(128,128,128,.15);
+      margin-left: 7px;
+    }
     .thinking-steps.collapsed { display: none; }
     .thinking-step {
-      display: flex; align-items: flex-start; gap: 7px; padding: 2px 0;
+      display: flex; align-items: baseline; gap: 6px;
+      padding: 2px 8px;
       color: var(--vscode-descriptionForeground);
-      animation: fadein 200ms ease forwards;
+      animation: fadein 180ms ease forwards;
     }
-    .thinking-step-icon { flex-shrink: 0; font-size: 11px; margin-top: 1px; }
+    .thinking-step-icon { flex-shrink: 0; font-size: 10px; }
     .thinking-step-body { display: flex; flex-direction: column; min-width: 0; }
     .thinking-step-label { font-size: 11px; font-weight: 500; color: var(--vscode-foreground); }
-    .thinking-step-detail { font-size: 10px; opacity: .65; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-    .thinking-step-time { font-size: 9px; opacity: .45; margin-left: auto; flex-shrink: 0; padding-top: 2px; }
+    .thinking-step-detail { font-size: 10px; opacity: .55; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .thinking-step-time { font-size: 9px; opacity: .4; margin-left: auto; flex-shrink: 0; }
 
     /* ── Mode popup ──────────────────────────────────────────────── */
     .mode-popup {
       position: absolute; bottom: calc(100% + 6px); left: 0; z-index: 200;
-      background: var(--vscode-input-background);
+      background: var(--vscode-editorWidget-background, var(--vscode-input-background));
       border: 1px solid var(--border); border-radius: var(--r-md);
-      display: flex; flex-direction: column; gap: 2px; padding: 5px;
-      min-width: 130px; box-shadow: 0 6px 24px rgba(0,0,0,.28);
-      animation: fadein 140ms ease forwards;
+      display: flex; flex-direction: column; gap: 1px; padding: 4px;
+      min-width: 140px; box-shadow: 0 4px 16px rgba(0,0,0,.22);
+      animation: fadein 120ms ease forwards;
     }
     .mode-popup.hidden { display: none; }
     .mode-option {
       display: flex; align-items: center; gap: 8px;
-      padding: 6px 10px; border-radius: var(--r-sm);
+      padding: 7px 10px; border-radius: var(--r-sm);
       border: none; background: transparent;
       color: var(--vscode-foreground); cursor: pointer;
       font: 12px var(--vscode-font-family); text-align: left;
       transition: background var(--spd);
     }
-    .mode-option:hover { background: rgba(128,128,128,.12); }
-    .mode-option.active { color: var(--amber); font-weight: 700; }
+    .mode-option:hover { background: var(--vscode-list-hoverBackground, rgba(128,128,128,.1)); }
+    .mode-option.active { font-weight: 700; }
+    .mode-option.active::after { content: '\\2713'; margin-left: auto; font-size: 11px; opacity: .7; }
 
     /* ── Model popup ─────────────────────────────────────────────── */
     .model-popup {
       position: absolute; bottom: calc(100% + 6px); left: 0; z-index: 200;
-      background: var(--vscode-input-background);
+      background: var(--vscode-editorWidget-background, var(--vscode-input-background));
       border: 1px solid var(--border); border-radius: var(--r-md);
-      min-width: 180px; max-height: 220px; overflow-y: auto;
-      box-shadow: 0 6px 24px rgba(0,0,0,.28);
-      animation: fadein 140ms ease forwards;
+      min-width: 190px; max-height: 240px; overflow-y: auto;
+      box-shadow: 0 4px 16px rgba(0,0,0,.22);
+      animation: fadein 120ms ease forwards;
     }
     .model-popup.hidden { display: none; }
     .model-popup-title {
       font-size: 10px; font-weight: 700; text-transform: uppercase;
       letter-spacing: .6px; color: var(--vscode-descriptionForeground);
-      padding: 8px 10px 4px; border-bottom: 1px solid var(--border);
+      padding: 8px 10px 5px;
     }
-    .model-popup-list { display: flex; flex-direction: column; gap: 1px; padding: 4px 4px 5px; }
+    .model-popup-list { display: flex; flex-direction: column; gap: 1px; padding: 2px 4px 5px; }
     .model-btn {
-      padding: 6px 8px; border: none; border-radius: var(--r-sm);
+      display: flex; align-items: center; gap: 8px;
+      padding: 7px 8px; border: none; border-radius: var(--r-sm);
       background: transparent; color: var(--vscode-foreground);
       cursor: pointer; font: 12px var(--vscode-font-family);
       text-align: left; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
       transition: background var(--spd);
     }
-    .model-btn:hover { background: rgba(128,128,128,.12); }
-    .model-btn.active { color: var(--amber); font-weight: 700; }
+    .model-btn:hover { background: var(--vscode-list-hoverBackground, rgba(128,128,128,.1)); }
+    .model-btn.active { font-weight: 700; }
+    .model-btn.active::after { content: '\\2713'; margin-left: auto; font-size: 11px; opacity: .7; }
 
     /* ── Empty state ────────────────────────────────────────────── */
     .empty { text-align: center; padding: 28px 12px; color: var(--vscode-descriptionForeground); }
@@ -1194,8 +1220,8 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
       <div id="thinkingPanel" class="thinking-panel hidden">
         <div class="thinking-header" id="thinkingToggle">
           <span class="thinking-spinner"></span>
-          <span id="thinkingTitle">Working…</span>
-          <span id="thinkingChevron" class="thinking-chevron">▾</span>
+          <span id="thinkingTitle">Thinking\u2026</span>
+          <span id="thinkingChevron" class="thinking-chevron expanded">\u25BE</span>
         </div>
         <div id="thinkingSteps" class="thinking-steps"></div>
       </div>
@@ -1466,8 +1492,8 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
     if (!panel) return;
     panel.classList.remove('hidden', 'done');
     if (steps)  { steps.innerHTML = ''; steps.classList.remove('collapsed'); }
-    if (title)  { title.textContent = 'Working\u2026'; }
-    if (chevron){ chevron.textContent = '\u25be'; }
+    if (title)  { title.textContent = 'Thinking\u2026'; }
+    if (chevron){ chevron.textContent = '\u25BE'; chevron.classList.add('expanded'); }
   }
 
   function addThinkingStep(step) {
@@ -1502,12 +1528,12 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
       : '';
     const count = thinkingSteps.length;
     if (title) {
-      title.textContent = count + ' step' + (count !== 1 ? 's' : '') +
-        (elapsed ? ' \u00b7 ' + elapsed + 's' : '') +
-        ' \u2014 click to expand';
+      title.textContent = 'Thought for ' +
+        (elapsed ? elapsed + 's' : '') +
+        (count ? ' \u00b7 ' + count + ' step' + (count !== 1 ? 's' : '') : '');
     }
     if (steps)  { steps.classList.add('collapsed'); }
-    if (chevron){ chevron.textContent = '\u25b8'; }
+    if (chevron){ chevron.textContent = '\u25B8'; chevron.classList.remove('expanded'); }
   }
 
   function toggleThinking() {
@@ -1515,7 +1541,10 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
     const chevron = $('thinkingChevron');
     if (!steps) return;
     const collapsed = steps.classList.toggle('collapsed');
-    if (chevron) chevron.textContent = collapsed ? '\u25b8' : '\u25be';
+    if (chevron) {
+      chevron.textContent = collapsed ? '\u25B8' : '\u25BE';
+      chevron.classList.toggle('expanded', !collapsed);
+    }
   }
 
   function on(el, evt, fn) {

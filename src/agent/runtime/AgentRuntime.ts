@@ -288,6 +288,33 @@ export class AgentRuntime {
     );
   }
 
+  private async getLearnedStyleHint(
+    objective: string,
+    mode: ConversationMode,
+  ): Promise<string> {
+    if (this.currentConfig.memoryMode === "off") return "";
+    const objectiveType = this.classifyObjective(objective);
+    const raw = await this.memoryStore.getPreference(
+      `learned.${objectiveType}.${mode}`,
+    );
+    if (!raw) return "";
+    try {
+      const parsed = JSON.parse(raw) as { style?: string };
+      if (parsed.style === "code") {
+        return "The user prefers responses with code examples for this type of request.";
+      }
+      if (parsed.style === "detailed") {
+        return "The user prefers detailed, thorough responses for this type of request.";
+      }
+      if (parsed.style === "concise") {
+        return "The user prefers concise, to-the-point responses for this type of request.";
+      }
+    } catch {
+      // ignore malformed
+    }
+    return "";
+  }
+
   public async runTask(objective: string): Promise<RuntimeTaskResult> {
     this.resetTokenUsage();
     this.emitProgress("Starting", "Initializing session context", "🚀");
@@ -318,6 +345,7 @@ export class AgentRuntime {
       const model = await this.resolveModelOrFallback(
         this.currentConfig.fastModel,
       );
+      const styleHint = await this.getLearnedStyleHint(objective, mode);
       const webResearch = await this.collectWebResearch(objective, mode);
       if (webResearch) {
         this.emitProgress(
@@ -333,7 +361,8 @@ export class AgentRuntime {
           {
             role: "system",
             content:
-              "You are Pulse in Ask mode. Be conversational, answer questions, and explain context. Do not propose code edits, terminal commands, or plan artifacts.",
+              "You are Pulse in Ask mode. Be conversational, answer questions, and explain context. Do not propose code edits, terminal commands, or plan artifacts." +
+              (styleHint ? " " + styleHint : ""),
           },
           ...conversationHistory,
           ...(webResearch
@@ -459,13 +488,15 @@ export class AgentRuntime {
       const model = await this.resolveModelOrFallback(
         this.currentConfig.fastModel,
       );
+      const styleHintConvo = await this.getLearnedStyleHint(objective, mode);
       const response = await this.provider.chat({
         model,
         messages: [
           {
             role: "system",
             content:
-              "You are Pulse, a concise VS Code coding assistant. Reply conversationally to greetings and general questions. Do not propose file edits unless the user explicitly asks for code changes.",
+              "You are Pulse, a concise VS Code coding assistant. Reply conversationally to greetings and general questions. Do not propose file edits unless the user explicitly asks for code changes." +
+              (styleHintConvo ? " " + styleHintConvo : ""),
           },
           ...conversationHistory,
           ...(attachedContext.length > 0
@@ -550,9 +581,11 @@ export class AgentRuntime {
     if (webResearch) {
       this.emitProgress("Web research", webResearch.query ?? "searching", "🌐");
     }
+    const styleHintAgent = await this.getLearnedStyleHint(objective, mode);
 
     const prompt = [
       "You are Pulse, an agentic coding assistant working inside VS Code.",
+      ...(styleHintAgent ? [styleHintAgent] : []),
       "Operating rules:",
       "- Prefer minimal, targeted edits over broad rewrites.",
       "- Keep behavior backward compatible unless the objective requires change.",
