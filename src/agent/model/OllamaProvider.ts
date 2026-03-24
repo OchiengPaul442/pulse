@@ -91,6 +91,7 @@ export class OllamaProvider implements ModelProvider {
       headers: {
         "content-type": "application/json",
       },
+      ...(request.signal ? { signal: request.signal } : {}),
       body: JSON.stringify({
         model: request.model,
         messages: request.messages,

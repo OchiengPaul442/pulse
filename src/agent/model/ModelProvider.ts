@@ -10,6 +10,7 @@ export interface ChatRequest {
   temperature?: number;
   maxTokens?: number;
   format?: "json";
+  signal?: AbortSignal;
 }
 
 export interface ChatResponse {

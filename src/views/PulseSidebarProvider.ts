@@ -152,20 +152,65 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
             message.type === "runTask" &&
             typeof message.payload === "string"
           ) {
-            const result = await this.runtime.runTask(message.payload);
-            await webviewView.webview.postMessage({
-              type: "taskResult",
-              payload: {
-                responseText: result.responseText,
-                sessionId: result.sessionId,
-                proposedEdits: result.proposal?.edits.length ?? 0,
-              },
-            });
+            try {
+              const result = await this.runtime.runTask(message.payload);
+              await webviewView.webview.postMessage({
+                type: "taskResult",
+                payload: {
+                  responseText: result.responseText,
+                  sessionId: result.sessionId,
+                  proposedEdits: result.proposal?.edits.length ?? 0,
+                  cancelled: result.responseText === "Task cancelled.",
+                },
+              });
+            } catch (err) {
+              const msg = err instanceof Error ? err.message : String(err);
+              const cancelled =
+                msg.includes("__TASK_CANCELLED__") ||
+                msg.includes("cancelled") ||
+                msg.includes("Aborted");
+              await webviewView.webview.postMessage({
+                type: "taskResult",
+                payload: {
+                  responseText: cancelled ? "Task cancelled." : `Error: ${msg}`,
+                  sessionId: "",
+                  proposedEdits: 0,
+                  cancelled,
+                },
+              });
+            }
 
             const sessions = await this.runtime.listRecentSessions();
             await webviewView.webview.postMessage({
               type: "sessions",
               payload: sessions,
+            });
+            return;
+          }
+
+          if (message.type === "cancelTask") {
+            this.runtime.cancelTask();
+            await webviewView.webview.postMessage({
+              type: "taskResult",
+              payload: {
+                responseText: "Task cancelled.",
+                sessionId: "",
+                proposedEdits: 0,
+                cancelled: true,
+              },
+            });
+            return;
+          }
+
+          if (
+            message.type === "setSelfLearn" &&
+            typeof message.payload === "boolean"
+          ) {
+            await this.runtime.setSelfLearn(message.payload);
+            const updatedSum = await this.runtime.summary();
+            await webviewView.webview.postMessage({
+              type: "runtimeSummary",
+              payload: updatedSum,
             });
             return;
           }
@@ -680,8 +725,6 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
     .msg.user .bubble { background: var(--amber); color: #fff; border-bottom-right-radius: 3px; }
     .msg.agent .bubble { background: var(--bg2); border: 1px solid var(--border); border-bottom-left-radius: 3px; }
     .bubble code { font-family: var(--vscode-editor-font-family, monospace); font-size: 11.5px; background: rgba(0,0,0,.15); padding: 1px 4px; border-radius: 3px; }
-    .bubble pre { font-family: var(--vscode-editor-font-family, monospace); font-size: 11.5px; line-height: 1.45; background: rgba(0,0,0,.18); border-radius: 6px; padding: 8px 10px; margin: 6px 0; overflow-x: auto; white-space: pre-wrap; position: relative; }
-    .bubble pre code { background: none; padding: 0; }
     .bubble h1, .bubble h2, .bubble h3 { margin: 8px 0 4px; font-size: 13px; font-weight: 700; }
     .bubble ul, .bubble ol { margin: 4px 0; padding-left: 18px; }
     .bubble p { margin: 4px 0; }
@@ -691,16 +734,22 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
     .copy-btn { border: none; background: transparent; color: var(--fg2); cursor: pointer; font-size: 11px; opacity: 0; transition: opacity var(--spd); padding: 1px 4px; border-radius: 4px; }
     .copy-btn:hover { opacity: 1 !important; background: rgba(128,128,128,.12); }
     .msg:hover .copy-btn { opacity: .6; }
+    .retry-btn { border: none; background: transparent; color: var(--fg2); cursor: pointer; font-size: 12px; opacity: 0; transition: opacity var(--spd); padding: 1px 4px; border-radius: 4px; }
+    .retry-btn:hover { opacity: 1 !important; color: var(--amber); background: rgba(128,128,128,.12); }
+    .msg:hover .retry-btn { opacity: .5; }
 
     /* ── Thinking panel (dynamic single-thought, ChatGPT-style) ─── */
     .thinking-panel { align-self: flex-start; width: 100%; overflow: hidden; font-size: 12px; }
     .thinking-panel.hidden { display: none; }
     .thinking-header { display: flex; align-items: center; gap: 6px; padding: 6px 2px; }
-    .thinking-spinner { width: 13px; height: 13px; flex-shrink: 0; position: relative; }
-    .thinking-spinner::before { content: ''; position: absolute; inset: 0; border-radius: 50%; border: 2px solid rgba(128,128,128,.15); border-top-color: var(--amber); animation: spin 700ms linear infinite; }
-    .thinking-panel.done .thinking-spinner::before { animation: none; border-color: transparent; }
-    .thinking-panel.done .thinking-spinner::after { content: '\\2713'; position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; font-size: 10px; font-weight: 700; color: var(--green); }
-    @keyframes spin { to { transform: rotate(360deg); } }
+    .thinking-dots { display: flex; align-items: center; gap: 3px; flex-shrink: 0; }
+    .thinking-dots span { display: block; width: 5px; height: 5px; border-radius: 50%; background: var(--amber); animation: bounce-dot 1.3s ease-in-out infinite; }
+    .thinking-dots span:nth-child(2) { animation-delay: .2s; }
+    .thinking-dots span:nth-child(3) { animation-delay: .4s; }
+    .thinking-panel.done .thinking-dots { display: none; }
+    .thinking-done-icon { flex-shrink: 0; font-size: 11px; font-weight: 700; color: var(--green); display: none; }
+    .thinking-panel.done .thinking-done-icon { display: block; }
+    @keyframes bounce-dot { 0%, 60%, 100% { transform: translateY(0); opacity: .35; } 30% { transform: translateY(-5px); opacity: 1; } }
     #thinkingTitle { flex: 1; font-size: 11px; font-weight: 600; color: var(--fg2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     .thinking-panel:not(.done) #thinkingTitle { color: var(--fg); }
     .thinking-elapsed { font-size: 10px; color: var(--fg2); opacity: .5; flex-shrink: 0; }
@@ -770,9 +819,26 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
     .chip:hover { border-color: var(--amber); color: var(--amber); background: var(--amber-bg); }
     .chip.attach { color: var(--amber); border-style: dashed; }
 
-    .send-btn { width: 28px; height: 28px; min-width: 28px; border: none; border-radius: 8px; background: var(--amber); color: #fff; font-size: 14px; line-height: 1; cursor: default; display: flex; align-items: center; justify-content: center; transition: opacity var(--spd), transform var(--spd); opacity: .25; }
+    .send-btn { width: 28px; height: 28px; min-width: 28px; border: none; border-radius: 8px; background: var(--amber); color: #fff; font-size: 14px; line-height: 1; cursor: default; display: flex; align-items: center; justify-content: center; transition: opacity var(--spd), transform var(--spd), background var(--spd); opacity: .25; }
     .send-btn:not([disabled]) { opacity: 1; cursor: pointer; }
     .send-btn:not([disabled]):hover { background: #d97706; transform: scale(1.05); }
+    .send-btn.stop { background: #ef4444; opacity: 1; cursor: pointer; }
+    .send-btn.stop:hover { background: #dc2626; transform: scale(1.05); }
+
+    /* --- Scroll-to-bottom button --- */
+    #scrollBtn { position: fixed; right: 16px; bottom: 130px; z-index: 500; width: 26px; height: 26px; border-radius: 50%; background: var(--bg2); border: 1px solid var(--border); color: var(--fg2); cursor: pointer; opacity: 0; pointer-events: none; transition: opacity var(--spd), transform var(--spd); box-shadow: 0 2px 8px rgba(0,0,0,.25); display: flex; align-items: center; justify-content: center; font-size: 13px; }
+    #scrollBtn.visible { opacity: 1; pointer-events: all; }
+    #scrollBtn:hover { color: var(--amber); border-color: var(--amber); transform: translateY(-2px); }
+
+    /* --- Rich code blocks --- */
+    .code-block { margin: 6px 0; border-radius: 8px; overflow: hidden; border: 1px solid rgba(255,255,255,.08); }
+    .code-header { display: flex; align-items: center; justify-content: space-between; background: rgba(0,0,0,.28); padding: 5px 10px; }
+    .code-lang { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .6px; color: var(--fg2); }
+    .code-copy { border: none; background: transparent; color: var(--fg2); cursor: pointer; font-size: 10px; padding: 1px 7px; border-radius: 4px; transition: all var(--spd); }
+    .code-copy:hover { color: var(--amber); background: rgba(255,255,255,.07); }
+    .code-block pre { margin: 0; border-radius: 0; border: none; padding: 10px 12px; background: rgba(0,0,0,.18); }
+    .bubble pre { font-family: var(--vscode-editor-font-family, monospace); font-size: 11.5px; line-height: 1.45; background: rgba(0,0,0,.18); border-radius: 6px; padding: 8px 10px; margin: 6px 0; overflow-x: auto; white-space: pre-wrap; position: relative; }
+    .bubble pre code { background: none; padding: 0; }
 
     /* ── Permission bar (GitHub Copilot style) ─── */
     .perm-bar { display: flex; align-items: center; justify-content: space-between; padding: 4px 4px 2px; gap: 6px; }
@@ -793,6 +859,18 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
     .btn.danger { color: var(--red); border-color: var(--red-bdr); }
     .btn.danger:hover { background: var(--red-bg); }
     .btn.sm { padding: 3px 7px; font-size: 10px; }
+
+    /* ── Self-learn toggle ─── */
+    .self-learn-row { display: flex; align-items: center; justify-content: space-between; padding: 4px 2px; gap: 8px; }
+    .self-learn-info { display: flex; flex-direction: column; gap: 1px; }
+    .self-learn-label { font-size: 11px; font-weight: 600; color: var(--fg); }
+    .self-learn-desc { font-size: 10px; color: var(--fg2); line-height: 1.3; }
+    .toggle-switch { position: relative; width: 36px; height: 20px; flex-shrink: 0; }
+    .toggle-switch input { opacity: 0; width: 0; height: 0; position: absolute; }
+    .toggle-track { position: absolute; inset: 0; background: rgba(128,128,128,.2); border-radius: 99px; cursor: pointer; transition: background var(--spd); }
+    .toggle-track::after { content: ''; position: absolute; top: 2px; left: 2px; width: 16px; height: 16px; border-radius: 50%; background: #fff; transition: transform var(--spd); }
+    .toggle-switch input:checked + .toggle-track { background: var(--amber); }
+    .toggle-switch input:checked + .toggle-track::after { transform: translateX(16px); }
 
     @keyframes fadein { from { opacity: 0; transform: translateY(3px); } to { opacity: 1; transform: translateY(0); } }
     .fadein { animation: fadein 180ms ease forwards; }
@@ -836,6 +914,16 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
       <div id="mcpList" class="mcp-list"></div>
       <div class="mcp-note">Stdio servers use a command + optional args. HTTP/SSE servers use a URL.</div>
     </div>
+    <div class="srow self-learn-row">
+      <div class="self-learn-info">
+        <div class="self-learn-label">&#9889; Self-Learn</div>
+        <div class="self-learn-desc">Improve from past sessions in the background</div>
+      </div>
+      <label class="toggle-switch">
+        <input type="checkbox" id="selfLearnToggle" />
+        <span class="toggle-track"></span>
+      </label>
+    </div>
   </div>
 
   <div id="main">
@@ -851,7 +939,8 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
       <div id="messages"></div>
       <div id="thinkingPanel" class="thinking-panel hidden">
         <div class="thinking-header" id="thinkingToggle">
-          <span class="thinking-spinner"></span>
+          <span class="thinking-dots"><span></span><span></span><span></span></span>
+          <span class="thinking-done-icon">&#10003;</span>
           <span id="thinkingTitle">Thinking\u2026</span>
           <span id="thinkingElapsed" class="thinking-elapsed"></span>
         </div>
@@ -859,6 +948,8 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
       </div>
     </div>
   </div>
+
+  <button id="scrollBtn" title="Scroll to bottom">&#8595;</button>
 
   <div id="editsBanner">
     <span id="bannerTxt" class="banner-txt">Pending edits ready</span>
@@ -957,6 +1048,7 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
   var chipMode = D('chipMode'), chipModel = D('chipModel');
   var taskInput = D('taskInput'), btnSend = D('btnSend'), btnAttach = D('btnAttach');
   var permBtn = D('permBtn'), permBtnIcon = D('permBtnIcon'), permBtnLabel = D('permBtnLabel');
+  var scrollBtn = D('scrollBtn'), selfLearnToggle = D('selfLearnToggle');
 
   // State
   var summary = null, models = [], mcpServers = [];
@@ -983,10 +1075,15 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
   // Markdown rendering
   function renderMarkdown(raw) {
     var html = esc(raw);
+    var blockIdx = 0;
     html = html.replace(/\`\`\`(\\w*)\\n([\\s\\S]*?)\`\`\`/g, function(_, lang, code) {
-      return '<pre><code>' + code + '</code></pre>';
+      var label = lang || 'code';
+      var bid = 'cb-' + (blockIdx++);
+      return '<div class="code-block"><div class="code-header"><span class="code-lang">' + esc(label) + '</span>' +
+        '<button class="code-copy" data-bid="' + bid + '">Copy</button></div>' +
+        '<pre id="' + bid + '"><code>' + code + '</code></pre></div>';
     });
-    html = html.replace(/\`\`\`([\\s\\S]*?)\`\`\`/g, '<pre><code>$1</code></pre>');
+    html = html.replace(/\`\`\`([\\s\\S]*?)\`\`\`/g, '<div class="code-block"><pre><code>$1</code></pre></div>');
     html = html.replace(/\`([^\`\\n]+)\`/g, '<code>$1</code>');
     html = html.replace(/\\*\\*(.+?)\\*\\*/g, '<strong>$1</strong>');
     html = html.replace(/\\*(.+?)\\*/g, '<em>$1</em>');
@@ -995,7 +1092,7 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
     html = html.replace(/^# (.+)$/gm, '<h1>$1</h1>');
     html = html.replace(/^- (.+)$/gm, '<li>$1</li>');
     html = html.replace(/\\n/g, '<br>');
-    html = html.replace(/<pre><code>(.*?)<\\/code><\\/pre>/gs, function(match) {
+    html = html.replace(/<pre[^>]*><code>([\\s\\S]*?)<\\/code><\\/pre>/g, function(match) {
       return match.replace(/<br>/g, '\\n');
     });
     return html;
@@ -1094,17 +1191,17 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
     }
     scrollBottom();
   }
-  function finishThinking() {
+  function finishThinking(cancelled) {
     var panel = D('thinkingPanel'), title = D('thinkingTitle'), thought = D('thinkingActiveThought'), elapsed = D('thinkingElapsed');
     if (thinkingTimer) { clearInterval(thinkingTimer); thinkingTimer = null; }
     if (!panel) return;
     panel.classList.add('done');
     var sec = thinkingStartTime ? ((Date.now() - thinkingStartTime) / 1000).toFixed(1) : '0';
     var count = thinkingSteps.length;
-    if (title) title.textContent = 'Completed in ' + sec + 's \u00b7 ' + count + ' step' + (count !== 1 ? 's' : '');
+    if (title) title.textContent = cancelled ? 'Cancelled after ' + sec + 's' : 'Completed in ' + sec + 's \u00b7 ' + count + ' step' + (count !== 1 ? 's' : '');
     if (thought) thought.textContent = '';
     if (elapsed) elapsed.textContent = '';
-    isBusy = false;
+    setBusyMode(false);
   }
 
   // MCP utils
@@ -1174,12 +1271,15 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
       var html = renderMarkdown(text);
       var rawTs = m.ts || m.createdAt || null;
       var ts = rawTs ? relTime(new Date(rawTs).toISOString()) : '';
+      var footerActions = role === 'agent'
+        ? '<button class="retry-btn" title="Retry">\u21ba</button><button class="copy-btn" title="Copy message">\uD83D\uDCCB</button>'
+        : '<button class="copy-btn" title="Copy message">\uD83D\uDCCB</button>';
       div.innerHTML = '<div class="bubble">' + html + '</div>' +
         '<div class="msg-footer">' +
         '<span class="msg-time">' + esc(ts) + '</span>' +
-        '<button class="copy-btn" title="Copy message">\uD83D\uDCCB</button>' +
+        '<div style="display:flex;gap:2px;align-items:center">' + footerActions + '</div>' +
         '</div>';
-      (function(t, el) {
+      (function(t, el, msgRole) {
         el.querySelector('.copy-btn').addEventListener('click', function(e) {
           e.stopPropagation();
           var target = e.currentTarget;
@@ -1188,7 +1288,23 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
             setTimeout(function() { target.textContent = '\uD83D\uDCCB'; }, 1200);
           });
         });
-      })(text, div);
+        if (msgRole === 'agent') {
+          var retryBtn = el.querySelector('.retry-btn');
+          if (retryBtn) retryBtn.addEventListener('click', function(e) {
+            e.stopPropagation();
+            if (isBusy) return;
+            var lastUserText = '';
+            for (var j = chatHistory.length - 1; j >= 0; j--) {
+              if (chatHistory[j].role === 'user') { lastUserText = chatHistory[j].text || chatHistory[j].content || ''; break; }
+            }
+            if (lastUserText && taskInput) {
+              taskInput.value = lastUserText;
+              autoGrow(taskInput);
+              sendTask();
+            }
+          });
+        }
+      })(text, div, role);
       messages.appendChild(div);
     }
   }
@@ -1242,6 +1358,7 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
     renderConversationMode((s && s.conversationMode) || 'agent');
     if (s && s.permissionMode) updatePermUI(s.permissionMode);
     if (s && s.persona && personaSelect) personaSelect.value = s.persona;
+    if (s && typeof s.selfLearnEnabled === 'boolean' && selfLearnToggle) selfLearnToggle.checked = s.selfLearnEnabled;
     var model = (s && s.plannerModel) || '';
     activeModelName = model;
     chipModel.textContent = model.split(':')[0].slice(0, 14) || '\u2013';
@@ -1270,20 +1387,70 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
   }
 
   // Send task
+  function setBusyMode(busy) {
+    isBusy = busy;
+    if (busy) {
+      btnSend.disabled = false;
+      btnSend.classList.add('stop');
+      btnSend.title = 'Stop';
+      btnSend.innerHTML = '&#9632;';
+    } else {
+      btnSend.classList.remove('stop');
+      btnSend.title = 'Send (Enter)';
+      btnSend.innerHTML = '&#8593;';
+      btnSend.disabled = taskInput ? taskInput.value.trim().length === 0 : true;
+    }
+  }
+
   function sendTask() {
+    if (isBusy) {
+      vscode.postMessage({ type: 'cancelTask' });
+      setBusyMode(false);
+      finishThinking();
+      return;
+    }
     var text = taskInput.value.trim();
-    if (!text || isBusy) return;
-    taskInput.value = ''; taskInput.style.height = 'auto'; btnSend.disabled = true;
-    isBusy = true;
+    if (!text) return;
+    taskInput.value = ''; taskInput.style.height = 'auto';
+    setBusyMode(true);
     chatHistory.push({ role: 'user', text: text, ts: Date.now() });
     renderMessages(); showChat(); startThinking(); scrollBottom();
     vscode.postMessage({ type: 'runTask', payload: text });
   }
 
   // Event listeners
-  on(taskInput, 'input', function() { autoGrow(taskInput); btnSend.disabled = taskInput.value.trim().length === 0; });
+  on(taskInput, 'input', function() { autoGrow(taskInput); if (!isBusy) btnSend.disabled = taskInput.value.trim().length === 0; });
   on(taskInput, 'keydown', function(e) { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendTask(); } });
   on(btnSend, 'click', sendTask);
+
+  // Scroll-to-bottom button
+  (function() {
+    var mainEl = D('main');
+    if (mainEl) mainEl.addEventListener('scroll', function() {
+      var atBottom = mainEl.scrollTop + mainEl.clientHeight >= mainEl.scrollHeight - 50;
+      if (scrollBtn) scrollBtn.classList.toggle('visible', !atBottom);
+    });
+    on(scrollBtn, 'click', scrollBottom);
+  }());
+
+  // Code-copy event delegation (persistent)
+  on(messages, 'click', function(e) {
+    var btn = e.target;
+    if (!btn || !btn.classList || !btn.classList.contains('code-copy')) return;
+    e.stopPropagation();
+    var header = btn.parentNode;
+    var block = header && header.nextElementSibling;
+    if (block && block.tagName === 'PRE') {
+      navigator.clipboard.writeText(block.textContent || '').then(function() {
+        var prev = btn.textContent;
+        btn.textContent = '\u2713 Copied';
+        setTimeout(function() { btn.textContent = prev; }, 1500);
+      });
+    }
+  });
+
+  // Self-learn toggle
+  on(selfLearnToggle, 'change', function() { vscode.postMessage({ type: 'setSelfLearn', payload: selfLearnToggle.checked }); });
 
   on(btnNewChat, 'click', function() { chatHistory = []; attachedFiles = []; renderAttachments(attachedFiles); renderMessages(); showChat(); vscode.postMessage({ type: 'newConversation' }); taskInput.focus(); });
   on(btnBack, 'click', showHome);
@@ -1327,15 +1494,18 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
     if (type === 'thinkingStep') { addThinkingStep(payload); return; }
     if (type === 'tokenUpdate') { updateTokenRing((payload && payload.percent) || 0); return; }
     if (type === 'taskResult') {
-      finishThinking();
-      var text = (payload && payload.responseText) || JSON.stringify(payload, null, 2);
-      chatHistory.push({ role: 'agent', text: text, ts: Date.now() });
-      renderMessages(); scrollBottom();
+      var isCancelled = payload && payload.cancelled;
+      finishThinking(isCancelled);
+      if (!isCancelled) {
+        var text = (payload && payload.responseText) || JSON.stringify(payload, null, 2);
+        chatHistory.push({ role: 'agent', text: text, ts: Date.now() });
+        renderMessages(); scrollBottom();
+      }
       vscode.postMessage({ type: 'ping' });
       return;
     }
     if (type === 'actionResult') {
-      finishThinking();
+      finishThinking(false);
       var txt = String(payload || '');
       if (txt && txt.indexOf('Approval mode set') !== 0 && txt.indexOf('Permission mode set') !== 0 && txt.indexOf('Updated ') !== 0 && txt.indexOf('Mode set to') !== 0 && txt.indexOf('MCP servers updated') !== 0) {
         chatHistory.push({ role: 'agent', text: txt, ts: Date.now() });

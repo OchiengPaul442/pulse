@@ -64,6 +64,7 @@ export interface RuntimeSummary {
   tokenUsagePercent: number;
   mcpConfigured: number;
   mcpHealthy: number;
+  selfLearnEnabled: boolean;
 }
 
 export interface RecentSessionItem {
@@ -127,6 +128,12 @@ export class AgentRuntime {
   private taskQueue: Promise<RuntimeTaskResult> = Promise.resolve(
     null as unknown as RuntimeTaskResult,
   );
+
+  /** AbortController for the currently running task. */
+  private abortController: AbortController | null = null;
+
+  /** Self-learn background loop timer. */
+  private selfLearnTimer: ReturnType<typeof setInterval> | null = null;
 
   public constructor(
     config: AgentConfig,
@@ -242,6 +249,10 @@ export class AgentRuntime {
     this.logger.debug(`Fast model: ${this.currentConfig.fastModel}`);
     this.logger.debug(`Storage path: ${this.storage.storageDir}`);
     this.logger.info(`Ollama health: ${this.health.message}`);
+
+    if (this.currentConfig.selfLearnEnabled) {
+      this.startSelfLearnLoop();
+    }
   }
 
   public async refreshProviderState(): Promise<void> {
@@ -472,17 +483,87 @@ export class AgentRuntime {
     return lines.join("\n");
   }
 
+  /** Cancel the currently running task, if any. */
+  public cancelTask(): void {
+    this.abortController?.abort();
+    this.abortController = null;
+  }
+
+  /** Enable or disable the background self-learn loop. */
+  public async setSelfLearn(enabled: boolean): Promise<void> {
+    await this.updateSetting("behavior.selfLearn", enabled);
+    this.currentConfig.selfLearnEnabled = enabled;
+    if (enabled) {
+      this.startSelfLearnLoop();
+    } else {
+      this.stopSelfLearnLoop();
+    }
+  }
+
+  private startSelfLearnLoop(): void {
+    if (this.selfLearnTimer) return; // already running
+    // Run an improvement cycle every 45 seconds while self-learn is active
+    this.selfLearnTimer = setInterval(() => {
+      this.improvementEngine.runSelfImprovementCycle().catch((err) => {
+        this.logger.warn(`Self-learn cycle error: ${err}`);
+      });
+    }, 45_000);
+    this.logger.info("Self-learn loop started (every 45s)");
+  }
+
+  private stopSelfLearnLoop(): void {
+    if (this.selfLearnTimer) {
+      clearInterval(this.selfLearnTimer);
+      this.selfLearnTimer = null;
+      this.logger.info("Self-learn loop stopped");
+    }
+  }
+
   public runTask(objective: string): Promise<RuntimeTaskResult> {
     // Enqueue — ensures only one task runs at a time.
     // Earlier tasks must finish (or fail) before the next one starts.
+    const controller = new AbortController();
+    this.abortController = controller;
     this.taskQueue = this.taskQueue
       .catch(() => {})
-      .then(() => this.executeTask(objective));
+      .then(() => {
+        if (controller.signal.aborted) {
+          return this.makeCancelledResult(objective);
+        }
+        return this.executeTask(objective, controller.signal);
+      })
+      .finally(() => {
+        if (this.abortController === controller) this.abortController = null;
+      });
     return this.taskQueue;
   }
 
-  private async executeTask(objective: string): Promise<RuntimeTaskResult> {
+  private makeCancelledResult(objective: string): RuntimeTaskResult {
+    return {
+      sessionId: "",
+      objective,
+      plan: {
+        objective,
+        assumptions: [],
+        acceptanceCriteria: [],
+        steps: [],
+        taskSlices: [],
+        verification: [],
+      },
+      responseText: "Task cancelled.",
+      proposal: null,
+    };
+  }
+
+  private async executeTask(
+    objective: string,
+    signal?: AbortSignal,
+  ): Promise<RuntimeTaskResult> {
+    const checkAborted = () => {
+      if (signal?.aborted) throw new Error("__TASK_CANCELLED__");
+    };
     this.resetTokenUsage();
+    checkAborted();
     this.emitProgress("Starting", "Initializing session context", "🚀");
     let session = await this.sessionStore.getActiveSession();
     if (!session) {
@@ -570,8 +651,10 @@ export class AgentRuntime {
       }
       this.emitProgress("Generating response", model, "✨");
       const taskStart = Date.now();
+      checkAborted();
       const response = await this.provider.chat({
         model,
+        signal,
         messages: [
           {
             role: "system" as const,
@@ -724,8 +807,10 @@ export class AgentRuntime {
       const improvementHintsConvo =
         await this.improvementEngine.getOptimizedBehaviorHints(objective, mode);
       const taskStartConvo = Date.now();
+      checkAborted();
       const response = await this.provider.chat({
         model,
+        signal,
         messages: [
           {
             role: "system" as const,
@@ -887,9 +972,11 @@ export class AgentRuntime {
       .join("\n");
 
     this.emitProgress("Generating response", editorModel, "✨");
+    checkAborted();
     const response = await this.provider.chat({
       model: editorModel,
       format: "json",
+      signal,
       messages: [
         {
           role: "system",
@@ -1403,6 +1490,7 @@ export class AgentRuntime {
       tokenUsagePercent,
       mcpConfigured,
       mcpHealthy,
+      selfLearnEnabled: this.currentConfig.selfLearnEnabled ?? false,
     };
   }
 

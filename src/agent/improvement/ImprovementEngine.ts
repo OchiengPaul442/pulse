@@ -395,6 +395,30 @@ export class ImprovementEngine {
     return state.strategies.filter((s) => s.enabled);
   }
 
+  /**
+   * Run one full self-improvement cycle: reflect on recent outcomes and evolve strategies.
+   * Called by the background self-learn loop.
+   */
+  public async runSelfImprovementCycle(): Promise<void> {
+    const state = await this.load();
+    if (state.outcomes.length === 0) return;
+    // Reflect on the most recent outcome if not already reflected
+    const latest = state.outcomes[state.outcomes.length - 1];
+    if (latest && !state.reflections.some((r) => r.outcomeId === latest.id)) {
+      await this.reflectOnTask(
+        latest.id,
+        latest.objective,
+        "",
+        latest.success,
+        latest.durationMs,
+      );
+    }
+    // Evolve strategies from all accumulated data
+    const freshState = await this.load();
+    await this.evolveStrategies(freshState);
+    await this.save(freshState);
+  }
+
   // ── Private: strategy evolution ────────────────────────────────
 
   /**

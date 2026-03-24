@@ -2,7 +2,7 @@
   "name": "pulse-agent",
   "displayName": "Pulse Agent",
   "description": "Personal Agentic AI coding assistant for VS Code using local models.",
-  "version": "0.0.36",
+  "version": "0.0.38",
   "publisher": "local",
   "license": "MIT",
   "icon": "media/pulse-icon.png",
@@ -220,6 +220,11 @@
           ],
           "default": "workspace+episodic",
           "description": "Memory behavior mode for storing and retrieving prior context."
+        },
+        "pulse.behavior.selfLearn": {
+          "type": "boolean",
+          "default": false,
+          "description": "Enable background self-learning loop: Pulse will periodically reflect on past sessions and evolve its improvement strategies while idle."
         },
         "pulse.indexing.enabled": {
           "type": "boolean",

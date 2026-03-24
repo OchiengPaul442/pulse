@@ -41,6 +41,7 @@ export interface AgentConfig {
   indexingMode: "light" | "hybrid";
   mcpServers: McpServerConfig[];
   telemetryOptIn: boolean;
+  selfLearnEnabled: boolean;
 }
 
 export function getAgentConfig(): AgentConfig {
@@ -81,5 +82,6 @@ export function getAgentConfig(): AgentConfig {
     indexingMode: cfg.get<"light" | "hybrid">("indexing.mode", "hybrid"),
     mcpServers: cfg.get<McpServerConfig[]>("mcp.servers", []),
     telemetryOptIn: cfg.get<boolean>("telemetry.optIn", false),
+    selfLearnEnabled: cfg.get<boolean>("behavior.selfLearn", false),
   };
 }
