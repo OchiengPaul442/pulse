@@ -8,6 +8,7 @@ export interface ChatRequest {
   messages: ChatMessage[];
   stream?: boolean;
   temperature?: number;
+  maxTokens?: number;
   format?: "json";
 }
 

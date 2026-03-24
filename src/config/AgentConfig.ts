@@ -3,6 +3,13 @@ import * as vscode from "vscode";
 export type ApprovalMode = "strict" | "balanced" | "fast";
 export type PermissionMode = "full" | "default" | "strict";
 export type ConversationMode = "agent" | "ask" | "plan";
+export type AgentPersona =
+  | "software-engineer"
+  | "data-scientist"
+  | "designer"
+  | "devops-engineer"
+  | "researcher"
+  | "full-stack-developer";
 
 export interface McpServerConfig {
   id?: string;
@@ -25,6 +32,7 @@ export interface AgentConfig {
   approvalMode: ApprovalMode;
   permissionMode: PermissionMode;
   conversationMode: ConversationMode;
+  persona: AgentPersona;
   allowTerminalExecution: boolean;
   autoRunVerification: boolean;
   maxContextTokens: number;
@@ -58,6 +66,7 @@ export function getAgentConfig(): AgentConfig {
       "behavior.conversationMode",
       "agent",
     ),
+    persona: cfg.get<AgentPersona>("behavior.persona", "software-engineer"),
     allowTerminalExecution: cfg.get<boolean>(
       "behavior.allowTerminalExecution",
       false,

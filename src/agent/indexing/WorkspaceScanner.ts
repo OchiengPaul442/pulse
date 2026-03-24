@@ -18,6 +18,16 @@ export class WorkspaceScanner {
     };
   }
 
+  public async listWorkspaceFiles(limit = 250): Promise<string[]> {
+    const files = await vscode.workspace.findFiles(
+      "**/*",
+      "**/{node_modules,dist,.git,out,coverage,.pulse}/**",
+      limit,
+    );
+
+    return files.map((file) => file.fsPath);
+  }
+
   public async findRelevantFiles(query: string, limit = 12): Promise<string[]> {
     const lowered = query.toLowerCase();
     const files = await vscode.workspace.findFiles(

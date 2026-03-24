@@ -15,6 +15,13 @@ export interface AgentProgressStep {
   detail?: string;
 }
 
+/** Lightweight token-usage snapshot pushed to the webview in real time. */
+export interface TokenSnapshot {
+  consumed: number;
+  budget: number;
+  percent: number;
+}
+
 export interface RuntimeTaskResult {
   sessionId: string;
   objective: string;

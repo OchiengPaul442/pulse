@@ -3,6 +3,7 @@ import * as vscode from "vscode";
 
 import type {
   AgentConfig,
+  AgentPersona,
   McpServerConfig,
   PermissionMode,
 } from "../../config/AgentConfig";
@@ -36,6 +37,7 @@ import type {
   ConversationMode,
   RuntimeTaskResult,
   AgentProgressStep,
+  TokenSnapshot,
 } from "./RuntimeTypes";
 import { SessionStore } from "../sessions/SessionStore";
 import type { SessionRecord } from "../sessions/SessionStore";
@@ -45,6 +47,7 @@ export interface RuntimeSummary {
   status: "ready" | "degraded";
   ollamaReachable: boolean;
   conversationMode: ConversationMode;
+  persona: string;
   plannerModel: string;
   editorModel: string;
   fastModel: string;
@@ -116,6 +119,8 @@ export class AgentRuntime {
 
   private progressCallback: ((step: AgentProgressStep) => void) | null = null;
 
+  private tokenCallback: ((snapshot: TokenSnapshot) => void) | null = null;
+
   private readonly workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri;
 
   /** Simple concurrency gate — only one task runs at a time. */
@@ -151,8 +156,72 @@ export class AgentRuntime {
     this.progressCallback = cb;
   }
 
+  public setTokenCallback(
+    cb: ((snapshot: TokenSnapshot) => void) | null,
+  ): void {
+    this.tokenCallback = cb;
+  }
+
   private emitProgress(step: string, detail?: string, icon = "⚡"): void {
     this.progressCallback?.({ icon, step, detail });
+  }
+
+  private emitTokenUpdate(): void {
+    if (!this.tokenCallback) return;
+    const budget = this.currentConfig.maxContextTokens;
+    const consumed = this.tokensConsumed;
+    const percent =
+      budget > 0 ? Math.min(100, Math.round((consumed / budget) * 100)) : 0;
+    this.tokenCallback({ consumed, budget, percent });
+  }
+
+  /** Persona-aware system prompt prefix. */
+  private getPersonaPrompt(): string {
+    const persona = this.currentConfig.persona ?? "software-engineer";
+    const prompts: Record<string, string> = {
+      "software-engineer":
+        "You are Pulse, a senior software engineer AI assistant. " +
+        "You write clean, maintainable, well-tested code. " +
+        "You follow SOLID principles, favor simple solutions, and always consider edge cases. " +
+        "You think like an engineer: break problems down, validate assumptions, and build incrementally.",
+      "data-scientist":
+        "You are Pulse, an expert data scientist AI assistant. " +
+        "You excel at data analysis, statistical modeling, machine learning, and visualization. " +
+        "You write efficient data pipelines, use pandas/numpy/sklearn idiomatically, and clearly explain your analytical reasoning. " +
+        "You validate data quality, check for bias, and present results with appropriate statistical rigor.",
+      designer:
+        "You are Pulse, a UI/UX design-focused AI assistant. " +
+        "You have deep expertise in user interface design, accessibility, CSS, design systems, and visual hierarchy. " +
+        "You create beautiful, responsive, accessible interfaces. " +
+        "You think about user flows, interaction patterns, and maintain design consistency.",
+      "devops-engineer":
+        "You are Pulse, a senior DevOps/infrastructure AI assistant. " +
+        "You excel at CI/CD pipelines, containerization, cloud infrastructure, monitoring, and deployment automation. " +
+        "You write reliable Dockerfiles, Kubernetes manifests, and IaC templates. " +
+        "You prioritize security, observability, and reliability in every decision.",
+      researcher:
+        "You are Pulse, an AI research assistant. " +
+        "You excel at deep investigation, literature review, code analysis, and systematic problem-solving. " +
+        "You are thorough and methodical — you gather evidence before drawing conclusions. " +
+        "You cite sources, compare approaches, and present findings with clarity and nuance.",
+      "full-stack-developer":
+        "You are Pulse, a full-stack developer AI assistant. " +
+        "You build complete applications end-to-end — frontend, backend, database, and API layers. " +
+        "You understand React, Node.js, Python, SQL, REST, GraphQL, and modern web architecture. " +
+        "You write production-ready code with proper error handling, validation, and security.",
+    };
+    return prompts[persona] ?? prompts["software-engineer"];
+  }
+
+  /** Get the current persona. */
+  public getPersona(): AgentPersona {
+    return this.currentConfig.persona ?? "software-engineer";
+  }
+
+  /** Set the active persona. */
+  public async setPersona(persona: AgentPersona): Promise<void> {
+    await this.updateSetting("behavior.persona", persona);
+    this.currentConfig.persona = persona;
   }
 
   public async initialize(): Promise<void> {
@@ -343,6 +412,66 @@ export class AgentRuntime {
     return "";
   }
 
+  private isWorkspaceDiscoveryObjective(objective: string): boolean {
+    const lower = objective.toLowerCase();
+    const asksForInventory =
+      /\b(what files|list files|show files|scan project|scan repo|scan workspace|project structure|workspace structure|what can you see|what do you see|what is in this project|what's in this project|repo contents|codebase contents|file tree)\b/.test(
+        lower,
+      ) ||
+      /\bscan\b.*\b(files|repo|workspace|project|codebase)\b/.test(lower) ||
+      /\b(files|repo|workspace|project|codebase)\b.*\bscan\b/.test(lower);
+    const isEditIntent =
+      /\b(edit|change|implement|fix|refactor|create|write|update|add|remove|delete|move)\b/.test(
+        lower,
+      );
+    return asksForInventory && !isEditIntent;
+  }
+
+  private async buildWorkspaceInventory(limit = 250): Promise<{
+    totalFiles: number;
+    listedFiles: string[];
+    truncated: boolean;
+  }> {
+    const stats = await this.scanner.scanWorkspace();
+    const root = this.workspaceRoot?.fsPath ?? null;
+    const absoluteFiles = await this.scanner.listWorkspaceFiles(limit);
+    const listedFiles = absoluteFiles.map((filePath) =>
+      root ? path.relative(root, filePath).replace(/\\/g, "/") : filePath,
+    );
+
+    return {
+      totalFiles: stats.totalFiles,
+      listedFiles,
+      truncated: stats.totalFiles > listedFiles.length,
+    };
+  }
+
+  private formatWorkspaceInventoryResponse(
+    inventory: {
+      totalFiles: number;
+      listedFiles: string[];
+      truncated: boolean;
+    },
+    objective: string,
+  ): string {
+    const lines = [
+      `I scanned the workspace for: ${objective}`,
+      `I can see ${inventory.totalFiles} file${inventory.totalFiles === 1 ? "" : "s"} in this workspace.`,
+      "",
+      "Files I found:",
+      ...inventory.listedFiles.map((filePath) => `- ${filePath}`),
+    ];
+
+    if (inventory.truncated) {
+      lines.push(
+        "",
+        "The list above is truncated to the first batch of files. I can keep drilling into any folder or file type you want.",
+      );
+    }
+
+    return lines.join("\n");
+  }
+
   public runTask(objective: string): Promise<RuntimeTaskResult> {
     // Enqueue — ensures only one task runs at a time.
     // Earlier tasks must finish (or fail) before the next one starts.
@@ -376,6 +505,52 @@ export class AgentRuntime {
     const attachedFiles = session.attachedFiles ?? [];
     const attachedContext = await this.loadAttachedFileContext(attachedFiles);
     const conversationHistory = await this.buildConversationHistory(session.id);
+    const inventoryRequest = this.isWorkspaceDiscoveryObjective(objective);
+
+    if (inventoryRequest) {
+      this.emitProgress("Scanning workspace", "Listing project files", "🔍");
+      const inventory = await this.buildWorkspaceInventory(250);
+      const responseText = this.formatWorkspaceInventoryResponse(
+        inventory,
+        objective,
+      );
+
+      await this.sessionStore.appendMessage(session.id, {
+        role: "assistant",
+        content: responseText,
+        createdAt: new Date().toISOString(),
+      });
+      await this.sessionStore.updateSessionResult(session.id, responseText);
+      await this.editManager.clearPendingProposal();
+      await this.learnFromExchange(objective, responseText, mode);
+      if (this.currentConfig.memoryMode !== "off") {
+        await this.memoryStore.addEpisode(
+          objective,
+          responseText.slice(0, 400),
+        );
+      }
+
+      return {
+        sessionId: session.id,
+        objective,
+        plan: {
+          objective,
+          assumptions: [
+            "The user asked for a workspace inventory or file scan.",
+            "A direct inventory is more reliable than a model-generated summary.",
+          ],
+          acceptanceCriteria: [
+            "The response lists workspace files or explains the scan clearly.",
+            "No file edits are proposed.",
+          ],
+          steps: [],
+          taskSlices: [],
+          verification: [],
+        },
+        responseText,
+        proposal: null,
+      };
+    }
 
     if (mode === "ask") {
       this.emitProgress("Ask mode", "Preparing conversational response", "💬");
@@ -383,6 +558,8 @@ export class AgentRuntime {
         this.currentConfig.fastModel,
       );
       const styleHint = await this.getLearnedStyleHint(objective, mode);
+      const improvementHints =
+        await this.improvementEngine.getOptimizedBehaviorHints(objective, mode);
       const webResearch = await this.collectWebResearch(objective, mode);
       if (webResearch) {
         this.emitProgress(
@@ -392,14 +569,17 @@ export class AgentRuntime {
         );
       }
       this.emitProgress("Generating response", model, "✨");
+      const taskStart = Date.now();
       const response = await this.provider.chat({
         model,
         messages: [
           {
             role: "system" as const,
             content:
-              "You are Pulse in Ask mode. Be conversational, answer questions, and explain context. Do not propose code edits, terminal commands, or plan artifacts." +
-              (styleHint ? " " + styleHint : ""),
+              this.getPersonaPrompt() +
+              " You are in Ask mode. Be conversational, answer questions, and explain context. Do not propose code edits, terminal commands, or plan artifacts." +
+              (styleHint ? " " + styleHint : "") +
+              (improvementHints ? " " + improvementHints : ""),
           },
           ...conversationHistory,
           ...(webResearch
@@ -423,6 +603,7 @@ export class AgentRuntime {
             content: objective,
           },
         ],
+        maxTokens: 2048,
       });
       this.consumeTokens(response.tokenUsage);
 
@@ -440,6 +621,20 @@ export class AgentRuntime {
           response.text.slice(0, 400),
         );
       }
+
+      // Self-improvement: reflect on this task
+      const taskDuration = Date.now() - taskStart;
+      this.selfReflectBackground(
+        session.id,
+        objective,
+        response.text,
+        true,
+        taskDuration,
+        mode,
+        model,
+        0,
+        0,
+      );
 
       return {
         sessionId: session.id,
@@ -526,16 +721,21 @@ export class AgentRuntime {
         this.currentConfig.fastModel,
       );
       const styleHintConvo = await this.getLearnedStyleHint(objective, mode);
+      const improvementHintsConvo =
+        await this.improvementEngine.getOptimizedBehaviorHints(objective, mode);
+      const taskStartConvo = Date.now();
       const response = await this.provider.chat({
         model,
         messages: [
           {
             role: "system" as const,
             content:
-              "You are Pulse, a helpful VS Code coding assistant. Answer the user's question directly and concisely. " +
+              this.getPersonaPrompt() +
+              " Answer the user's question directly and concisely. " +
               "If they ask about code or their project, use any attached context to give a specific, accurate answer. " +
               "Do not propose file edits in this mode." +
-              (styleHintConvo ? " " + styleHintConvo : ""),
+              (styleHintConvo ? " " + styleHintConvo : "") +
+              (improvementHintsConvo ? " " + improvementHintsConvo : ""),
           },
           ...conversationHistory,
           ...(attachedContext.length > 0
@@ -556,6 +756,7 @@ export class AgentRuntime {
             content: objective,
           },
         ],
+        maxTokens: 2048,
       });
       this.consumeTokens(response.tokenUsage);
 
@@ -573,6 +774,19 @@ export class AgentRuntime {
           response.text.slice(0, 400),
         );
       }
+
+      const taskDurConvo = Date.now() - taskStartConvo;
+      this.selfReflectBackground(
+        session.id,
+        objective,
+        response.text,
+        true,
+        taskDurConvo,
+        mode,
+        model,
+        0,
+        0,
+      );
 
       return {
         sessionId: session.id,
@@ -596,6 +810,7 @@ export class AgentRuntime {
     }
 
     this.emitProgress("Agent mode", "Analyzing request", "🧠");
+    const taskStartAgent = Date.now();
     const plannerModel = await this.resolveModelOrFallback(
       this.currentConfig.plannerModel,
     );
@@ -621,11 +836,15 @@ export class AgentRuntime {
       this.emitProgress("Web research", webResearch.query ?? "searching", "🌐");
     }
     const styleHintAgent = await this.getLearnedStyleHint(objective, mode);
+    const improvementHintsAgent =
+      await this.improvementEngine.getOptimizedBehaviorHints(objective, mode);
 
     const prompt = [
-      "You are Pulse, an autonomous agentic coding assistant running inside VS Code.",
+      this.getPersonaPrompt(),
+      "You are running in autonomous agent mode inside VS Code.",
       "You have full access to the user's workspace and can read, write, move, and delete files.",
       ...(styleHintAgent ? [styleHintAgent] : []),
+      ...(improvementHintsAgent ? [improvementHintsAgent] : []),
       "",
       "## Operating rules",
       "- You MUST act on the user's request. Do NOT ask clarifying questions unless truly ambiguous.",
@@ -718,6 +937,19 @@ export class AgentRuntime {
         parsed.response.slice(0, 400),
       );
     }
+
+    const taskDurAgent = Date.now() - taskStartAgent;
+    this.selfReflectBackground(
+      session.id,
+      objective,
+      parsed.response,
+      true,
+      taskDurAgent,
+      mode,
+      editorModel,
+      normalizedEdits.length,
+      proposal ? normalizedEdits.length : 0,
+    );
 
     return {
       sessionId: session.id,
@@ -1154,6 +1386,7 @@ export class AgentRuntime {
       status: this.health.ok ? "ready" : "degraded",
       ollamaReachable: this.health.ok,
       conversationMode: this.currentConfig.conversationMode,
+      persona: this.currentConfig.persona ?? "software-engineer",
       plannerModel: this.currentConfig.plannerModel,
       editorModel: this.currentConfig.editorModel,
       fastModel: this.currentConfig.fastModel,
@@ -1219,10 +1452,56 @@ export class AgentRuntime {
       budget,
       this.tokensConsumed + Math.max(usage.totalTokens, 0),
     );
+    this.emitTokenUpdate();
   }
 
   private resetTokenUsage(): void {
     this.tokensConsumed = 0;
+    this.emitTokenUpdate();
+  }
+
+  /**
+   * Fire-and-forget self-reflection after a task completes.
+   * Runs in background so it never blocks the response to the user.
+   */
+  private selfReflectBackground(
+    sessionId: string,
+    objective: string,
+    responseText: string,
+    success: boolean,
+    durationMs: number,
+    mode: ConversationMode,
+    model: string,
+    editsProposed: number,
+    editsApplied: number,
+  ): void {
+    const outcomeId = `${sessionId}_${Date.now()}`;
+    void (async () => {
+      try {
+        await this.improvementEngine.recordOutcome({
+          id: outcomeId,
+          timestamp: new Date().toISOString(),
+          objective: objective.slice(0, 200),
+          mode,
+          model,
+          success,
+          durationMs,
+          editsProposed,
+          editsApplied,
+          skillsUsed: [],
+          tokensUsed: this.tokensConsumed,
+        });
+        await this.improvementEngine.reflectOnTask(
+          outcomeId,
+          objective,
+          responseText,
+          success,
+          durationMs,
+        );
+      } catch {
+        // Self-improvement is best-effort, never block the user
+      }
+    })();
   }
 
   private async resolveModelOrFallback(primary: string): Promise<string> {

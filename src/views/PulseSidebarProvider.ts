@@ -4,6 +4,7 @@ import * as vscode from "vscode";
 
 import type { AgentRuntime } from "../agent/runtime/AgentRuntime";
 import type { RuntimeSummary } from "../agent/runtime/AgentRuntime";
+import type { AgentPersona } from "../config/AgentConfig";
 import type { Logger } from "../platform/vscode/Logger";
 
 export class PulseSidebarProvider implements vscode.WebviewViewProvider {
@@ -56,6 +57,7 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
           status: "degraded" as const,
           ollamaReachable: false,
           conversationMode: "agent" as const,
+          persona: "software-engineer",
           plannerModel: "unknown",
           editorModel: "unknown",
           fastModel: "unknown",
@@ -103,6 +105,14 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
       void webviewView.webview.postMessage({
         type: "thinkingStep",
         payload: step,
+      });
+    });
+
+    // Forward real-time token usage to the webview
+    this.runtime.setTokenCallback((snapshot) => {
+      void webviewView.webview.postMessage({
+        type: "tokenUpdate",
+        payload: snapshot,
       });
     });
 
@@ -286,6 +296,18 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
               message.payload === "plan")
           ) {
             await this.runtime.setConversationMode(message.payload);
+            await webviewView.webview.postMessage({
+              type: "runtimeSummary",
+              payload: await this.runtime.summary(),
+            });
+            return;
+          }
+
+          if (
+            message.type === "setPersona" &&
+            typeof message.payload === "string"
+          ) {
+            await this.runtime.setPersona(message.payload as AgentPersona);
             await webviewView.webview.postMessage({
               type: "runtimeSummary",
               payload: await this.runtime.summary(),
@@ -670,27 +692,22 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
     .copy-btn:hover { opacity: 1 !important; background: rgba(128,128,128,.12); }
     .msg:hover .copy-btn { opacity: .6; }
 
-    /* ── Thinking panel ─── */
+    /* ── Thinking panel (dynamic single-thought, ChatGPT-style) ─── */
     .thinking-panel { align-self: flex-start; width: 100%; overflow: hidden; font-size: 12px; }
     .thinking-panel.hidden { display: none; }
-    .thinking-header { display: flex; align-items: center; gap: 6px; padding: 4px 2px; cursor: pointer; user-select: none; }
+    .thinking-header { display: flex; align-items: center; gap: 6px; padding: 6px 2px; }
     .thinking-spinner { width: 13px; height: 13px; flex-shrink: 0; position: relative; }
-    .thinking-spinner::before { content: ''; position: absolute; inset: 0; border-radius: 50%; border: 2px solid rgba(128,128,128,.15); border-top-color: var(--fg); animation: spin 700ms linear infinite; }
+    .thinking-spinner::before { content: ''; position: absolute; inset: 0; border-radius: 50%; border: 2px solid rgba(128,128,128,.15); border-top-color: var(--amber); animation: spin 700ms linear infinite; }
     .thinking-panel.done .thinking-spinner::before { animation: none; border-color: transparent; }
     .thinking-panel.done .thinking-spinner::after { content: '\\2713'; position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; font-size: 10px; font-weight: 700; color: var(--green); }
     @keyframes spin { to { transform: rotate(360deg); } }
-    #thinkingTitle { flex: 1; font-size: 11px; font-weight: 500; color: var(--fg2); }
+    #thinkingTitle { flex: 1; font-size: 11px; font-weight: 600; color: var(--fg2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     .thinking-panel:not(.done) #thinkingTitle { color: var(--fg); }
-    .thinking-chevron { font-size: 10px; color: var(--fg2); opacity: .5; transition: transform 120ms ease; }
-    .thinking-chevron.expanded { transform: rotate(180deg); }
-    .thinking-steps { display: flex; flex-direction: column; gap: 0; padding: 2px 0 6px 20px; max-height: 160px; overflow-y: auto; border-left: 1.5px solid rgba(128,128,128,.12); margin-left: 6px; }
-    .thinking-steps.collapsed { display: none; }
-    .thinking-step { display: flex; align-items: baseline; gap: 5px; padding: 1px 6px; color: var(--fg2); }
-    .thinking-step-icon { flex-shrink: 0; font-size: 9px; }
-    .thinking-step-body { display: flex; flex-direction: column; min-width: 0; }
-    .thinking-step-label { font-size: 11px; font-weight: 500; color: var(--fg); }
-    .thinking-step-detail { font-size: 10px; opacity: .5; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-    .thinking-step-time { font-size: 9px; opacity: .35; margin-left: auto; flex-shrink: 0; }
+    .thinking-elapsed { font-size: 10px; color: var(--fg2); opacity: .5; flex-shrink: 0; }
+    .thinking-active-thought { padding: 0 2px 6px 20px; font-size: 11px; color: var(--fg2); line-height: 1.4; min-height: 0; overflow: hidden; transition: opacity 200ms ease; }
+    .thinking-active-thought:empty { display: none; }
+    .thinking-active-thought.fading { opacity: 0; }
+    .thinking-panel.done .thinking-active-thought { display: none; }
 
     /* ── Popups ─── */
     .popup { position: absolute; bottom: calc(100% + 4px); left: 0; z-index: 200; background: var(--vscode-editorWidget-background, var(--bg2)); border: 1px solid var(--border); border-radius: var(--r); display: flex; flex-direction: column; gap: 1px; padding: 4px; min-width: 140px; box-shadow: 0 4px 14px rgba(0,0,0,.2); }
@@ -716,6 +733,13 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
     .perm-opt-title { font-size: 12px; font-weight: 600; }
     .perm-opt-desc { font-size: 10px; color: var(--fg2); line-height: 1.3; }
     .perm-opt.active .perm-opt-title::after { content: ' \\2713'; font-size: 10px; opacity: .6; }
+
+    /* ── Token ring ─── */
+    .token-ring { position: relative; width: 32px; height: 32px; flex-shrink: 0; }
+    .token-ring-svg { width: 100%; height: 100%; }
+    .token-ring-bg { stroke: rgba(128,128,128,.12); }
+    .token-ring-fg { stroke: var(--amber); transition: stroke-dasharray 400ms ease; }
+    .token-ring-pct { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; font-size: 8px; font-weight: 700; color: var(--fg2); pointer-events: none; }
 
     /* ── Empty state ─── */
     .empty { text-align: center; padding: 24px 12px; color: var(--fg2); }
@@ -795,8 +819,9 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
   <div id="fatalBanner" role="alert"></div>
 
   <div id="settingsDrawer">
-    <div class="srow"><span class="slabel">Role</span><select id="roleSelect"><option value="planner">Planner</option><option value="editor">Editor</option><option value="fast">Fast</option><option value="embedding">Embedding</option></select></div>
+    <div class="srow"><span class="slabel">Persona</span><select id="personaSelect"><option value="software-engineer">Software Engineer</option><option value="full-stack-developer">Full-Stack Developer</option><option value="data-scientist">Data Scientist</option><option value="designer">Designer</option><option value="devops-engineer">DevOps Engineer</option><option value="researcher">Researcher</option></select></div>
     <div class="srow"><span class="slabel">Model</span><select id="modelSelect"></select></div>
+    <div class="srow"><span class="slabel">Assign</span><select id="roleSelect"><option value="planner">Planner</option><option value="editor">Editor</option><option value="fast">Fast</option><option value="embedding">Embedding</option></select></div>
     <div class="sbtns"><button id="btnSyncModels" class="btn">Sync models</button><button id="btnApplyModel" class="btn primary">Apply</button></div>
     <div class="section">
       <div class="section-head"><span class="slabel">MCP Servers</span><span id="mcpCount" class="mcp-count">0 configured</span></div>
@@ -828,9 +853,9 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
         <div class="thinking-header" id="thinkingToggle">
           <span class="thinking-spinner"></span>
           <span id="thinkingTitle">Thinking\u2026</span>
-          <span id="thinkingChevron" class="thinking-chevron expanded">\u25BE</span>
+          <span id="thinkingElapsed" class="thinking-elapsed"></span>
         </div>
-        <div id="thinkingSteps" class="thinking-steps"></div>
+        <div id="thinkingActiveThought" class="thinking-active-thought"></div>
       </div>
     </div>
   </div>
@@ -887,6 +912,13 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
           </button>
         </div>
       </div>
+      <div id="tokenRing" class="token-ring" title="Token usage">
+        <svg viewBox="0 0 36 36" class="token-ring-svg">
+          <circle class="token-ring-bg" cx="18" cy="18" r="15.9" fill="none" stroke-width="2.5"/>
+          <circle id="tokenRingArc" class="token-ring-fg" cx="18" cy="18" r="15.9" fill="none" stroke-width="2.5" stroke-dasharray="0 100" stroke-linecap="round" transform="rotate(-90 18 18)"/>
+        </svg>
+        <span id="tokenRingPct" class="token-ring-pct">0%</span>
+      </div>
     </div>
   </div>
 
@@ -912,7 +944,7 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
   var statusBadge = D('statusBadge'), statusTxt = D('statusTxt');
   var btnSettings = D('btnSettings'), btnRefresh = D('btnRefresh'), btnNewChat = D('btnNewChat');
   var settingsDrawer = D('settingsDrawer');
-  var roleSelect = D('roleSelect'), modelSelect = D('modelSelect');
+  var personaSelect = D('personaSelect'), roleSelect = D('roleSelect'), modelSelect = D('modelSelect');
   var btnSyncModels = D('btnSyncModels'), btnApplyModel = D('btnApplyModel');
   var btnAddMcp = D('btnAddMcp'), btnReloadMcp = D('btnReloadMcp'), btnSaveMcp = D('btnSaveMcp');
   var btnOpenMcpSettings = D('btnOpenMcpSettings'), btnManageMcp = D('btnManageMcp');
@@ -1028,44 +1060,51 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
   function closePermPopup() { var p = D('permPopup'); if (p) p.classList.add('hidden'); permPopupOpen = false; }
   document.addEventListener('click', closeAllPopups);
 
-  // Thinking
+  // Thinking — dynamic single active thought (ChatGPT-style)
+  var thinkingTimer = null;
   function startThinking() {
     thinkingSteps = []; thinkingStartTime = Date.now();
-    var panel = D('thinkingPanel'), steps = D('thinkingSteps'), title = D('thinkingTitle'), chev = D('thinkingChevron');
+    var panel = D('thinkingPanel'), title = D('thinkingTitle'), thought = D('thinkingActiveThought'), elapsed = D('thinkingElapsed');
     if (!panel) return;
     panel.classList.remove('hidden', 'done');
-    if (steps) { steps.innerHTML = ''; steps.classList.remove('collapsed'); }
     if (title) title.textContent = 'Thinking\u2026';
-    if (chev) { chev.textContent = '\u25BE'; chev.classList.add('expanded'); }
+    if (thought) { thought.textContent = ''; thought.classList.remove('fading'); }
+    if (elapsed) elapsed.textContent = '';
+    if (thinkingTimer) clearInterval(thinkingTimer);
+    thinkingTimer = setInterval(function() {
+      if (elapsed && thinkingStartTime) {
+        var s = ((Date.now() - thinkingStartTime) / 1000).toFixed(0);
+        elapsed.textContent = s + 's';
+      }
+    }, 1000);
   }
   function addThinkingStep(step) {
     thinkingSteps.push(step);
-    var steps = D('thinkingSteps');
-    if (!steps) return;
-    var elapsed = thinkingStartTime ? ((Date.now() - thinkingStartTime) / 1000).toFixed(1) + 's' : '';
-    var div = document.createElement('div'); div.className = 'thinking-step';
-    div.innerHTML = '<span class="thinking-step-icon">' + esc(step.icon || '\u00b7') + '</span>' +
-      '<div class="thinking-step-body"><span class="thinking-step-label">' + esc(step.step || '') + '</span>' +
-      (step.detail ? '<span class="thinking-step-detail">' + esc(step.detail) + '</span>' : '') + '</div>' +
-      '<span class="thinking-step-time">' + esc(elapsed) + '</span>';
-    steps.appendChild(div); scrollBottom();
+    var title = D('thinkingTitle'), thought = D('thinkingActiveThought');
+    // Update the header with the step name
+    var label = step.step || step.detail || 'Processing';
+    if (title) title.textContent = label;
+    // Animate the detail as the active thought
+    if (thought && step.detail) {
+      thought.classList.add('fading');
+      setTimeout(function() {
+        thought.textContent = step.detail;
+        thought.classList.remove('fading');
+      }, 150);
+    }
+    scrollBottom();
   }
   function finishThinking() {
-    var panel = D('thinkingPanel'), title = D('thinkingTitle'), steps = D('thinkingSteps'), chev = D('thinkingChevron');
+    var panel = D('thinkingPanel'), title = D('thinkingTitle'), thought = D('thinkingActiveThought'), elapsed = D('thinkingElapsed');
+    if (thinkingTimer) { clearInterval(thinkingTimer); thinkingTimer = null; }
     if (!panel) return;
     panel.classList.add('done');
-    var elapsed = thinkingStartTime ? ((Date.now() - thinkingStartTime) / 1000).toFixed(1) : '';
+    var sec = thinkingStartTime ? ((Date.now() - thinkingStartTime) / 1000).toFixed(1) : '0';
     var count = thinkingSteps.length;
-    if (title) title.textContent = 'Thought for ' + (elapsed ? elapsed + 's' : '') + (count ? ' \u00b7 ' + count + ' step' + (count !== 1 ? 's' : '') : '');
-    if (steps) steps.classList.add('collapsed');
-    if (chev) { chev.textContent = '\u25B8'; chev.classList.remove('expanded'); }
+    if (title) title.textContent = 'Completed in ' + sec + 's \u00b7 ' + count + ' step' + (count !== 1 ? 's' : '');
+    if (thought) thought.textContent = '';
+    if (elapsed) elapsed.textContent = '';
     isBusy = false;
-  }
-  function toggleThinking() {
-    var steps = D('thinkingSteps'), chev = D('thinkingChevron');
-    if (!steps) return;
-    var collapsed = steps.classList.toggle('collapsed');
-    if (chev) { chev.textContent = collapsed ? '\u25B8' : '\u25BE'; chev.classList.toggle('expanded', !collapsed); }
   }
 
   // MCP utils
@@ -1202,6 +1241,7 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
     statusTxt.textContent = ok ? 'Online' : 'Offline';
     renderConversationMode((s && s.conversationMode) || 'agent');
     if (s && s.permissionMode) updatePermUI(s.permissionMode);
+    if (s && s.persona && personaSelect) personaSelect.value = s.persona;
     var model = (s && s.plannerModel) || '';
     activeModelName = model;
     chipModel.textContent = model.split(':')[0].slice(0, 14) || '\u2013';
@@ -1209,6 +1249,15 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
     var hasPending = s && s.hasPendingEdits;
     editsBanner.classList.toggle('on', Boolean(hasPending));
     if (hasPending) bannerTxt.textContent = 'Pending file edits \u2014 review before applying';
+    if (s) updateTokenRing(s.tokenUsagePercent || 0);
+  }
+
+  // Token ring
+  function updateTokenRing(pct) {
+    pct = Math.max(0, Math.min(100, Math.round(pct)));
+    var arc = D('tokenRingArc'), label = D('tokenRingPct');
+    if (arc) arc.setAttribute('stroke-dasharray', pct + ' ' + (100 - pct));
+    if (label) label.textContent = pct + '%';
   }
 
   function updateModels(list) {
@@ -1245,7 +1294,6 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
   on(chipMode, 'click', function(e) { e.stopPropagation(); modePopupOpen ? closeModePopup() : openModePopup(); });
   (function() { var p = D('modePopup'); if (!p) return; p.querySelectorAll('.popup-opt').forEach(function(btn) { btn.addEventListener('click', function(e) { e.stopPropagation(); var m = btn.dataset.mode; if (m && m !== conversationMode) vscode.postMessage({ type: 'setConversationMode', payload: m }); closeModePopup(); }); }); }());
   on(chipModel, 'click', function(e) { e.stopPropagation(); modelPopupOpen ? closeModelPopup() : openModelPopup(); });
-  on(D('thinkingToggle'), 'click', function(e) { e.stopPropagation(); toggleThinking(); });
 
   // Permission bar
   on(permBtn, 'click', function(e) { e.stopPropagation(); permPopupOpen ? closePermPopup() : openPermPopup(); });
@@ -1253,6 +1301,7 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
 
   on(btnSyncModels, 'click', function() { vscode.postMessage({ type: 'refreshModels' }); });
   on(btnApplyModel, 'click', function() { var r = roleSelect.value, m = modelSelect.value; if (m) vscode.postMessage({ type: 'setModel', payload: { role: r, model: m } }); });
+  on(personaSelect, 'change', function() { vscode.postMessage({ type: 'setPersona', payload: personaSelect.value }); });
   on(btnAddMcp, 'click', function() { mcpServers = snapshotMcpServers().concat([normalizeMcpServer({ enabled: true, trust: 'workspace', transport: 'stdio', args: [] })]); renderMcpServers(mcpServers); });
   on(btnReloadMcp, 'click', function() { vscode.postMessage({ type: 'reloadMcpServers' }); });
   on(btnOpenMcpSettings, 'click', function() { vscode.postMessage({ type: 'configureMcpServers' }); });
@@ -1276,6 +1325,7 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
     if (type === 'sessionDeleted') { handleSessionDeleted(payload); return; }
     if (type === 'sessionAttachments') { renderAttachments(payload); return; }
     if (type === 'thinkingStep') { addThinkingStep(payload); return; }
+    if (type === 'tokenUpdate') { updateTokenRing((payload && payload.percent) || 0); return; }
     if (type === 'taskResult') {
       finishThinking();
       var text = (payload && payload.responseText) || JSON.stringify(payload, null, 2);

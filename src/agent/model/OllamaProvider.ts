@@ -97,6 +97,9 @@ export class OllamaProvider implements ModelProvider {
         stream: false,
         options: {
           temperature: request.temperature ?? 0.1,
+          ...(typeof request.maxTokens === "number"
+            ? { num_predict: request.maxTokens }
+            : {}),
         },
         format: request.format,
       }),

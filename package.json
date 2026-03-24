@@ -2,7 +2,7 @@
   "name": "pulse-agent",
   "displayName": "Pulse Agent",
   "description": "Personal Agentic AI coding assistant for VS Code using local models.",
-  "version": "0.0.34",
+  "version": "0.0.36",
   "publisher": "local",
   "license": "MIT",
   "icon": "media/pulse-icon.png",
@@ -181,6 +181,19 @@
           ],
           "default": "agent",
           "description": "Active conversation mode: agent (can edit), ask (read-only), or plan (writes plan artifact)."
+        },
+        "pulse.behavior.persona": {
+          "type": "string",
+          "enum": [
+            "software-engineer",
+            "full-stack-developer",
+            "data-scientist",
+            "designer",
+            "devops-engineer",
+            "researcher"
+          ],
+          "default": "software-engineer",
+          "description": "Agent persona that shapes behavior, tone, and expertise focus."
         },
         "pulse.behavior.allowTerminalExecution": {
           "type": "boolean",
