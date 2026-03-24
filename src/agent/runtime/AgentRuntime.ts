@@ -118,6 +118,11 @@ export class AgentRuntime {
 
   private readonly workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri;
 
+  /** Simple concurrency gate — only one task runs at a time. */
+  private taskQueue: Promise<RuntimeTaskResult> = Promise.resolve(
+    null as unknown as RuntimeTaskResult,
+  );
+
   public constructor(
     config: AgentConfig,
     private readonly storage: StorageState,
@@ -338,7 +343,16 @@ export class AgentRuntime {
     return "";
   }
 
-  public async runTask(objective: string): Promise<RuntimeTaskResult> {
+  public runTask(objective: string): Promise<RuntimeTaskResult> {
+    // Enqueue — ensures only one task runs at a time.
+    // Earlier tasks must finish (or fail) before the next one starts.
+    this.taskQueue = this.taskQueue
+      .catch(() => {})
+      .then(() => this.executeTask(objective));
+    return this.taskQueue;
+  }
+
+  private async executeTask(objective: string): Promise<RuntimeTaskResult> {
     this.resetTokenUsage();
     this.emitProgress("Starting", "Initializing session context", "🚀");
     let session = await this.sessionStore.getActiveSession();
@@ -518,7 +532,9 @@ export class AgentRuntime {
           {
             role: "system" as const,
             content:
-              "You are Pulse, a concise VS Code coding assistant. Reply conversationally to greetings and general questions. Do not propose file edits unless the user explicitly asks for code changes." +
+              "You are Pulse, a helpful VS Code coding assistant. Answer the user's question directly and concisely. " +
+              "If they ask about code or their project, use any attached context to give a specific, accurate answer. " +
+              "Do not propose file edits in this mode." +
               (styleHintConvo ? " " + styleHintConvo : ""),
           },
           ...conversationHistory,
@@ -607,47 +623,49 @@ export class AgentRuntime {
     const styleHintAgent = await this.getLearnedStyleHint(objective, mode);
 
     const prompt = [
-      "You are Pulse, an agentic coding assistant working inside VS Code.",
+      "You are Pulse, an autonomous agentic coding assistant running inside VS Code.",
+      "You have full access to the user's workspace and can read, write, move, and delete files.",
       ...(styleHintAgent ? [styleHintAgent] : []),
-      "Operating rules:",
+      "",
+      "## Operating rules",
+      "- You MUST act on the user's request. Do NOT ask clarifying questions unless truly ambiguous.",
+      "- Read the workspace context provided below carefully before making changes.",
       "- Prefer minimal, targeted edits over broad rewrites.",
       "- Keep behavior backward compatible unless the objective requires change.",
       "- Never propose edits outside the current workspace.",
-      "- If requirements are ambiguous, state assumptions explicitly in the response.",
-      "- Only propose edits when the user explicitly asks for coding or file changes.",
-      "- If the user is greeting, chatting, or asking a general question, answer conversationally and return no edits.",
-      "Solve the objective using the context below.",
-      "If edits are needed, return strict JSON with fields:",
-      '{"response":"string","edits":[{"operation":"write|delete|move","filePath":"relative/or/absolute","targetPath":"required for move","content":"required for write","reason":"string"}]}.',
-      "If no edits are needed, return JSON with edits as empty array.",
-      "Allowed operations:",
-      "- write: create or replace a file",
-      "- delete: remove a file or folder",
-      "- move: move/rename a file path to targetPath",
-      webResearch ? "Latest web research:" : "No web research used.",
-      webResearch ? JSON.stringify(webResearch, null, 2) : "",
-      `Objective: ${objective}`,
-      "Selected skills:",
-      this.skillRegistry.summarizeSelection(selectedSkills),
-      "Skill manifests:",
-      JSON.stringify(selectedSkills.selected, null, 2),
-      "Plan:",
-      JSON.stringify(plan, null, 2),
-      "Recent episodic memory:",
-      JSON.stringify(episodes, null, 2),
-      "Web research:",
+      "- If requirements are ambiguous, state your assumptions and proceed with the best approach.",
+      "- When the user asks you to do something in agent mode, DO it — produce the edits.",
+      "- If you need to understand more files, say which files you'd want to read and why in your response.",
+      "",
+      "## Response format",
+      "Return strict JSON with these fields:",
+      '{"response":"A clear explanation of what you did and why","edits":[...]}',
+      "",
+      "## Edit operations",
+      "Each edit is an object with:",
+      '- {"operation":"write","filePath":"relative/path","content":"full file content","reason":"why"}',
+      '- {"operation":"delete","filePath":"relative/path","reason":"why"}',
+      '- {"operation":"move","filePath":"old/path","targetPath":"new/path","reason":"why"}',
+      "",
+      "If no file changes are needed, return edits as an empty array.",
+      "Always include a helpful response explaining what you did or what you found.",
+      "",
       webResearch
-        ? JSON.stringify(webResearch, null, 2)
-        : "No web research used.",
-      "Context snippets:",
-      JSON.stringify(contextSnippets, null, 2),
-      attachedContext.length > 0
-        ? "Attached file context:"
-        : "No attached files.",
-      attachedContext.length > 0
-        ? JSON.stringify(attachedContext, null, 2)
+        ? "## Web research results\n" + JSON.stringify(webResearch, null, 2)
         : "",
-    ].join("\n\n");
+      `## User objective\n${objective}`,
+      `\n## Skills available\n${this.skillRegistry.summarizeSelection(selectedSkills)}`,
+      `\n## Plan\n${JSON.stringify(plan, null, 2)}`,
+      episodes.length > 0
+        ? `\n## Recent memory\n${JSON.stringify(episodes, null, 2)}`
+        : "",
+      `\n## Workspace files (context)\n${JSON.stringify(contextSnippets, null, 2)}`,
+      attachedContext.length > 0
+        ? `\n## Attached files\n${JSON.stringify(attachedContext, null, 2)}`
+        : "",
+    ]
+      .filter(Boolean)
+      .join("\n");
 
     this.emitProgress("Generating response", editorModel, "✨");
     const response = await this.provider.chat({
@@ -1503,33 +1521,13 @@ export class AgentRuntime {
     return this.normalizeDisplayPath(planPath.fsPath);
   }
 
-  private shouldAllowEdits(objective: string): boolean {
-    const normalized = objective.toLowerCase();
-    return [
-      "code",
-      "file",
-      "files",
-      "edit",
-      "modify",
-      "change",
-      "fix",
-      "bug",
-      "debug",
-      "refactor",
-      "implement",
-      "update",
-      "remove",
-      "rename",
-      "rewrite",
-      "test",
-      "diagnostic",
-      "error",
-      "issue",
-      "workspace",
-      "build",
-      "compile",
-      "install",
-    ].some((token) => normalized.includes(token));
+  private shouldAllowEdits(_objective: string): boolean {
+    // In agent mode, always allow edits. The permission policy controls
+    // whether the user must approve before applying — not whether the
+    // agent may *propose* them. This matches GitHub Copilot's behaviour
+    // where agent mode always generates edits when appropriate and the
+    // permission level gates the apply step.
+    return true;
   }
 
   private async collectWebResearch(

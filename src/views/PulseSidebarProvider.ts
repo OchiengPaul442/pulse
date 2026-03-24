@@ -1,4 +1,4 @@
-import * as crypto from "crypto";
+﻿import * as crypto from "crypto";
 import * as path from "path";
 import * as vscode from "vscode";
 
@@ -224,10 +224,6 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
               type: "runtimeSummary",
               payload: summary,
             });
-            await webviewView.webview.postMessage({
-              type: "actionResult",
-              payload: `Permission mode set to ${message.payload}`,
-            });
             return;
           }
 
@@ -255,10 +251,6 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
                 type: "runtimeSummary",
                 payload: summary,
               });
-              await webviewView.webview.postMessage({
-                type: "actionResult",
-                payload: `Updated ${payload.role} model to ${payload.model}`,
-              });
             }
             return;
           }
@@ -274,10 +266,6 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
             await webviewView.webview.postMessage({
               type: "runtimeSummary",
               payload: summary,
-            });
-            await webviewView.webview.postMessage({
-              type: "actionResult",
-              payload: "MCP servers updated.",
             });
             return;
           }
@@ -301,10 +289,6 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
             await webviewView.webview.postMessage({
               type: "runtimeSummary",
               payload: await this.runtime.summary(),
-            });
-            await webviewView.webview.postMessage({
-              type: "actionResult",
-              payload: `Mode set to ${message.payload}`,
             });
             return;
           }
@@ -584,13 +568,6 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
     );
     const initialStatusText = initialOnline ? "Online" : "Offline";
     const initialStatusClass = initialOnline ? "on" : "off";
-    const initialStatusLine = initialOnline
-      ? initialSummary && initialSummary.modelCount
-        ? `${initialSummary.modelCount} model${
-            initialSummary.modelCount !== 1 ? "s" : ""
-          }, MCP ${initialSummary.mcpHealthy}/${initialSummary.mcpConfigured}`
-        : "Ollama ready"
-      : "Ollama offline — check settings";
 
     return `<!DOCTYPE html>
 <html lang="en">
@@ -600,571 +577,210 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
   <meta name="viewport" content="width=device-width,initial-scale=1.0"/>
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-
     :root {
-      --amber:      #f59e0b;
-      --amber-bg:   rgba(245,158,11,0.12);
-      --amber-bdr:  rgba(245,158,11,0.30);
+      --amber: #f59e0b; --amber-bg: rgba(245,158,11,0.10); --amber-bdr: rgba(245,158,11,0.28);
       --amber-glow: rgba(245,158,11,0.14);
-      --green:      #22c55e;
-      --green-bg:   rgba(34,197,94,0.10);
-      --green-bdr:  rgba(34,197,94,0.28);
-      --red:        var(--vscode-errorForeground, #f87171);
-      --red-bg:     rgba(248,113,113,0.08);
-      --red-bdr:    rgba(248,113,113,0.28);
-      --border:     var(--vscode-sideBarSectionHeader-border, rgba(128,128,128,.18));
-      --r-sm: 8px; --r-md: 14px; --r-lg: 18px;
-      --spd: 160ms;
+      --green: #22c55e; --green-bg: rgba(34,197,94,0.08); --green-bdr: rgba(34,197,94,0.24);
+      --red: var(--vscode-errorForeground, #f87171); --red-bg: rgba(248,113,113,0.06); --red-bdr: rgba(248,113,113,0.24);
+      --border: var(--vscode-sideBarSectionHeader-border, rgba(128,128,128,.15));
+      --bg2: var(--vscode-input-background, rgba(128,128,128,.08));
+      --fg: var(--vscode-foreground); --fg2: var(--vscode-descriptionForeground);
+      --r: 10px; --spd: 140ms;
     }
-
-    html, body {
-      height: 100%;
-      font-family: var(--vscode-font-family, "Segoe UI", system-ui, sans-serif);
-      font-size: 13px;
-      color: var(--vscode-foreground);
-      background: var(--vscode-sideBar-background);
-      overflow: hidden;
-    }
+    html, body { height: 100%; font-family: var(--vscode-font-family, system-ui, sans-serif); font-size: 13px; color: var(--fg); background: var(--vscode-sideBar-background); overflow: hidden; }
     #root { display: flex; flex-direction: column; height: 100%; }
+    button { font-family: inherit; }
 
-    /* ── Header ─────────────────────────────────────────────────── */
-    .hdr {
-      display: flex; align-items: center; justify-content: space-between;
-      padding: 9px 12px 8px;
-      border-bottom: 1px solid var(--border);
-      flex-shrink: 0;
-    }
-    .hdr-right { display: flex; align-items: center; gap: 5px; }
-
-    .badge {
-      display: inline-flex; align-items: center; gap: 4px;
-      font-size: 11px; font-weight: 600;
-      padding: 2px 8px; border-radius: 999px; border: 1px solid;
-    }
+    /* ── Header ─── */
+    .hdr { display: flex; align-items: center; justify-content: space-between; padding: 8px 12px; border-bottom: 1px solid var(--border); flex-shrink: 0; }
+    .hdr-right { display: flex; align-items: center; gap: 4px; }
+    .badge { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 999px; border: 1px solid; }
     .badge-dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
-    .badge.on  { color: var(--green); border-color: var(--green-bdr); background: var(--green-bg); }
-    .badge.off { color: var(--red);   border-color: var(--red-bdr);   background: var(--red-bg); }
+    .badge.on { color: var(--green); border-color: var(--green-bdr); background: var(--green-bg); }
+    .badge.off { color: var(--red); border-color: var(--red-bdr); background: var(--red-bg); }
+    .icon-btn { width: 24px; height: 24px; border: none; background: transparent; color: var(--fg); opacity: .45; cursor: pointer; border-radius: 6px; display: flex; align-items: center; justify-content: center; font-size: 14px; transition: opacity var(--spd), background var(--spd); }
+    .icon-btn:hover { opacity: 1; background: var(--vscode-toolbar-hoverBackground, rgba(128,128,128,.12)); }
 
-    .fatal-banner {
-      display: none;
-      margin: 10px 12px 0;
-      padding: 10px 12px;
-      border-radius: var(--r-md);
-      border: 1px solid var(--red-bdr);
-      background: var(--red-bg);
-      color: var(--vscode-foreground);
-      font-size: 12px;
-      line-height: 1.45;
-      white-space: pre-wrap;
-    }
-    .fatal-banner.on { display: block; }
+    #fatalBanner { display: none; margin: 8px 12px 0; padding: 8px 10px; border-radius: var(--r); border: 1px solid var(--red-bdr); background: var(--red-bg); font-size: 12px; line-height: 1.4; white-space: pre-wrap; }
+    #fatalBanner.on { display: block; }
 
-    .icon-btn {
-      width: 24px; height: 24px; border: none; background: transparent;
-      color: var(--vscode-foreground); opacity: .5; cursor: pointer;
-      border-radius: var(--r-sm);
-      display: flex; align-items: center; justify-content: center;
-      font-size: 14px; transition: opacity var(--spd), background var(--spd);
-    }
-    .icon-btn:hover { opacity: 1; background: var(--vscode-toolbar-hoverBackground, rgba(128,128,128,.14)); }
-
-    /* ── Settings drawer ────────────────────────────────────────── */
-    #settingsDrawer {
-      display: none; flex-direction: column; gap: 8px;
-      padding: 10px 12px 12px;
-      border-bottom: 1px solid var(--border);
-      flex-shrink: 0;
-    }
+    /* ── Settings drawer ─── */
+    #settingsDrawer { display: none; flex-direction: column; gap: 8px; padding: 10px 12px; border-bottom: 1px solid var(--border); flex-shrink: 0; max-height: 60vh; overflow-y: auto; }
     #settingsDrawer.open { display: flex; }
-
     .srow { display: grid; grid-template-columns: 68px 1fr; align-items: center; gap: 8px; }
-    .slabel {
-      font-size: 10px; font-weight: 700; text-transform: uppercase;
-      letter-spacing: .5px; color: var(--vscode-descriptionForeground);
-    }
-
-    input[type="text"], select, textarea {
-      width: 100%; padding: 5px 7px;
-      border-radius: var(--r-sm);
-      border: 1px solid var(--border);
-      background: var(--vscode-input-background);
-      color: var(--vscode-input-foreground);
-      font: 12px var(--vscode-font-family);
-    }
-    input[type="text"]::placeholder, textarea::placeholder {
-      color: var(--vscode-input-placeholderForeground);
-    }
+    .slabel { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .5px; color: var(--fg2); }
+    input[type="text"], select, textarea { width: 100%; padding: 5px 7px; border-radius: 6px; border: 1px solid var(--border); background: var(--bg2); color: var(--vscode-input-foreground); font: 12px var(--vscode-font-family); }
     select { cursor: pointer; }
     textarea { resize: vertical; min-height: 38px; }
-
     .sbtns { display: flex; justify-content: flex-end; gap: 6px; margin-top: 2px; }
-
-    .section {
-      display: flex; flex-direction: column; gap: 6px;
-      padding-top: 8px; border-top: 1px solid var(--border);
-    }
+    .section { display: flex; flex-direction: column; gap: 6px; padding-top: 8px; border-top: 1px solid var(--border); }
     .section-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
-    .section-copy { color: var(--vscode-descriptionForeground); font-size: 11px; line-height: 1.45; }
-
-    .mcp-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
-    .mcp-count {
-      margin-left: auto; font-size: 10px; font-weight: 700;
-      text-transform: uppercase; letter-spacing: .6px;
-      color: var(--vscode-descriptionForeground);
-    }
-    .mcp-list { display: flex; flex-direction: column; gap: 8px; max-height: 230px; overflow: auto; padding-right: 2px; }
-    .mcp-card {
-      display: flex; flex-direction: column; gap: 8px; padding: 10px;
-      border-radius: var(--r-md); border: 1px solid var(--border);
-      background: linear-gradient(180deg, rgba(128,128,128,.04), rgba(128,128,128,.01));
-    }
+    .section-copy { color: var(--fg2); font-size: 11px; line-height: 1.4; }
+    .mcp-toolbar { display: flex; flex-wrap: wrap; gap: 6px; }
+    .mcp-count { margin-left: auto; font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .5px; color: var(--fg2); }
+    .mcp-list { display: flex; flex-direction: column; gap: 8px; max-height: 200px; overflow: auto; }
+    .mcp-card { display: flex; flex-direction: column; gap: 6px; padding: 8px; border-radius: var(--r); border: 1px solid var(--border); background: rgba(128,128,128,.03); }
     .mcp-card-head { display: flex; align-items: center; gap: 8px; }
     .mcp-card-title { flex: 1; min-width: 0; }
-    .mcp-chip {
-      display: inline-flex; align-items: center; gap: 4px;
-      padding: 2px 7px; border-radius: 999px; border: 1px solid var(--border);
-      font-size: 10px; font-weight: 700; color: var(--vscode-descriptionForeground);
-      text-transform: uppercase; letter-spacing: .5px;
-    }
-    .mcp-grid { display: grid; grid-template-columns: 1fr 130px; gap: 6px; }
-    .mcp-grid.triple { grid-template-columns: 1fr 1fr 1fr; }
-    .mcp-note { font-size: 10px; color: var(--vscode-descriptionForeground); line-height: 1.35; }
-    .mcp-empty {
-      padding: 12px; border-radius: var(--r-md);
-      border: 1px dashed var(--border);
-      color: var(--vscode-descriptionForeground); font-size: 11px; text-align: center;
-    }
+    .mcp-chip { display: inline-flex; align-items: center; gap: 4px; padding: 2px 7px; border-radius: 999px; border: 1px solid var(--border); font-size: 10px; font-weight: 700; color: var(--fg2); text-transform: uppercase; letter-spacing: .4px; }
+    .mcp-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 6px; }
+    .mcp-note { font-size: 10px; color: var(--fg2); line-height: 1.3; }
+    .mcp-empty { padding: 10px; border-radius: var(--r); border: 1px dashed var(--border); color: var(--fg2); font-size: 11px; text-align: center; }
 
-    /* ── Main scroll area ───────────────────────────────────────── */
+    /* ── Main scroll area ─── */
     #main { flex: 1; overflow-y: auto; overflow-x: hidden; scroll-behavior: smooth; }
-
-    /* ── Home view ──────────────────────────────────────────────── */
     #homeView { padding: 12px; display: flex; flex-direction: column; gap: 10px; }
     #homeView.hidden, #chatView.hidden { display: none; }
 
-    .new-btn {
-      display: flex; align-items: center; justify-content: center; gap: 8px;
-      width: 100%; padding: 10px 14px;
-      border-radius: var(--r-md);
-      border: 1.5px dashed var(--border);
-      background: transparent; color: var(--vscode-foreground);
-      font: 600 13px var(--vscode-font-family); cursor: pointer; opacity: .65;
-      transition: all var(--spd);
-    }
-    .new-btn:hover { opacity: 1; border-style: solid; border-color: var(--amber); background: var(--amber-bg); }
-
-    .sec-title {
-      font-size: 10px; font-weight: 700; text-transform: uppercase;
-      letter-spacing: .7px; color: var(--vscode-descriptionForeground); padding: 0 2px;
-    }
+    .sec-title { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .6px; color: var(--fg2); padding: 0 2px; }
     .sessions { border-top: 1px solid var(--border); }
-    .sitem {
-      display: flex; align-items: center; justify-content: space-between;
-      padding: 9px 6px; cursor: pointer;
-      border-bottom: 1px solid var(--border);
-      border-radius: var(--r-sm); transition: background var(--spd);
-    }
-    .sitem:hover { background: var(--vscode-list-hoverBackground, rgba(128,128,128,.08)); }
-    .sitem {
-      gap: 8px;
-    }
-    .sitem-title {
-      font-size: 13px; font-weight: 500;
-      white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex: 1;
-    }
-    .sitem-time { font-size: 11px; color: var(--vscode-descriptionForeground); margin-left: 8px; flex-shrink: 0; }
-    .session-actions {
-      display: flex;
-      align-items: center;
-      gap: 4px;
-      flex-shrink: 0;
-    }
-    .session-meta {
-      display: flex;
-      flex-direction: column;
-      align-items: flex-end;
-      gap: 2px;
-    }
-    .session-count {
-      font-size: 10px;
-      color: var(--vscode-descriptionForeground);
-    }
-    .session-delete {
-      width: 22px;
-      height: 22px;
-      border: 1px solid transparent;
-      border-radius: 999px;
-      background: transparent;
-      color: var(--vscode-descriptionForeground);
-      cursor: pointer;
-      opacity: .7;
-      transition: opacity var(--spd), background var(--spd), color var(--spd), border-color var(--spd);
-    }
-    .session-delete:hover {
-      opacity: 1;
-      color: var(--red);
-      border-color: var(--red-bdr);
-      background: var(--red-bg);
-    }
-    .session-delete.confirming {
-      color: #fff;
-      border-color: var(--red);
-      background: var(--red);
-      opacity: 1;
-    }
+    .sitem { display: flex; align-items: center; justify-content: space-between; padding: 8px 6px; cursor: pointer; border-bottom: 1px solid var(--border); border-radius: 6px; gap: 8px; transition: background var(--spd); }
+    .sitem:hover { background: var(--vscode-list-hoverBackground, rgba(128,128,128,.07)); }
+    .sitem-title { font-size: 13px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex: 1; }
+    .sitem-time { font-size: 11px; color: var(--fg2); flex-shrink: 0; }
+    .session-actions { display: flex; align-items: center; gap: 4px; flex-shrink: 0; }
+    .session-meta { display: flex; flex-direction: column; align-items: flex-end; gap: 2px; }
+    .session-count { font-size: 10px; color: var(--fg2); }
+    .session-delete { width: 22px; height: 22px; border: 1px solid transparent; border-radius: 999px; background: transparent; color: var(--fg2); cursor: pointer; opacity: .6; transition: all var(--spd); font-size: 12px; }
+    .session-delete:hover { opacity: 1; color: var(--red); border-color: var(--red-bdr); background: var(--red-bg); }
 
-    /* ── Chat view ──────────────────────────────────────────────── */
-    #chatView { padding: 10px 12px 4px; display: flex; flex-direction: column; gap: 10px; }
-
-    .back-btn {
-      display: inline-flex; align-items: center; gap: 4px;
-      border: none; background: none; color: var(--amber);
-      font: 600 11px var(--vscode-font-family); cursor: pointer; opacity: .8;
-      padding: 0 0 2px; width: fit-content;
-    }
+    /* ── Chat view ─── */
+    #chatView { padding: 8px 12px 4px; display: flex; flex-direction: column; gap: 8px; }
+    .back-btn { display: inline-flex; align-items: center; gap: 4px; border: none; background: none; color: var(--amber); font: 600 11px var(--vscode-font-family); cursor: pointer; opacity: .8; padding: 0; width: fit-content; }
     .back-btn:hover { opacity: 1; }
 
-    /* ── Messages ───────────────────────────────────────────────── */
-    #messages { display: flex; flex-direction: column; gap: 10px; }
-    .msg { max-width: 90%; }
-    .msg.user  { align-self: flex-end; }
-    .msg.agent { align-self: flex-start; }
-    .bubble {
-      padding: 9px 13px; border-radius: var(--r-md);
-      line-height: 1.55; font-size: 13px; word-break: break-word;
-    }
-    .msg.user  .bubble { background: var(--amber); color: #fff; border-bottom-right-radius: 3px; }
-    .msg.agent .bubble {
-      background: var(--vscode-input-background, rgba(128,128,128,.1));
-      border: 1px solid var(--border); border-bottom-left-radius: 3px;
-    }
-    .bubble code {
-      font-family: var(--vscode-editor-font-family, monospace);
-      font-size: 11.5px; background: rgba(0,0,0,.16); padding: 1px 5px; border-radius: 4px;
-    }
-    .bubble pre {
-      font-family: var(--vscode-editor-font-family, monospace);
-      font-size: 11.5px; line-height: 1.45;
-      background: rgba(0,0,0,.18); border-radius: var(--r-sm);
-      padding: 9px 11px; margin: 7px 0; overflow-x: auto; white-space: pre-wrap;
-    }
-    .msg-time { font-size: 10px; color: var(--vscode-descriptionForeground); margin-top: 3px; padding: 0 2px; }
-    .msg.user .msg-time { text-align: right; }
+    /* ── Messages ─── */
+    #messages { display: flex; flex-direction: column; gap: 8px; }
+    .msg { max-width: 92%; position: relative; }
+    .msg.user { align-self: flex-end; }
+    .msg.agent { align-self: flex-start; width: 100%; }
+    .bubble { padding: 8px 12px; border-radius: var(--r); line-height: 1.5; font-size: 13px; word-break: break-word; user-select: text; -webkit-user-select: text; position: relative; }
+    .msg.user .bubble { background: var(--amber); color: #fff; border-bottom-right-radius: 3px; }
+    .msg.agent .bubble { background: var(--bg2); border: 1px solid var(--border); border-bottom-left-radius: 3px; }
+    .bubble code { font-family: var(--vscode-editor-font-family, monospace); font-size: 11.5px; background: rgba(0,0,0,.15); padding: 1px 4px; border-radius: 3px; }
+    .bubble pre { font-family: var(--vscode-editor-font-family, monospace); font-size: 11.5px; line-height: 1.45; background: rgba(0,0,0,.18); border-radius: 6px; padding: 8px 10px; margin: 6px 0; overflow-x: auto; white-space: pre-wrap; position: relative; }
+    .bubble pre code { background: none; padding: 0; }
+    .bubble h1, .bubble h2, .bubble h3 { margin: 8px 0 4px; font-size: 13px; font-weight: 700; }
+    .bubble ul, .bubble ol { margin: 4px 0; padding-left: 18px; }
+    .bubble p { margin: 4px 0; }
+    .msg-footer { display: flex; align-items: center; justify-content: space-between; gap: 4px; margin-top: 2px; padding: 0 2px; }
+    .msg.user .msg-footer { justify-content: flex-end; }
+    .msg-time { font-size: 10px; color: var(--fg2); }
+    .copy-btn { border: none; background: transparent; color: var(--fg2); cursor: pointer; font-size: 11px; opacity: 0; transition: opacity var(--spd); padding: 1px 4px; border-radius: 4px; }
+    .copy-btn:hover { opacity: 1 !important; background: rgba(128,128,128,.12); }
+    .msg:hover .copy-btn { opacity: .6; }
 
-    /* ── Typing indicator (legacy, kept for safety) ─────────────── */
-    #typing { align-self: flex-start; display: none; }
-    #typing.on { display: block; }
-    .typing-bubble {
-      display: inline-flex; align-items: center; gap: 4px;
-      padding: 10px 13px; border-radius: var(--r-md); border-bottom-left-radius: 3px;
-      background: var(--vscode-input-background, rgba(128,128,128,.1));
-      border: 1px solid var(--border);
-    }
-    .dot {
-      width: 7px; height: 7px; border-radius: 50%;
-      background: var(--vscode-descriptionForeground, rgba(128,128,128,.7));
-      animation: bounce 1.1s infinite ease-in-out;
-    }
-    .dot:nth-child(2) { animation-delay: .18s; }
-    .dot:nth-child(3) { animation-delay: .36s; }
-    @keyframes bounce {
-      0%,60%,100% { transform: translateY(0); opacity: .5; }
-      30%          { transform: translateY(-5px); opacity: 1; }
-    }
-
-    /* ── Thinking panel (ChatGPT / DeepSeek / Kimi style) ─────────── */
-    .thinking-panel {
-      align-self: flex-start; width: 100%;
-      overflow: hidden; font-size: 12px;
-    }
+    /* ── Thinking panel ─── */
+    .thinking-panel { align-self: flex-start; width: 100%; overflow: hidden; font-size: 12px; }
     .thinking-panel.hidden { display: none; }
-    .thinking-header {
-      display: flex; align-items: center; gap: 6px;
-      padding: 6px 2px; cursor: pointer; user-select: none;
-    }
-    .thinking-header:hover .thinking-chevron { opacity: 1; }
-    .thinking-spinner {
-      width: 14px; height: 14px; flex-shrink: 0;
-      position: relative;
-    }
-    .thinking-spinner::before {
-      content: ''; position: absolute; inset: 0;
-      border-radius: 50%; border: 2px solid rgba(128,128,128,.2);
-      border-top-color: var(--vscode-foreground);
-      animation: spin 800ms linear infinite;
-    }
-    .thinking-panel.done .thinking-spinner::before {
-      animation: none; border-color: transparent;
-    }
-    .thinking-panel.done .thinking-spinner::after {
-      content: '\\2713'; position: absolute; inset: 0;
-      display: flex; align-items: center; justify-content: center;
-      font-size: 11px; font-weight: 700;
-      color: var(--green, #22c55e);
-    }
+    .thinking-header { display: flex; align-items: center; gap: 6px; padding: 4px 2px; cursor: pointer; user-select: none; }
+    .thinking-spinner { width: 13px; height: 13px; flex-shrink: 0; position: relative; }
+    .thinking-spinner::before { content: ''; position: absolute; inset: 0; border-radius: 50%; border: 2px solid rgba(128,128,128,.15); border-top-color: var(--fg); animation: spin 700ms linear infinite; }
+    .thinking-panel.done .thinking-spinner::before { animation: none; border-color: transparent; }
+    .thinking-panel.done .thinking-spinner::after { content: '\\2713'; position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; font-size: 10px; font-weight: 700; color: var(--green); }
     @keyframes spin { to { transform: rotate(360deg); } }
-    #thinkingTitle {
-      flex: 1; font-size: 12px; font-weight: 500;
-      color: var(--vscode-descriptionForeground);
-    }
-    .thinking-panel:not(.done) #thinkingTitle {
-      color: var(--vscode-foreground);
-    }
-    .thinking-chevron {
-      font-size: 10px; color: var(--vscode-descriptionForeground);
-      opacity: .6; transition: transform 150ms ease, opacity 150ms ease;
-    }
+    #thinkingTitle { flex: 1; font-size: 11px; font-weight: 500; color: var(--fg2); }
+    .thinking-panel:not(.done) #thinkingTitle { color: var(--fg); }
+    .thinking-chevron { font-size: 10px; color: var(--fg2); opacity: .5; transition: transform 120ms ease; }
     .thinking-chevron.expanded { transform: rotate(180deg); }
-    .thinking-steps {
-      display: flex; flex-direction: column; gap: 1px;
-      padding: 2px 0 8px 22px;
-      max-height: 200px; overflow-y: auto;
-      border-left: 1.5px solid rgba(128,128,128,.15);
-      margin-left: 7px;
-    }
+    .thinking-steps { display: flex; flex-direction: column; gap: 0; padding: 2px 0 6px 20px; max-height: 160px; overflow-y: auto; border-left: 1.5px solid rgba(128,128,128,.12); margin-left: 6px; }
     .thinking-steps.collapsed { display: none; }
-    .thinking-step {
-      display: flex; align-items: baseline; gap: 6px;
-      padding: 2px 8px;
-      color: var(--vscode-descriptionForeground);
-      animation: fadein 180ms ease forwards;
-    }
-    .thinking-step-icon { flex-shrink: 0; font-size: 10px; }
+    .thinking-step { display: flex; align-items: baseline; gap: 5px; padding: 1px 6px; color: var(--fg2); }
+    .thinking-step-icon { flex-shrink: 0; font-size: 9px; }
     .thinking-step-body { display: flex; flex-direction: column; min-width: 0; }
-    .thinking-step-label { font-size: 11px; font-weight: 500; color: var(--vscode-foreground); }
-    .thinking-step-detail { font-size: 10px; opacity: .55; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-    .thinking-step-time { font-size: 9px; opacity: .4; margin-left: auto; flex-shrink: 0; }
+    .thinking-step-label { font-size: 11px; font-weight: 500; color: var(--fg); }
+    .thinking-step-detail { font-size: 10px; opacity: .5; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .thinking-step-time { font-size: 9px; opacity: .35; margin-left: auto; flex-shrink: 0; }
 
-    /* ── Mode popup ──────────────────────────────────────────────── */
-    .mode-popup {
-      position: absolute; bottom: calc(100% + 6px); left: 0; z-index: 200;
-      background: var(--vscode-editorWidget-background, var(--vscode-input-background));
-      border: 1px solid var(--border); border-radius: var(--r-md);
-      display: flex; flex-direction: column; gap: 1px; padding: 4px;
-      min-width: 140px; box-shadow: 0 4px 16px rgba(0,0,0,.22);
-      animation: fadein 120ms ease forwards;
-    }
-    .mode-popup.hidden { display: none; }
-    .mode-option {
-      display: flex; align-items: center; gap: 8px;
-      padding: 7px 10px; border-radius: var(--r-sm);
-      border: none; background: transparent;
-      color: var(--vscode-foreground); cursor: pointer;
-      font: 12px var(--vscode-font-family); text-align: left;
-      transition: background var(--spd);
-    }
-    .mode-option:hover { background: var(--vscode-list-hoverBackground, rgba(128,128,128,.1)); }
-    .mode-option.active { font-weight: 700; }
-    .mode-option.active::after { content: '\\2713'; margin-left: auto; font-size: 11px; opacity: .7; }
+    /* ── Popups ─── */
+    .popup { position: absolute; bottom: calc(100% + 4px); left: 0; z-index: 200; background: var(--vscode-editorWidget-background, var(--bg2)); border: 1px solid var(--border); border-radius: var(--r); display: flex; flex-direction: column; gap: 1px; padding: 4px; min-width: 140px; box-shadow: 0 4px 14px rgba(0,0,0,.2); }
+    .popup.hidden { display: none; }
+    .popup-opt { display: flex; align-items: center; gap: 7px; padding: 6px 10px; border-radius: 6px; border: none; background: transparent; color: var(--fg); cursor: pointer; font: 12px var(--vscode-font-family); text-align: left; transition: background var(--spd); }
+    .popup-opt:hover { background: var(--vscode-list-hoverBackground, rgba(128,128,128,.1)); }
+    .popup-opt.active { font-weight: 700; }
+    .popup-opt.active::after { content: '\\2713'; margin-left: auto; font-size: 11px; opacity: .6; }
 
-    /* ── Model popup ─────────────────────────────────────────────── */
-    .model-popup {
-      position: absolute; bottom: calc(100% + 6px); left: 0; z-index: 200;
-      background: var(--vscode-editorWidget-background, var(--vscode-input-background));
-      border: 1px solid var(--border); border-radius: var(--r-md);
-      min-width: 190px; max-height: 240px; overflow-y: auto;
-      box-shadow: 0 4px 16px rgba(0,0,0,.22);
-      animation: fadein 120ms ease forwards;
-    }
+    .model-popup { position: absolute; bottom: calc(100% + 4px); left: 0; z-index: 200; background: var(--vscode-editorWidget-background, var(--bg2)); border: 1px solid var(--border); border-radius: var(--r); min-width: 180px; max-height: 220px; overflow-y: auto; box-shadow: 0 4px 14px rgba(0,0,0,.2); }
     .model-popup.hidden { display: none; }
-    .model-popup-title {
-      font-size: 10px; font-weight: 700; text-transform: uppercase;
-      letter-spacing: .6px; color: var(--vscode-descriptionForeground);
-      padding: 8px 10px 5px;
-    }
-    .model-popup-list { display: flex; flex-direction: column; gap: 1px; padding: 2px 4px 5px; }
-    .model-btn {
-      display: flex; align-items: center; gap: 8px;
-      padding: 7px 8px; border: none; border-radius: var(--r-sm);
-      background: transparent; color: var(--vscode-foreground);
-      cursor: pointer; font: 12px var(--vscode-font-family);
-      text-align: left; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-      transition: background var(--spd);
-    }
-    .model-btn:hover { background: var(--vscode-list-hoverBackground, rgba(128,128,128,.1)); }
-    .model-btn.active { font-weight: 700; }
-    .model-btn.active::after { content: '\\2713'; margin-left: auto; font-size: 11px; opacity: .7; }
+    .model-popup-title { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .5px; color: var(--fg2); padding: 7px 10px 4px; }
+    .model-popup-list { display: flex; flex-direction: column; gap: 1px; padding: 2px 4px 4px; }
 
-    /* ── Empty state ────────────────────────────────────────────── */
-    .empty { text-align: center; padding: 28px 12px; color: var(--vscode-descriptionForeground); }
-    .empty-icon { font-size: 28px; margin-bottom: 8px; opacity: .45; }
-    .empty-h { font-size: 13px; font-weight: 600; margin-bottom: 4px; }
-    .empty-p { font-size: 12px; opacity: .7; }
+    /* ── Permission popup ─── */
+    .perm-popup { position: absolute; bottom: calc(100% + 4px); left: 0; z-index: 200; background: var(--vscode-editorWidget-background, var(--bg2)); border: 1px solid var(--border); border-radius: var(--r); min-width: 220px; box-shadow: 0 4px 14px rgba(0,0,0,.2); padding: 4px; }
+    .perm-popup.hidden { display: none; }
+    .perm-opt { display: flex; align-items: flex-start; gap: 8px; padding: 8px 10px; border-radius: 6px; border: none; background: transparent; color: var(--fg); cursor: pointer; font: 12px var(--vscode-font-family); text-align: left; transition: background var(--spd); width: 100%; }
+    .perm-opt:hover { background: var(--vscode-list-hoverBackground, rgba(128,128,128,.1)); }
+    .perm-opt.active { font-weight: 600; }
+    .perm-opt-icon { font-size: 14px; flex-shrink: 0; margin-top: 1px; }
+    .perm-opt-text { display: flex; flex-direction: column; gap: 1px; }
+    .perm-opt-title { font-size: 12px; font-weight: 600; }
+    .perm-opt-desc { font-size: 10px; color: var(--fg2); line-height: 1.3; }
+    .perm-opt.active .perm-opt-title::after { content: ' \\2713'; font-size: 10px; opacity: .6; }
 
-    /* ── Pending edits banner ───────────────────────────────────── */
-    #editsBanner {
-      display: none; margin: 4px 12px 0;
-      padding: 9px 11px; border-radius: var(--r-md);
-      background: var(--amber-bg); border: 1px solid var(--amber-bdr);
-      align-items: center; justify-content: space-between; gap: 8px; flex-shrink: 0;
-    }
+    /* ── Empty state ─── */
+    .empty { text-align: center; padding: 24px 12px; color: var(--fg2); }
+    .empty-icon { font-size: 26px; margin-bottom: 6px; opacity: .4; }
+    .empty-h { font-size: 13px; font-weight: 600; margin-bottom: 3px; }
+    .empty-p { font-size: 12px; opacity: .6; }
+
+    /* ── Pending edits banner ─── */
+    #editsBanner { display: none; margin: 4px 12px 0; padding: 8px 10px; border-radius: var(--r); background: var(--amber-bg); border: 1px solid var(--amber-bdr); align-items: center; justify-content: space-between; gap: 8px; flex-shrink: 0; }
     #editsBanner.on { display: flex; }
     .banner-txt { font-size: 12px; font-weight: 600; color: var(--amber); flex: 1; }
     .banner-acts { display: flex; gap: 5px; }
 
-    /* ── Composer (Codex / Copilot-style) ───────────────────────── */
-    .composer {
-      padding: 8px 12px 10px;
-      border-top: 1px solid var(--border);
-      flex-shrink: 0;
-    }
-
-    /* Main input card — border glows amber on focus */
-    .composer-box {
-      position: relative;
-      border-radius: var(--r-lg);
-      border: 1.5px solid var(--vscode-input-border, rgba(128,128,128,.25));
-      background: var(--vscode-input-background);
-      transition: border-color var(--spd), box-shadow var(--spd);
-    }
-    .composer-box:focus-within {
-      border-color: var(--amber);
-      box-shadow: 0 0 0 3px var(--amber-glow);
-    }
-
-    /* Textarea sits flush inside the box — no own border */
-    .composer-box textarea {
-      display: block; width: 100%;
-      min-height: 52px; max-height: 180px;
-      padding: 12px 14px 4px;
-      background: none; border: none; outline: none;
-      color: var(--vscode-input-foreground);
-      font: 13px/1.55 var(--vscode-font-family);
-      resize: none; overflow-y: auto;
-    }
+    /* ── Composer ─── */
+    .composer { padding: 6px 12px 8px; border-top: 1px solid var(--border); flex-shrink: 0; }
+    .composer-box { position: relative; border-radius: 14px; border: 1.5px solid var(--vscode-input-border, rgba(128,128,128,.22)); background: var(--bg2); transition: border-color var(--spd), box-shadow var(--spd); }
+    .composer-box:focus-within { border-color: var(--amber); box-shadow: 0 0 0 2.5px var(--amber-glow); }
+    .composer-box textarea { display: block; width: 100%; min-height: 46px; max-height: 160px; padding: 10px 12px 2px; background: none; border: none; outline: none; color: var(--vscode-input-foreground); font: 13px/1.5 var(--vscode-font-family); resize: none; overflow-y: auto; }
     .composer-box textarea::placeholder { color: var(--vscode-input-placeholderForeground); }
+    .composer-inner-row { display: flex; align-items: center; justify-content: space-between; padding: 3px 8px 6px; gap: 4px; }
+    .chips { display: flex; gap: 4px; align-items: center; flex-wrap: wrap; }
 
-    /* Bottom row inside the box: chips on left, send on right */
-    .composer-inner-row {
-      display: flex; align-items: center; justify-content: space-between;
-      padding: 4px 10px 8px; gap: 6px;
-    }
+    .mode-chip { border: 1px solid var(--border); border-radius: 999px; background: transparent; color: var(--fg2); cursor: pointer; font: 700 10px var(--vscode-font-family); letter-spacing: .4px; text-transform: uppercase; padding: 2px 8px; transition: all var(--spd); white-space: nowrap; }
+    .mode-chip:hover { border-color: var(--amber); color: var(--amber); background: var(--amber-bg); }
+    .mode-chip.active { border-color: var(--amber); color: #fff; background: var(--amber); }
 
-    .chips { display: flex; gap: 5px; align-items: center; flex-wrap: wrap; }
-
-    .mode-chip {
-      border: 1px solid var(--border);
-      border-radius: 999px;
-      background: transparent;
-      color: var(--vscode-descriptionForeground);
-      cursor: pointer;
-      font: 700 10px var(--vscode-font-family);
-      letter-spacing: .5px;
-      text-transform: uppercase;
-      padding: 3px 9px;
-      transition: all var(--spd);
-      white-space: nowrap;
-      flex-shrink: 0;
-    }
-    .mode-chip:hover {
-      border-color: var(--amber);
-      color: var(--amber);
-      background: var(--amber-bg);
-    }
-    .mode-chip.active {
-      border-color: var(--amber);
-      color: #fff;
-      background: var(--amber);
-    }
-
-    .chip {
-      font-size: 10px; font-weight: 600;
-      padding: 3px 8px; border-radius: 999px;
-      border: 1px solid var(--border);
-      color: var(--vscode-descriptionForeground);
-      cursor: pointer; white-space: nowrap;
-      max-width: 120px; overflow: hidden; text-overflow: ellipsis;
-      transition: all var(--spd); background: transparent;
-    }
+    .chip { font-size: 10px; font-weight: 600; padding: 2px 7px; border-radius: 999px; border: 1px solid var(--border); color: var(--fg2); cursor: pointer; white-space: nowrap; max-width: 110px; overflow: hidden; text-overflow: ellipsis; transition: all var(--spd); background: transparent; }
     .chip:hover { border-color: var(--amber); color: var(--amber); background: var(--amber-bg); }
-    .chip.attach {
-      color: var(--amber);
-      border-style: dashed;
-    }
-    .chip.attach:hover { border-color: var(--amber); background: var(--amber-bg); }
-    .attachment-row {
-      display: flex;
-      gap: 5px;
-      align-items: center;
-      flex-wrap: wrap;
-      padding: 0 10px 8px;
-    }
-    .attachment-label {
-      font-size: 10px;
-      font-weight: 700;
-      text-transform: uppercase;
-      letter-spacing: .6px;
-      color: var(--vscode-descriptionForeground);
-    }
-    .attachment-empty {
-      font-size: 10px;
-      color: var(--vscode-descriptionForeground);
-      opacity: .7;
-    }
+    .chip.attach { color: var(--amber); border-style: dashed; }
 
-    /* Send button — rounded square, disabled until text is typed */
-    .send-btn {
-      width: 30px; height: 30px; min-width: 30px;
-      border: none; border-radius: 10px;
-      background: var(--amber); color: #fff;
-      font-size: 15px; line-height: 1; cursor: default;
-      display: flex; align-items: center; justify-content: center;
-      transition: opacity var(--spd), transform var(--spd), background var(--spd);
-      opacity: .3;
-    }
+    .send-btn { width: 28px; height: 28px; min-width: 28px; border: none; border-radius: 8px; background: var(--amber); color: #fff; font-size: 14px; line-height: 1; cursor: default; display: flex; align-items: center; justify-content: center; transition: opacity var(--spd), transform var(--spd); opacity: .25; }
     .send-btn:not([disabled]) { opacity: 1; cursor: pointer; }
-    .send-btn:not([disabled]):hover { background: #d97706; transform: scale(1.06); }
+    .send-btn:not([disabled]):hover { background: #d97706; transform: scale(1.05); }
 
-    /* Status / token row below the box */
-    .composer-foot {
-      display: flex; align-items: center; justify-content: space-between;
-      padding: 5px 2px 0; gap: 8px;
-    }
-    .status-txt { font-size: 10px; color: var(--vscode-descriptionForeground); }
+    /* ── Permission bar (GitHub Copilot style) ─── */
+    .perm-bar { display: flex; align-items: center; justify-content: space-between; padding: 4px 4px 2px; gap: 6px; }
+    .perm-selector { position: relative; }
+    .perm-btn { display: inline-flex; align-items: center; gap: 4px; border: none; background: transparent; color: var(--fg2); cursor: pointer; font: 500 11px var(--vscode-font-family); padding: 2px 6px; border-radius: 4px; transition: all var(--spd); }
+    .perm-btn:hover { color: var(--fg); background: rgba(128,128,128,.08); }
+    .perm-btn-icon { font-size: 12px; }
+    .perm-btn-chevron { font-size: 8px; opacity: .5; }
 
-    .token-wrap { display: inline-flex; align-items: center; gap: 5px; color: var(--vscode-descriptionForeground); font-size: 10px; }
-    .token-ring {
-      width: 24px; height: 24px; border-radius: 50%;
-      background: conic-gradient(var(--amber) 0deg, rgba(128,128,128,.18) 0deg);
-      display: inline-flex; align-items: center; justify-content: center; position: relative;
-    }
-    .token-ring::after {
-      content: ""; position: absolute; width: 16px; height: 16px; border-radius: 50%;
-      background: var(--vscode-sideBar-background);
-    }
-    .token-value { position: relative; z-index: 1; font-size: 8px; font-weight: 700; color: var(--vscode-foreground); }
+    .attachment-row { display: flex; gap: 4px; align-items: center; flex-wrap: wrap; padding: 0 0 4px; }
+    .attachment-label { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .5px; color: var(--fg2); }
 
-    /* ── Generic buttons ────────────────────────────────────────── */
-    .btn {
-      font: 600 11px var(--vscode-font-family);
-      padding: 5px 10px; border-radius: var(--r-sm);
-      border: 1px solid var(--border);
-      background: transparent; color: var(--vscode-foreground);
-      cursor: pointer; transition: all var(--spd);
-    }
-    .btn:hover { background: var(--vscode-toolbar-hoverBackground, rgba(128,128,128,.12)); }
+    /* ── Generic buttons ─── */
+    .btn { font: 600 11px var(--vscode-font-family); padding: 4px 9px; border-radius: 6px; border: 1px solid var(--border); background: transparent; color: var(--fg); cursor: pointer; transition: all var(--spd); }
+    .btn:hover { background: var(--vscode-toolbar-hoverBackground, rgba(128,128,128,.1)); }
     .btn.primary { background: var(--amber); border-color: var(--amber); color: #fff; }
-    .btn.primary:hover { background: #d97706; border-color: #d97706; }
-    .btn.danger  { color: var(--red); border-color: var(--red-bdr); }
-    .btn.danger:hover  { background: var(--red-bg); }
-    .btn.sm { padding: 4px 8px; font-size: 10px; }
+    .btn.primary:hover { background: #d97706; }
+    .btn.danger { color: var(--red); border-color: var(--red-bdr); }
+    .btn.danger:hover { background: var(--red-bg); }
+    .btn.sm { padding: 3px 7px; font-size: 10px; }
 
-    @keyframes fadein {
-      from { opacity: 0; transform: translateY(4px); }
-      to   { opacity: 1; transform: translateY(0); }
-    }
-    .fadein { animation: fadein 220ms ease forwards; }
-
+    @keyframes fadein { from { opacity: 0; transform: translateY(3px); } to { opacity: 1; transform: translateY(0); } }
+    .fadein { animation: fadein 180ms ease forwards; }
     ::-webkit-scrollbar { width: 4px; }
     ::-webkit-scrollbar-track { background: transparent; }
-    ::-webkit-scrollbar-thumb { background: rgba(128,128,128,.25); border-radius: 99px; }
-    ::-webkit-scrollbar-thumb:hover { background: rgba(128,128,128,.45); }
+    ::-webkit-scrollbar-thumb { background: rgba(128,128,128,.2); border-radius: 99px; }
+    ::-webkit-scrollbar-thumb:hover { background: rgba(128,128,128,.35); }
   </style>
 </head>
 <body>
 <div id="root">
 
-  <!-- ── Header ── -->
   <header class="hdr">
     <span id="statusBadge" class="badge ${initialStatusClass}">
       <span class="badge-dot"></span><span id="statusTxt">${initialStatusText}</span>
@@ -1172,75 +788,38 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
     <div class="hdr-right">
       <button id="btnNewChat" class="icon-btn" title="New conversation">&#43;</button>
       <button id="btnSettings" class="icon-btn" title="Settings">&#9881;</button>
-      <button id="btnRefresh"  class="icon-btn" title="Refresh status">&#8635;</button>
+      <button id="btnRefresh" class="icon-btn" title="Refresh">&#8635;</button>
     </div>
   </header>
 
-  <div id="fatalBanner" class="fatal-banner" role="alert"></div>
+  <div id="fatalBanner" role="alert"></div>
 
-  <!-- ── Settings drawer ── -->
   <div id="settingsDrawer">
-    <div class="srow">
-      <span class="slabel">Role</span>
-      <select id="roleSelect">
-        <option value="planner">Planner</option>
-        <option value="editor">Editor</option>
-        <option value="fast">Fast</option>
-        <option value="embedding">Embedding</option>
-      </select>
-    </div>
-    <div class="srow">
-      <span class="slabel">Model</span>
-      <select id="modelSelect"></select>
-    </div>
-    <div class="sbtns">
-      <button id="btnSyncModels" class="btn">Sync models</button>
-      <button id="btnApplyModel" class="btn primary">Apply</button>
-    </div>
-
-    <div class="srow">
-      <span class="slabel">Permissions</span>
-      <select id="permissionSelect">
-        <option value="full">Full (auto-approve all)</option>
-        <option value="default">Default (prompt for writes)</option>
-        <option value="strict">Strict (prompt for everything)</option>
-      </select>
-    </div>
-
+    <div class="srow"><span class="slabel">Role</span><select id="roleSelect"><option value="planner">Planner</option><option value="editor">Editor</option><option value="fast">Fast</option><option value="embedding">Embedding</option></select></div>
+    <div class="srow"><span class="slabel">Model</span><select id="modelSelect"></select></div>
+    <div class="sbtns"><button id="btnSyncModels" class="btn">Sync models</button><button id="btnApplyModel" class="btn primary">Apply</button></div>
     <div class="section">
-      <div class="section-head">
-        <span class="slabel">MCP Servers</span>
-        <span id="mcpCount" class="mcp-count">0 configured</span>
-      </div>
-      <div class="section-copy">
-        Edit servers inline, save to workspace settings, then verify transport health.
-      </div>
+      <div class="section-head"><span class="slabel">MCP Servers</span><span id="mcpCount" class="mcp-count">0 configured</span></div>
+      <div class="section-copy">Edit servers inline, save to workspace settings.</div>
       <div class="mcp-toolbar">
-        <button id="btnAddMcp"          class="btn">Add server</button>
-        <button id="btnReloadMcp"       class="btn">Reload</button>
-        <button id="btnSaveMcp"         class="btn primary">Save changes</button>
+        <button id="btnAddMcp" class="btn">Add server</button>
+        <button id="btnReloadMcp" class="btn">Reload</button>
+        <button id="btnSaveMcp" class="btn primary">Save</button>
         <button id="btnOpenMcpSettings" class="btn">Open settings</button>
-        <button id="btnManageMcp"       class="btn">View status</button>
+        <button id="btnManageMcp" class="btn">Status</button>
       </div>
       <div id="mcpList" class="mcp-list"></div>
       <div class="mcp-note">Stdio servers use a command + optional args. HTTP/SSE servers use a URL.</div>
     </div>
   </div>
 
-  <!-- ── Main scrollable area ── -->
   <div id="main">
-
     <div id="homeView">
       <div class="sec-title">Recent Conversations</div>
       <div id="sessionList" class="sessions">
-        <div class="empty">
-          <div class="empty-icon">&#128172;</div>
-          <div class="empty-h">No conversations yet</div>
-          <div class="empty-p">Type a task below to begin</div>
-        </div>
+        <div class="empty"><div class="empty-icon">&#128172;</div><div class="empty-h">No conversations yet</div><div class="empty-p">Type a message below to begin</div></div>
       </div>
     </div>
-
     <div id="chatView" class="hidden">
       <button id="btnBack" class="back-btn">&#8592; Back</button>
       <div id="attachmentRow" class="attachment-row"></div>
@@ -1254,50 +833,59 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
         <div id="thinkingSteps" class="thinking-steps"></div>
       </div>
     </div>
-
   </div>
 
-  <!-- ── Pending edits banner ── -->
   <div id="editsBanner">
     <span id="bannerTxt" class="banner-txt">Pending edits ready</span>
     <div class="banner-acts">
-      <button id="btnApply"  class="btn primary sm">Apply</button>
+      <button id="btnApply" class="btn primary sm">Apply</button>
       <button id="btnRevert" class="btn danger sm">Revert</button>
     </div>
   </div>
 
-  <!-- ── Composer ── -->
   <div class="composer">
     <div class="composer-box">
-      <textarea id="taskInput"
-                placeholder="Ask Pulse anything about your code\u2026"
-                rows="2"
-                aria-label="Message"></textarea>
+      <textarea id="taskInput" placeholder="Ask Pulse anything about your code\u2026" rows="2" aria-label="Message"></textarea>
       <div class="composer-inner-row">
         <div class="chips">
-          <button id="chipMode"  type="button" class="mode-chip active" title="Click to switch mode">AGENT</button>
-          <div id="modePopup" class="mode-popup hidden">
-            <button type="button" class="mode-option" data-mode="agent">&#9889; Agent</button>
-            <button type="button" class="mode-option" data-mode="ask">&#128172; Ask</button>
-            <button type="button" class="mode-option" data-mode="plan">&#128203; Plan</button>
+          <button id="chipMode" type="button" class="mode-chip active" title="Switch mode">AGENT</button>
+          <div id="modePopup" class="popup hidden">
+            <button type="button" class="popup-opt" data-mode="agent">&#9889; Agent</button>
+            <button type="button" class="popup-opt" data-mode="ask">&#128172; Ask</button>
+            <button type="button" class="popup-opt" data-mode="plan">&#128203; Plan</button>
           </div>
-          <button id="chipModel" type="button" class="chip" title="Active planner model">\u2013</button>
+          <button id="chipModel" type="button" class="chip" title="Active model">\u2013</button>
           <div id="modelPopup" class="model-popup hidden">
             <div class="model-popup-title">Switch model</div>
             <div id="modelPopupList" class="model-popup-list"></div>
           </div>
-          <button id="btnAttach" type="button" class="chip attach" title="Attach files for context">+ attach</button>
+          <button id="btnAttach" type="button" class="chip attach" title="Attach files">+ attach</button>
         </div>
         <button id="btnSend" class="send-btn" title="Send (Enter)" disabled>&#8593;</button>
       </div>
     </div>
-    <div class="composer-foot">
-      <span id="statusLine" class="status-txt">${initialStatusLine}</span>
-      <div class="token-wrap" title="Token usage this session">
-        <div id="tokenRing" class="token-ring">
-          <span id="tokenValue" class="token-value">0%</span>
+    <!-- Permission bar — GitHub Copilot style -->
+    <div class="perm-bar">
+      <div class="perm-selector">
+        <button id="permBtn" type="button" class="perm-btn">
+          <span id="permBtnIcon" class="perm-btn-icon">&#9741;</span>
+          <span id="permBtnLabel">Default Approvals</span>
+          <span class="perm-btn-chevron">&#9662;</span>
+        </button>
+        <div id="permPopup" class="perm-popup hidden">
+          <button type="button" class="perm-opt" data-perm="default">
+            <span class="perm-opt-icon">&#9741;</span>
+            <span class="perm-opt-text"><span class="perm-opt-title">Default Approvals</span><span class="perm-opt-desc">Pulse uses your configured settings</span></span>
+          </button>
+          <button type="button" class="perm-opt" data-perm="full">
+            <span class="perm-opt-icon">&#9888;</span>
+            <span class="perm-opt-text"><span class="perm-opt-title">Bypass Approvals</span><span class="perm-opt-desc">All actions are auto-approved</span></span>
+          </button>
+          <button type="button" class="perm-opt" data-perm="strict">
+            <span class="perm-opt-icon">&#128274;</span>
+            <span class="perm-opt-text"><span class="perm-opt-title">Require Approvals</span><span class="perm-opt-desc">Prompt for every action</span></span>
+          </button>
         </div>
-        <span id="tokenLabel">0 / 0</span>
       </div>
     </div>
   </div>
@@ -1307,439 +895,261 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
 <script nonce="${nonce}">
 (function () {
   'use strict';
-  let vscode = null;
+  var vscode = null;
 
-  function surfaceFatalError(message) {
-    const banner = $('fatalBanner');
-    if (banner) {
-      banner.textContent = message;
-      banner.classList.add('on');
-    }
-    const status = $('statusLine');
-    if (status) {
-      status.textContent = message.slice(0, 120);
-    }
-    const badge = $('statusBadge');
-    const statusTxt = $('statusTxt');
-    if (badge) {
-      badge.className = 'badge off';
-    }
-    if (statusTxt) {
-      statusTxt.textContent = 'Error';
-    }
-    if (vscode) {
-      try {
-        vscode.postMessage({ type: 'webviewError', payload: message });
-      } catch (_) {
-        // Ignore secondary failures while surfacing the original error.
-      }
-    }
+  function surfaceFatalError(msg) {
+    var b = document.getElementById('fatalBanner');
+    if (b) { b.textContent = msg; b.classList.add('on'); }
+    if (vscode) { try { vscode.postMessage({ type: 'webviewError', payload: msg }); } catch(_) {} }
   }
 
   try {
     vscode = acquireVsCodeApi();
-  const initialSummary = ${initialSummaryJson};
+  var initialSummary = ${initialSummaryJson};
+  var D = function(id) { return document.getElementById(id); };
 
-  // ── DOM refs ──────────────────────────────────────────────────────────
-  const $ = id => document.getElementById(id);
-  const statusBadge    = $('statusBadge');
-  const statusTxt      = $('statusTxt');
-  const btnSettings    = $('btnSettings');
-  const btnRefresh     = $('btnRefresh');
-  const settingsDrawer = $('settingsDrawer');
-  const roleSelect     = $('roleSelect');
-  const modelSelect    = $('modelSelect');
-  const btnSyncModels  = $('btnSyncModels');
-  const btnApplyModel  = $('btnApplyModel');
-  const permissionSelect = $('permissionSelect');
-  const btnAddMcp      = $('btnAddMcp');
-  const btnReloadMcp   = $('btnReloadMcp');
-  const btnSaveMcp     = $('btnSaveMcp');
-  const btnOpenMcpSettings = $('btnOpenMcpSettings');
-  const btnManageMcp   = $('btnManageMcp');
-  const mcpList        = $('mcpList');
-  const mcpCount       = $('mcpCount');
-  const homeView       = $('homeView');
-  const chatView       = $('chatView');
-  const btnNewChat     = $('btnNewChat');
-  const btnBack        = $('btnBack');
-  const attachmentRow  = $('attachmentRow');
-  const sessionList    = $('sessionList');
-  const messages       = $('messages');
-  const editsBanner    = $('editsBanner');
-  const bannerTxt      = $('bannerTxt');
-  const btnApply       = $('btnApply');
-  const btnRevert      = $('btnRevert');
-  const chipMode       = $('chipMode');
-  const taskInput      = $('taskInput');
-  const btnSend        = $('btnSend');
-  const chipModel      = $('chipModel');
-  const btnAttach      = $('btnAttach');
-  const statusLine     = $('statusLine');
-  const tokenRing      = $('tokenRing');
-  const tokenValue     = $('tokenValue');
-  const tokenLabel     = $('tokenLabel');
+  // DOM refs
+  var statusBadge = D('statusBadge'), statusTxt = D('statusTxt');
+  var btnSettings = D('btnSettings'), btnRefresh = D('btnRefresh'), btnNewChat = D('btnNewChat');
+  var settingsDrawer = D('settingsDrawer');
+  var roleSelect = D('roleSelect'), modelSelect = D('modelSelect');
+  var btnSyncModels = D('btnSyncModels'), btnApplyModel = D('btnApplyModel');
+  var btnAddMcp = D('btnAddMcp'), btnReloadMcp = D('btnReloadMcp'), btnSaveMcp = D('btnSaveMcp');
+  var btnOpenMcpSettings = D('btnOpenMcpSettings'), btnManageMcp = D('btnManageMcp');
+  var mcpList = D('mcpList'), mcpCount = D('mcpCount');
+  var homeView = D('homeView'), chatView = D('chatView');
+  var btnBack = D('btnBack'), attachmentRow = D('attachmentRow');
+  var sessionList = D('sessionList'), messages = D('messages');
+  var editsBanner = D('editsBanner'), bannerTxt = D('bannerTxt');
+  var btnApply = D('btnApply'), btnRevert = D('btnRevert');
+  var chipMode = D('chipMode'), chipModel = D('chipModel');
+  var taskInput = D('taskInput'), btnSend = D('btnSend'), btnAttach = D('btnAttach');
+  var permBtn = D('permBtn'), permBtnIcon = D('permBtnIcon'), permBtnLabel = D('permBtnLabel');
 
-  // ── State ─────────────────────────────────────────────────────────────
-  let summary        = null;
-  let models         = [];
-  let mcpServers     = [];
-  let chatHistory    = [];
-  let attachedFiles  = [];
-  let conversationMode = 'agent';
-  let inChat         = false;
-  let modePopupOpen  = false;
-  let modelPopupOpen = false;
-  let activeModelName = '';
-  let thinkingSteps  = [];
-  let thinkingStartTime = null;
+  // State
+  var summary = null, models = [], mcpServers = [];
+  var chatHistory = [], attachedFiles = [];
+  var conversationMode = 'agent', inChat = false;
+  var activeModelName = '', permMode = 'default';
+  var thinkingSteps = [], thinkingStartTime = null;
+  var modePopupOpen = false, modelPopupOpen = false, permPopupOpen = false;
+  var isBusy = false;
 
-  // ── Helpers ───────────────────────────────────────────────────────────
-  function esc(s) {
-    return String(s)
-      .replace(/&/g,'&amp;').replace(/</g,'&lt;')
-      .replace(/>/g,'&gt;').replace(/"/g,'&quot;');
-  }
-
+  // Helpers
+  function esc(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
   function relTime(iso) {
-    const d = Math.round((Date.now() - Date.parse(iso)) / 60000);
+    var d = Math.round((Date.now() - Date.parse(iso)) / 60000);
     if (!isFinite(d) || d < 1) return 'just now';
     if (d < 60) return d + 'm ago';
-    const h = Math.round(d / 60);
-    if (h < 24) return h + 'h ago';
-    return Math.round(h / 24) + 'd ago';
+    var h = Math.round(d / 60);
+    return h < 24 ? h + 'h ago' : Math.round(h / 24) + 'd ago';
   }
+  function autoGrow(el) { if (!el) return; el.style.height = 'auto'; el.style.height = Math.min(el.scrollHeight, 160) + 'px'; }
+  function scrollBottom() { requestAnimationFrame(function() { var el = D('main'); if (el) el.scrollTop = 999999; }); }
+  function on(el, evt, fn) { if (el) el.addEventListener(evt, fn); }
 
-  function autoGrow(el) {
-    if (!el) return;
-    el.style.height = 'auto';
-    el.style.height = Math.min(el.scrollHeight, 180) + 'px';
-  }
-
-  function scrollBottom() {
-    requestAnimationFrame(() => {
-      const el = $('main');
-      if (el) el.scrollTop = 999999;
+  // Markdown rendering
+  function renderMarkdown(raw) {
+    var html = esc(raw);
+    html = html.replace(/\`\`\`(\\w*)\\n([\\s\\S]*?)\`\`\`/g, function(_, lang, code) {
+      return '<pre><code>' + code + '</code></pre>';
     });
+    html = html.replace(/\`\`\`([\\s\\S]*?)\`\`\`/g, '<pre><code>$1</code></pre>');
+    html = html.replace(/\`([^\`\\n]+)\`/g, '<code>$1</code>');
+    html = html.replace(/\\*\\*(.+?)\\*\\*/g, '<strong>$1</strong>');
+    html = html.replace(/\\*(.+?)\\*/g, '<em>$1</em>');
+    html = html.replace(/^### (.+)$/gm, '<h3>$1</h3>');
+    html = html.replace(/^## (.+)$/gm, '<h2>$1</h2>');
+    html = html.replace(/^# (.+)$/gm, '<h1>$1</h1>');
+    html = html.replace(/^- (.+)$/gm, '<li>$1</li>');
+    html = html.replace(/\\n/g, '<br>');
+    html = html.replace(/<pre><code>(.*?)<\\/code><\\/pre>/gs, function(match) {
+      return match.replace(/<br>/g, '\\n');
+    });
+    return html;
   }
 
+  // Permission labels
+  var PERM_LABELS = {
+    'default': { icon: '\u2625', label: 'Default Approvals' },
+    'full':    { icon: '\u26A0', label: 'Bypass Approvals' },
+    'strict':  { icon: '\uD83D\uDD12', label: 'Require Approvals' }
+  };
+
+  function updatePermUI(mode) {
+    permMode = mode || 'default';
+    var info = PERM_LABELS[permMode] || PERM_LABELS['default'];
+    if (permBtnIcon) permBtnIcon.textContent = info.icon;
+    if (permBtnLabel) permBtnLabel.textContent = info.label;
+    var popup = D('permPopup');
+    if (popup) {
+      popup.querySelectorAll('.perm-opt').forEach(function(btn) {
+        btn.classList.toggle('active', btn.dataset.perm === permMode);
+      });
+    }
+  }
+
+  // Conversation mode
   function renderConversationMode(mode) {
     conversationMode = mode || 'agent';
-
-    if (chipMode) {
-      chipMode.textContent = conversationMode.toUpperCase();
-    }
-
-    // Sync the active state inside the popup if open
-    const modePopup = $('modePopup');
-    if (modePopup) {
-      modePopup.querySelectorAll('.mode-option').forEach(function(btn) {
-        btn.classList.toggle('active', btn.dataset.mode === conversationMode);
-      });
-    }
-
+    if (chipMode) chipMode.textContent = conversationMode.toUpperCase();
+    var popup = D('modePopup');
+    if (popup) popup.querySelectorAll('.popup-opt').forEach(function(btn) { btn.classList.toggle('active', btn.dataset.mode === conversationMode); });
     if (taskInput) {
-      if (conversationMode === 'ask') {
-        taskInput.placeholder = 'Ask Pulse a question about this project\u2026';
-      } else if (conversationMode === 'plan') {
-        taskInput.placeholder = 'Describe the change you want planned\u2026';
-      } else {
-        taskInput.placeholder = 'Ask Pulse anything about your code\u2026';
-      }
+      taskInput.placeholder = conversationMode === 'ask' ? 'Ask Pulse a question\u2026'
+        : conversationMode === 'plan' ? 'Describe the change you want planned\u2026'
+        : 'Ask Pulse anything about your code\u2026';
     }
   }
 
-  // ── Mode popup ────────────────────────────────────────────────────────
-  function openModePopup() {
-    const popup = $('modePopup');
-    if (!popup) return;
-    popup.querySelectorAll('.mode-option').forEach(function(btn) {
-      btn.classList.toggle('active', btn.dataset.mode === conversationMode);
-    });
-    popup.classList.remove('hidden');
-    modePopupOpen = true;
-  }
-
-  function closeModePopup() {
-    const popup = $('modePopup');
-    if (popup) popup.classList.add('hidden');
-    modePopupOpen = false;
-  }
-
-  // ── Model popup ───────────────────────────────────────────────────────
+  // Popups
+  function closeAllPopups() { closeModePopup(); closeModelPopup(); closePermPopup(); }
+  function openModePopup() { closeAllPopups(); D('modePopup').classList.remove('hidden'); modePopupOpen = true; }
+  function closeModePopup() { var p = D('modePopup'); if (p) p.classList.add('hidden'); modePopupOpen = false; }
   function openModelPopup() {
-    const popup = $('modelPopup');
-    const list  = $('modelPopupList');
+    closeAllPopups();
+    var popup = D('modelPopup'), list = D('modelPopupList');
     if (!popup || !list) return;
     list.innerHTML = '';
-    if (!models.length) {
-      list.innerHTML = '<div style="padding:8px 10px;font-size:11px;opacity:.6">No models available</div>';
-    } else {
-      models.forEach(function(m) {
-        const btn = document.createElement('button');
-        btn.type = 'button';
-        btn.className = 'model-btn' + (m.name === activeModelName ? ' active' : '');
-        btn.textContent = m.name;
-        btn.title = m.name;
-        btn.addEventListener('click', function(e) {
-          e.stopPropagation();
-          activeModelName = m.name;
-          if (chipModel) {
-            chipModel.textContent = m.name.split(':')[0].slice(0, 14) || '\u2013';
-            chipModel.title = 'Planner: ' + m.name;
-          }
-          vscode.postMessage({ type: 'setModel', payload: { role: 'planner', model: m.name } });
-          closeModelPopup();
-        });
-        list.appendChild(btn);
-      });
-    }
-    popup.classList.remove('hidden');
-    modelPopupOpen = true;
+    if (!models.length) { list.innerHTML = '<div style="padding:8px 10px;font-size:11px;opacity:.5">No models</div>'; }
+    else { models.forEach(function(m) {
+      var btn = document.createElement('button'); btn.type = 'button';
+      btn.className = 'popup-opt' + (m.name === activeModelName ? ' active' : '');
+      btn.textContent = m.name; btn.title = m.name;
+      btn.addEventListener('click', function(e) { e.stopPropagation(); activeModelName = m.name;
+        if (chipModel) { chipModel.textContent = m.name.split(':')[0].slice(0,14) || '\u2013'; chipModel.title = m.name; }
+        vscode.postMessage({ type: 'setModel', payload: { role: 'planner', model: m.name } }); closeModelPopup(); });
+      list.appendChild(btn);
+    }); }
+    popup.classList.remove('hidden'); modelPopupOpen = true;
   }
+  function closeModelPopup() { var p = D('modelPopup'); if (p) p.classList.add('hidden'); modelPopupOpen = false; }
+  function openPermPopup() { closeAllPopups(); var p = D('permPopup'); if (p) { updatePermUI(permMode); p.classList.remove('hidden'); } permPopupOpen = true; }
+  function closePermPopup() { var p = D('permPopup'); if (p) p.classList.add('hidden'); permPopupOpen = false; }
+  document.addEventListener('click', closeAllPopups);
 
-  function closeModelPopup() {
-    const popup = $('modelPopup');
-    if (popup) popup.classList.add('hidden');
-    modelPopupOpen = false;
-  }
-
-  // Close both popups on outside click
-  document.addEventListener('click', function() {
-    if (modePopupOpen)  { closeModePopup();  }
-    if (modelPopupOpen) { closeModelPopup(); }
-  });
-
-  // ── Thinking panel ────────────────────────────────────────────────────
+  // Thinking
   function startThinking() {
-    thinkingSteps     = [];
-    thinkingStartTime = Date.now();
-    const panel  = $('thinkingPanel');
-    const steps  = $('thinkingSteps');
-    const title  = $('thinkingTitle');
-    const chevron = $('thinkingChevron');
+    thinkingSteps = []; thinkingStartTime = Date.now();
+    var panel = D('thinkingPanel'), steps = D('thinkingSteps'), title = D('thinkingTitle'), chev = D('thinkingChevron');
     if (!panel) return;
     panel.classList.remove('hidden', 'done');
-    if (steps)  { steps.innerHTML = ''; steps.classList.remove('collapsed'); }
-    if (title)  { title.textContent = 'Thinking\u2026'; }
-    if (chevron){ chevron.textContent = '\u25BE'; chevron.classList.add('expanded'); }
+    if (steps) { steps.innerHTML = ''; steps.classList.remove('collapsed'); }
+    if (title) title.textContent = 'Thinking\u2026';
+    if (chev) { chev.textContent = '\u25BE'; chev.classList.add('expanded'); }
   }
-
   function addThinkingStep(step) {
     thinkingSteps.push(step);
-    const steps = $('thinkingSteps');
+    var steps = D('thinkingSteps');
     if (!steps) return;
-    const elapsed = thinkingStartTime
-      ? ((Date.now() - thinkingStartTime) / 1000).toFixed(1) + 's'
-      : '';
-    const div = document.createElement('div');
-    div.className = 'thinking-step fadein';
-    div.innerHTML =
-      '<span class="thinking-step-icon">' + esc(step.icon || '\u00b7') + '</span>' +
-      '<div class="thinking-step-body">' +
-        '<span class="thinking-step-label">' + esc(step.step || '') + '</span>' +
-        (step.detail ? '<span class="thinking-step-detail">' + esc(step.detail) + '</span>' : '') +
-      '</div>' +
+    var elapsed = thinkingStartTime ? ((Date.now() - thinkingStartTime) / 1000).toFixed(1) + 's' : '';
+    var div = document.createElement('div'); div.className = 'thinking-step';
+    div.innerHTML = '<span class="thinking-step-icon">' + esc(step.icon || '\u00b7') + '</span>' +
+      '<div class="thinking-step-body"><span class="thinking-step-label">' + esc(step.step || '') + '</span>' +
+      (step.detail ? '<span class="thinking-step-detail">' + esc(step.detail) + '</span>' : '') + '</div>' +
       '<span class="thinking-step-time">' + esc(elapsed) + '</span>';
-    steps.appendChild(div);
-    scrollBottom();
+    steps.appendChild(div); scrollBottom();
   }
-
   function finishThinking() {
-    const panel  = $('thinkingPanel');
-    const title  = $('thinkingTitle');
-    const steps  = $('thinkingSteps');
-    const chevron = $('thinkingChevron');
+    var panel = D('thinkingPanel'), title = D('thinkingTitle'), steps = D('thinkingSteps'), chev = D('thinkingChevron');
     if (!panel) return;
     panel.classList.add('done');
-    const elapsed = thinkingStartTime
-      ? ((Date.now() - thinkingStartTime) / 1000).toFixed(1)
-      : '';
-    const count = thinkingSteps.length;
-    if (title) {
-      title.textContent = 'Thought for ' +
-        (elapsed ? elapsed + 's' : '') +
-        (count ? ' \u00b7 ' + count + ' step' + (count !== 1 ? 's' : '') : '');
-    }
-    if (steps)  { steps.classList.add('collapsed'); }
-    if (chevron){ chevron.textContent = '\u25B8'; chevron.classList.remove('expanded'); }
+    var elapsed = thinkingStartTime ? ((Date.now() - thinkingStartTime) / 1000).toFixed(1) : '';
+    var count = thinkingSteps.length;
+    if (title) title.textContent = 'Thought for ' + (elapsed ? elapsed + 's' : '') + (count ? ' \u00b7 ' + count + ' step' + (count !== 1 ? 's' : '') : '');
+    if (steps) steps.classList.add('collapsed');
+    if (chev) { chev.textContent = '\u25B8'; chev.classList.remove('expanded'); }
+    isBusy = false;
   }
-
   function toggleThinking() {
-    const steps  = $('thinkingSteps');
-    const chevron = $('thinkingChevron');
+    var steps = D('thinkingSteps'), chev = D('thinkingChevron');
     if (!steps) return;
-    const collapsed = steps.classList.toggle('collapsed');
-    if (chevron) {
-      chevron.textContent = collapsed ? '\u25B8' : '\u25BE';
-      chevron.classList.toggle('expanded', !collapsed);
-    }
+    var collapsed = steps.classList.toggle('collapsed');
+    if (chev) { chev.textContent = collapsed ? '\u25B8' : '\u25BE'; chev.classList.toggle('expanded', !collapsed); }
   }
 
-  function on(el, evt, fn) {
-    if (!el) { console.warn('[Pulse] missing element for:', evt); return; }
-    el.addEventListener(evt, fn);
+  // MCP utils
+  function normalizeMcpServer(s) {
+    var t = String(s && s.transport || 'stdio');
+    var args = [];
+    if (Array.isArray(s && s.args)) args = s.args.map(String);
+    else if (typeof (s && s.args) === 'string') args = s.args.split(/\\r?\\n/).map(function(a) { return a.trim(); }).filter(Boolean);
+    return { id: String(s && s.id || ''), enabled: s && s.enabled !== false, trust: String(s && s.trust || 'workspace'), transport: t, command: String(s && s.command || ''), url: String(s && s.url || ''), args: args };
   }
-
-  function normalizeMcpServer(server) {
-    const transport = String(server && server.transport || 'stdio');
-    let args = [];
-    if (Array.isArray(server && server.args)) {
-      args = server.args.map(function(a) { return String(a); });
-    } else if (typeof (server && server.args) === 'string') {
-      args = server.args.split(/\\r?\\n/).map(function(a) { return a.trim(); }).filter(Boolean);
-    }
-    return {
-      id:        String(server && server.id || ''),
-      enabled:   server && server.enabled !== false,
-      trust:     String(server && server.trust || 'workspace'),
-      transport: transport,
-      command:   String(server && server.command || ''),
-      url:       String(server && server.url || ''),
-      args:      args,
-    };
-  }
-
   function parseArgs(text) {
-    const raw = String(text || '').trim();
-    if (!raw) return [];
-    if (raw.charAt(0) === '[') {
-      const parsed = JSON.parse(raw);
-      if (!Array.isArray(parsed)) throw new Error('Args must be a JSON array or one per line.');
-      return parsed.map(function(a) { return String(a); });
-    }
+    var raw = String(text || '').trim(); if (!raw) return [];
+    if (raw.charAt(0) === '[') { var p = JSON.parse(raw); if (!Array.isArray(p)) throw new Error('Args must be JSON array'); return p.map(String); }
     return raw.split(/\\r?\\n/).map(function(a) { return a.trim(); }).filter(Boolean);
   }
-
   function renderMcpServers(list) {
     mcpServers = (list || []).map(normalizeMcpServer);
     mcpCount.textContent = mcpServers.length === 1 ? '1 configured' : mcpServers.length + ' configured';
-    if (!mcpServers.length) {
-      mcpList.innerHTML = '<div class="mcp-empty fadein">No MCP servers yet. Add one to connect Pulse to tools.</div>';
-      return;
-    }
+    if (!mcpServers.length) { mcpList.innerHTML = '<div class="mcp-empty fadein">No MCP servers. Add one to connect tools.</div>'; return; }
     mcpList.innerHTML = '';
-    mcpServers.forEach(function(server, index) {
-      const card = document.createElement('div');
-      card.className = 'mcp-card fadein';
-      card.dataset.index = String(index);
-      const endpointLabel = server.transport === 'stdio' ? 'Command' : 'URL';
-      const endpointValue = server.transport === 'stdio' ? server.command : server.url;
-      const note = server.transport === 'stdio'
-        ? 'Use one argument per line or paste JSON array syntax.'
-        : 'Remote servers should use a valid URL.';
-      card.innerHTML = [
-        '<div class="mcp-card-head">',
-        '  <div class="mcp-card-title"><input type="text" data-field="id" placeholder="filesystem" value="' + esc(server.id) + '" /></div>',
-        '  <label class="mcp-chip" title="Enable/disable"><input type="checkbox" data-field="enabled" ' + (server.enabled ? 'checked' : '') + ' /> Enabled</label>',
-        '  <button type="button" class="btn danger sm" data-action="remove">Remove</button>',
-        '</div>',
-        '<div class="mcp-grid triple">',
-        '  <select data-field="transport"><option value="stdio">stdio</option><option value="http">http</option><option value="sse">sse</option></select>',
-        '  <select data-field="trust"><option value="workspace">workspace</option><option value="user">user</option><option value="system">system</option></select>',
-        '  <div class="mcp-chip">' + esc(endpointLabel) + '</div>',
-        '</div>',
-        '<input type="text" data-field="endpoint" placeholder="' + esc(endpointLabel) + '" value="' + esc(endpointValue) + '" />',
-        '<textarea data-field="args" placeholder="[\&quot;-y\&quot;, \&quot;@mcp/server\&quot;]">' + esc((server.args || []).join('\\n')) + '</textarea>',
-        '<div class="mcp-note">' + esc(note) + '</div>',
-      ].join('');
-
-      const transportSelect = card.querySelector('select[data-field="transport"]');
-      const trustSelect     = card.querySelector('select[data-field="trust"]');
-      const endpointInput   = card.querySelector('input[data-field="endpoint"]');
-      const argsInput       = card.querySelector('textarea[data-field="args"]');
-      const enabledInput    = card.querySelector('input[data-field="enabled"]');
-      transportSelect.value = server.transport;
-      trustSelect.value     = server.trust;
-
-      const syncEndpoint = function() {
-        const isStdio = transportSelect.value === 'stdio';
-        endpointInput.placeholder = isStdio ? 'Command' : 'URL';
-        argsInput.style.display   = isStdio ? 'block' : 'none';
-      };
-      transportSelect.addEventListener('change', syncEndpoint);
-      syncEndpoint();
-
-      card._read = function() {
-        return {
-          id:        String(card.querySelector('input[data-field="id"]').value || '').trim(),
-          enabled:   Boolean(enabledInput.checked),
-          trust:     String(trustSelect.value || 'workspace'),
-          transport: String(transportSelect.value || 'stdio'),
-          command:   String(transportSelect.value === 'stdio' ? endpointInput.value || '' : ''),
-          url:       String(transportSelect.value === 'stdio' ? '' : endpointInput.value || ''),
-          args:      parseArgs(String(argsInput.value || '')),
-        };
-      };
-
-      card.querySelector('[data-action="remove"]').addEventListener('click', function() {
-        const cur = snapshotMcpServers();
-        cur.splice(index, 1);
-        renderMcpServers(cur);
-      });
+    mcpServers.forEach(function(server, idx) {
+      var card = document.createElement('div'); card.className = 'mcp-card fadein'; card.dataset.index = String(idx);
+      var epLabel = server.transport === 'stdio' ? 'Command' : 'URL';
+      var epValue = server.transport === 'stdio' ? server.command : server.url;
+      card.innerHTML = '<div class="mcp-card-head"><div class="mcp-card-title"><input type="text" data-field="id" placeholder="server-name" value="' + esc(server.id) + '" /></div><label class="mcp-chip"><input type="checkbox" data-field="enabled" ' + (server.enabled ? 'checked' : '') + '/> On</label><button type="button" class="btn danger sm" data-action="remove">Remove</button></div>' +
+        '<div class="mcp-grid"><select data-field="transport"><option value="stdio">stdio</option><option value="http">http</option><option value="sse">sse</option></select><select data-field="trust"><option value="workspace">workspace</option><option value="user">user</option><option value="system">system</option></select><div class="mcp-chip">' + esc(epLabel) + '</div></div>' +
+        '<input type="text" data-field="endpoint" placeholder="' + esc(epLabel) + '" value="' + esc(epValue) + '" />' +
+        '<textarea data-field="args" placeholder="[\\"arg1\\", \\"arg2\\"]">' + esc((server.args || []).join('\\n')) + '</textarea>';
+      var ts = card.querySelector('select[data-field="transport"]'), trs = card.querySelector('select[data-field="trust"]');
+      var ep = card.querySelector('input[data-field="endpoint"]'), ar = card.querySelector('textarea[data-field="args"]');
+      var en = card.querySelector('input[data-field="enabled"]');
+      ts.value = server.transport; trs.value = server.trust;
+      var syncEp = function() { ep.placeholder = ts.value === 'stdio' ? 'Command' : 'URL'; ar.style.display = ts.value === 'stdio' ? 'block' : 'none'; };
+      ts.addEventListener('change', syncEp); syncEp();
+      card._read = function() { return { id: String(card.querySelector('input[data-field="id"]').value || '').trim(), enabled: Boolean(en.checked), trust: String(trs.value || 'workspace'), transport: String(ts.value || 'stdio'), command: String(ts.value === 'stdio' ? ep.value || '' : ''), url: String(ts.value === 'stdio' ? '' : ep.value || ''), args: parseArgs(String(ar.value || '')) }; };
+      card.querySelector('[data-action="remove"]').addEventListener('click', function() { var cur = snapshotMcpServers(); cur.splice(idx, 1); renderMcpServers(cur); });
       mcpList.appendChild(card);
     });
   }
-
   function collectMcpServers() {
-    const cards = Array.from(mcpList.querySelectorAll('.mcp-card'));
-    const out = [];
-    for (const card of cards) {
-      if (typeof card._read !== 'function') continue;
-      const s = card._read();
-      if (!s.id) continue;
-      if (s.transport === 'stdio' && !s.command) throw new Error('Each stdio server needs a command.');
-      if ((s.transport === 'http' || s.transport === 'sse') && !s.url) throw new Error('Each HTTP/SSE server needs a URL.');
-      out.push(s);
-    }
-    return out;
+    return Array.from(mcpList.querySelectorAll('.mcp-card')).map(function(c) { return typeof c._read === 'function' ? c._read() : null; }).filter(Boolean).filter(function(s) {
+      if (!s.id) return false;
+      if (s.transport === 'stdio' && !s.command) throw new Error('Stdio server needs a command.');
+      if ((s.transport === 'http' || s.transport === 'sse') && !s.url) throw new Error('HTTP/SSE server needs a URL.');
+      return true;
+    });
   }
+  function snapshotMcpServers() { return Array.from(mcpList.querySelectorAll('.mcp-card')).map(function(c) { return typeof c._read === 'function' ? c._read() : null; }).filter(Boolean); }
 
-  function snapshotMcpServers() {
-    return Array.from(mcpList.querySelectorAll('.mcp-card'))
-      .map(function(card) { return typeof card._read === 'function' ? card._read() : null; })
-      .filter(Boolean);
-  }
+  // Navigation
+  function showHome() { inChat = false; homeView.classList.remove('hidden'); chatView.classList.add('hidden'); }
+  function showChat() { inChat = true; homeView.classList.add('hidden'); chatView.classList.remove('hidden'); scrollBottom(); }
 
-  // ── Navigation ────────────────────────────────────────────────────────
-  function showHome() {
-    inChat = false;
-    homeView.classList.remove('hidden');
-    chatView.classList.add('hidden');
-  }
-
-  function showChat() {
-    inChat = true;
-    homeView.classList.add('hidden');
-    chatView.classList.remove('hidden');
-    scrollBottom();
-  }
-
-  // ── Render messages ───────────────────────────────────────────────────
+  // Render messages
   function renderMessages() {
     if (!chatHistory.length) {
-      messages.innerHTML =
-        '<div class="empty fadein">' +
-        '<div class="empty-icon">&#9889;</div>' +
-        '<div class="empty-h">Ready to help</div>' +
-        '<div class="empty-p">Describe what you want to build or fix</div></div>';
+      messages.innerHTML = '<div class="empty fadein"><div class="empty-icon">&#9889;</div><div class="empty-h">Ready to help</div><div class="empty-p">Describe what you want to build or fix</div></div>';
       return;
     }
     messages.innerHTML = '';
-    for (const m of chatHistory) {
-      const div = document.createElement('div');
-      const role = m.role === 'assistant' ? 'agent' : m.role;
+    for (var i = 0; i < chatHistory.length; i++) {
+      var m = chatHistory[i];
+      var div = document.createElement('div');
+      var role = m.role === 'assistant' ? 'agent' : m.role;
       div.className = 'msg ' + role + ' fadein';
-      let html = esc(m.text ?? m.content ?? '');
-      // Minimal markdown: fenced code blocks then inline code
-      html = html.replace(/\`\`\`([\\s\\S]*?)\`\`\`/g, '<pre>$1</pre>');
-      html = html.replace(/\`([^\`\\n]+)\`/g, '<code>$1</code>');
-      html = html.replace(/\\n/g, '<br>');
-      const rawTs = m.ts ?? m.createdAt ?? null;
-      const ts = rawTs ? relTime(new Date(rawTs).toISOString()) : '';
-      div.innerHTML =
-        '<div class="bubble">' + html + '</div>' +
-        '<div class="msg-time">' + esc(ts) + '</div>';
+      var text = m.text || m.content || '';
+      var html = renderMarkdown(text);
+      var rawTs = m.ts || m.createdAt || null;
+      var ts = rawTs ? relTime(new Date(rawTs).toISOString()) : '';
+      div.innerHTML = '<div class="bubble">' + html + '</div>' +
+        '<div class="msg-footer">' +
+        '<span class="msg-time">' + esc(ts) + '</span>' +
+        '<button class="copy-btn" title="Copy message">\uD83D\uDCCB</button>' +
+        '</div>';
+      (function(t, el) {
+        el.querySelector('.copy-btn').addEventListener('click', function(e) {
+          e.stopPropagation();
+          var target = e.currentTarget;
+          navigator.clipboard.writeText(t).then(function() {
+            target.textContent = '\u2713';
+            setTimeout(function() { target.textContent = '\uD83D\uDCCB'; }, 1200);
+          });
+        });
+      })(text, div);
       messages.appendChild(div);
     }
   }
@@ -1747,56 +1157,23 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
   function renderAttachments(files) {
     attachedFiles = Array.isArray(files) ? files.slice() : [];
     if (!attachmentRow) return;
-    if (!attachedFiles.length) {
-      attachmentRow.innerHTML =
-        '<span class="attachment-label">Attached</span>' +
-        '<span class="attachment-empty">No files attached</span>';
-      return;
-    }
-
-    attachmentRow.innerHTML =
-      '<span class="attachment-label">Attached</span>' +
-      attachedFiles.map(function(filePath) {
-        return '<span class="chip" title="' + esc(filePath) + '">' + esc(filePath) + '</span>';
-      }).join('');
+    if (!attachedFiles.length) { attachmentRow.innerHTML = ''; return; }
+    attachmentRow.innerHTML = '<span class="attachment-label">Attached</span>' +
+      attachedFiles.map(function(f) { return '<span class="chip" title="' + esc(f) + '">' + esc(f.split(/[\\\\/]/).pop()) + '</span>'; }).join('');
   }
 
-  // ── Render session list ───────────────────────────────────────────────
   function renderSessions(list) {
     list = list || [];
-    if (!list.length) {
-      sessionList.innerHTML =
-        '<div class="empty"><div class="empty-icon">&#128172;</div>' +
-        '<div class="empty-h">No conversations yet</div>' +
-        '<div class="empty-p">Type a task below to begin</div></div>';
-      return;
-    }
+    if (!list.length) { sessionList.innerHTML = '<div class="empty"><div class="empty-icon">&#128172;</div><div class="empty-h">No conversations yet</div><div class="empty-p">Type a message below to begin</div></div>'; return; }
     sessionList.innerHTML = '';
-    for (const s of list) {
-      const d = document.createElement('div');
-      d.className = 'sitem';
-      d.dataset.sessionId = String(s.id || '');
-      d.innerHTML =
-        '<span class="sitem-title">' + esc(s.title || s.id) + '</span>' +
-        '<div class="session-actions">' +
-          '<div class="session-meta">' +
-            '<span class="sitem-time">'  + esc(relTime(s.updatedAt)) + '</span>' +
-            '<span class="session-count">' + esc(String(s.messageCount || 0)) + ' msg' + (Number(s.messageCount) === 1 ? '' : 's') + (Number(s.attachmentCount) ? ', ' + Number(s.attachmentCount) + ' attach' + (Number(s.attachmentCount) === 1 ? '' : 'ments') : '') + '</span>' +
-          '</div>' +
-          '<button type="button" class="session-delete" title="Delete conversation" aria-label="Delete conversation">&#128465;</button>' +
-        '</div>';
-      d.addEventListener('click', function() {
-        if (s.id) {
-          vscode.postMessage({ type: 'openSession', payload: s.id });
-        }
-      });
-      const deleteButton = d.querySelector('.session-delete');
-      deleteButton.addEventListener('click', function(event) {
-        event.preventDefault();
-        event.stopPropagation();
-        vscode.postMessage({ type: 'deleteSessionRequest', payload: s.id });
-      });
-      sessionList.appendChild(d);
+    for (var i = 0; i < list.length; i++) {
+      (function(s) {
+        var d = document.createElement('div'); d.className = 'sitem'; d.dataset.sessionId = String(s.id || '');
+        d.innerHTML = '<span class="sitem-title">' + esc(s.title || s.id) + '</span><div class="session-actions"><div class="session-meta"><span class="sitem-time">' + esc(relTime(s.updatedAt)) + '</span><span class="session-count">' + esc(String(s.messageCount || 0)) + ' msgs</span></div><button type="button" class="session-delete" title="Delete">&#128465;</button></div>';
+        d.addEventListener('click', function() { if (s.id) vscode.postMessage({ type: 'openSession', payload: s.id }); });
+        d.querySelector('.session-delete').addEventListener('click', function(e) { e.preventDefault(); e.stopPropagation(); vscode.postMessage({ type: 'deleteSessionRequest', payload: s.id }); });
+        sessionList.appendChild(d);
+      })(list[i]);
     }
   }
 
@@ -1805,314 +1182,133 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
     attachedFiles = session.attachedFiles || [];
     renderAttachments(attachedFiles);
     if (Array.isArray(session.messages) && session.messages.length > 0) {
-      chatHistory = session.messages.map(function(message) {
-        return {
-          role: message.role,
-          content: message.content,
-          ts: message.createdAt,
-        };
-      });
+      chatHistory = session.messages.map(function(m) { return { role: m.role, content: m.content, ts: m.createdAt }; });
     } else {
-      chatHistory = [{
-        role: 'user',
-        text: session.objective || session.title || 'Session',
-        ts: session.updatedAt || Date.now(),
-      }];
-
-      if (session.lastResult) {
-        chatHistory.push({
-          role: 'assistant',
-          text: session.lastResult,
-          ts: session.updatedAt || Date.now(),
-        });
-      }
+      chatHistory = [{ role: 'user', text: session.objective || session.title || 'Session', ts: session.updatedAt || Date.now() }];
+      if (session.lastResult) chatHistory.push({ role: 'assistant', text: session.lastResult, ts: session.updatedAt || Date.now() });
     }
-
-    renderMessages();
-    showChat();
-    statusLine.textContent = 'Loaded session';
+    renderMessages(); showChat();
   }
 
   function handleSessionDeleted(payload) {
-    if (payload && payload.wasActive) {
-      chatHistory = [];
-      attachedFiles = [];
-      renderAttachments(attachedFiles);
-      renderMessages();
-      showHome();
-      statusLine.textContent = 'Deleted conversation';
-    }
+    if (payload && payload.wasActive) { chatHistory = []; attachedFiles = []; renderAttachments(attachedFiles); renderMessages(); showHome(); }
   }
 
-  // ── Render runtime summary ────────────────────────────────────────────
+  // Render summary
   function renderSummary(s) {
     summary = s;
-    const ok = s && (Boolean(s.ollamaReachable) || s.status === 'ready');
+    var ok = s && (Boolean(s.ollamaReachable) || s.status === 'ready');
     statusBadge.className = 'badge ' + (ok ? 'on' : 'off');
-    statusTxt.textContent  = ok ? 'Online' : 'Offline';
+    statusTxt.textContent = ok ? 'Online' : 'Offline';
     renderConversationMode((s && s.conversationMode) || 'agent');
-
-    // Sync permission mode dropdown
-    if (s && s.permissionMode && permissionSelect) {
-      permissionSelect.value = s.permissionMode;
-    }
-
-    const model = (s && s.plannerModel) || '';
+    if (s && s.permissionMode) updatePermUI(s.permissionMode);
+    var model = (s && s.plannerModel) || '';
     activeModelName = model;
     chipModel.textContent = model.split(':')[0].slice(0, 14) || '\u2013';
-    chipModel.title       = 'Planner: ' + (model || 'none');
-
-    const hasPending = s && s.hasPendingEdits;
+    chipModel.title = model || 'none';
+    var hasPending = s && s.hasPendingEdits;
     editsBanner.classList.toggle('on', Boolean(hasPending));
     if (hasPending) bannerTxt.textContent = 'Pending file edits \u2014 review before applying';
-
-    const pct = (s && Number.isFinite(s.tokenUsagePercent))
-      ? Math.max(0, Math.min(100, s.tokenUsagePercent)) : 0;
-    tokenRing.style.background =
-      'conic-gradient(var(--amber) ' + (pct * 3.6) + 'deg, rgba(128,128,128,.18) 0deg)';
-    tokenValue.textContent = pct + '%';
-    tokenLabel.textContent = ((s && s.tokensConsumed) || 0) + ' / ' + ((s && s.tokenBudget) || 0);
-
-    if (ok) {
-      statusLine.textContent = (s && s.modelCount)
-        ? s.modelCount + ' model' + (s.modelCount !== 1 ? 's' : '') +
-          ', MCP ' + ((s && s.mcpHealthy) || 0) + '/' + ((s && s.mcpConfigured) || 0) +
-          ', Mode ' + ((s && s.conversationMode) || 'agent')
-        : 'Ollama ready';
-    } else {
-      statusLine.textContent = 'Ollama offline \u2014 check settings';
-    }
   }
 
-  function setMode(mode) {
-    if (!mode || mode === conversationMode) {
-      return;
-    }
-    vscode.postMessage({ type: 'setConversationMode', payload: mode });
-  }
-
-  // ── Update model dropdown ─────────────────────────────────────────────
   function updateModels(list) {
     models = list || [];
-    const prev = modelSelect.value;
+    var prev = modelSelect.value;
     modelSelect.innerHTML = '';
-    if (!models.length) {
-      modelSelect.innerHTML = '<option value="">No models found</option>';
-      return;
-    }
-    for (const m of models) {
-      const o = document.createElement('option');
-      o.value = m.name; o.text = m.name;
-      modelSelect.appendChild(o);
-    }
+    if (!models.length) { modelSelect.innerHTML = '<option value="">No models found</option>'; return; }
+    for (var i = 0; i < models.length; i++) { var o = document.createElement('option'); o.value = models[i].name; o.text = models[i].name; modelSelect.appendChild(o); }
     if (models.some(function(m) { return m.name === prev; })) modelSelect.value = prev;
   }
 
-  // ── Send task ─────────────────────────────────────────────────────────
+  // Send task
   function sendTask() {
-    const text = taskInput.value.trim();
-    if (!text) return;
-
-    taskInput.value = '';
-    taskInput.style.height = 'auto';
-    btnSend.disabled = true;
-
+    var text = taskInput.value.trim();
+    if (!text || isBusy) return;
+    taskInput.value = ''; taskInput.style.height = 'auto'; btnSend.disabled = true;
+    isBusy = true;
     chatHistory.push({ role: 'user', text: text, ts: Date.now() });
-    renderMessages();
-    showChat();
-
-    startThinking();
-    scrollBottom();
-    statusLine.textContent = 'Thinking\u2026';
-
+    renderMessages(); showChat(); startThinking(); scrollBottom();
     vscode.postMessage({ type: 'runTask', payload: text });
   }
 
-  // ── Event listeners ───────────────────────────────────────────────────
-  on(taskInput, 'input', function() {
-    autoGrow(taskInput);
-    btnSend.disabled = taskInput.value.trim().length === 0;
-  });
-
-  on(taskInput, 'keydown', function(e) {
-    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendTask(); }
-  });
-
+  // Event listeners
+  on(taskInput, 'input', function() { autoGrow(taskInput); btnSend.disabled = taskInput.value.trim().length === 0; });
+  on(taskInput, 'keydown', function(e) { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendTask(); } });
   on(btnSend, 'click', sendTask);
 
-  on(btnNewChat, 'click', function() {
-    chatHistory = [];
-    attachedFiles = [];
-    renderAttachments(attachedFiles);
-    renderMessages();
-    showChat();
-    vscode.postMessage({ type: 'newConversation' });
-    taskInput.focus();
-  });
-
-  on(btnBack,     'click', showHome);
-  on(btnAttach,   'click', function() { vscode.postMessage({ type: 'attachContext' }); });
+  on(btnNewChat, 'click', function() { chatHistory = []; attachedFiles = []; renderAttachments(attachedFiles); renderMessages(); showChat(); vscode.postMessage({ type: 'newConversation' }); taskInput.focus(); });
+  on(btnBack, 'click', showHome);
+  on(btnAttach, 'click', function() { vscode.postMessage({ type: 'attachContext' }); });
   on(btnSettings, 'click', function() { settingsDrawer.classList.toggle('open'); });
-  on(btnRefresh,  'click', function() { vscode.postMessage({ type: 'ping' }); });
+  on(btnRefresh, 'click', function() { vscode.postMessage({ type: 'ping' }); });
 
-  on(chipMode, 'click', function(e) {
-    e.stopPropagation();
-    if (modePopupOpen) { closeModePopup(); return; }
-    openModePopup();
-  });
+  on(chipMode, 'click', function(e) { e.stopPropagation(); modePopupOpen ? closeModePopup() : openModePopup(); });
+  (function() { var p = D('modePopup'); if (!p) return; p.querySelectorAll('.popup-opt').forEach(function(btn) { btn.addEventListener('click', function(e) { e.stopPropagation(); var m = btn.dataset.mode; if (m && m !== conversationMode) vscode.postMessage({ type: 'setConversationMode', payload: m }); closeModePopup(); }); }); }());
+  on(chipModel, 'click', function(e) { e.stopPropagation(); modelPopupOpen ? closeModelPopup() : openModelPopup(); });
+  on(D('thinkingToggle'), 'click', function(e) { e.stopPropagation(); toggleThinking(); });
 
-  // Mode-option buttons inside the popup
-  (function() {
-    const popup = $('modePopup');
-    if (!popup) return;
-    popup.querySelectorAll('.mode-option').forEach(function(btn) {
-      btn.addEventListener('click', function(e) {
-        e.stopPropagation();
-        setMode(btn.dataset.mode);
-        closeModePopup();
-      });
-    });
-  }());
-
-  on(chipModel, 'click', function(e) {
-    e.stopPropagation();
-    if (modelPopupOpen) { closeModelPopup(); return; }
-    openModelPopup();
-  });
-
-  on($('thinkingToggle'), 'click', function(e) {
-    e.stopPropagation();
-    toggleThinking();
-  });
+  // Permission bar
+  on(permBtn, 'click', function(e) { e.stopPropagation(); permPopupOpen ? closePermPopup() : openPermPopup(); });
+  (function() { var p = D('permPopup'); if (!p) return; p.querySelectorAll('.perm-opt').forEach(function(btn) { btn.addEventListener('click', function(e) { e.stopPropagation(); var m = btn.dataset.perm; if (m) { vscode.postMessage({ type: 'setPermissionMode', payload: m }); updatePermUI(m); } closePermPopup(); }); }); }());
 
   on(btnSyncModels, 'click', function() { vscode.postMessage({ type: 'refreshModels' }); });
-
-  on(btnAddMcp, 'click', function() {
-    mcpServers = snapshotMcpServers().concat([normalizeMcpServer({ enabled: true, trust: 'workspace', transport: 'stdio', args: [] })]);
-    renderMcpServers(mcpServers);
-  });
-
-  on(btnReloadMcp,       'click', function() { vscode.postMessage({ type: 'reloadMcpServers' }); });
+  on(btnApplyModel, 'click', function() { var r = roleSelect.value, m = modelSelect.value; if (m) vscode.postMessage({ type: 'setModel', payload: { role: r, model: m } }); });
+  on(btnAddMcp, 'click', function() { mcpServers = snapshotMcpServers().concat([normalizeMcpServer({ enabled: true, trust: 'workspace', transport: 'stdio', args: [] })]); renderMcpServers(mcpServers); });
+  on(btnReloadMcp, 'click', function() { vscode.postMessage({ type: 'reloadMcpServers' }); });
   on(btnOpenMcpSettings, 'click', function() { vscode.postMessage({ type: 'configureMcpServers' }); });
-  on(btnManageMcp,       'click', function() { vscode.postMessage({ type: 'manageMcpConnections' }); });
+  on(btnManageMcp, 'click', function() { vscode.postMessage({ type: 'manageMcpConnections' }); });
+  on(btnSaveMcp, 'click', function() { try { vscode.postMessage({ type: 'saveMcpServers', payload: collectMcpServers() }); } catch(e) {} });
 
-  on(btnSaveMcp, 'click', function() {
-    try {
-      vscode.postMessage({ type: 'saveMcpServers', payload: collectMcpServers() });
-    } catch (e) {
-      statusLine.textContent = 'Error: ' + (e instanceof Error ? e.message : String(e));
-    }
-  });
+  // Edits banner
+  var applyPending = false, revertPending = false;
+  function resetBannerBtns() { applyPending = false; revertPending = false; btnApply.textContent = 'Apply'; btnApply.className = 'btn primary sm'; btnRevert.textContent = 'Revert'; btnRevert.className = 'btn danger sm'; }
+  on(btnApply, 'click', function() { if (!applyPending) { applyPending = true; btnApply.textContent = 'Confirm?'; return; } resetBannerBtns(); vscode.postMessage({ type: 'applyPending', payload: true }); });
+  on(btnRevert, 'click', function() { if (!revertPending) { revertPending = true; btnRevert.textContent = 'Confirm?'; return; } resetBannerBtns(); vscode.postMessage({ type: 'revertLast', payload: true }); });
 
-  on(btnApplyModel, 'click', function() {
-    const role  = roleSelect.value;
-    const model = modelSelect.value;
-    if (model) vscode.postMessage({ type: 'setModel', payload: { role: role, model: model } });
-  });
-
-  on(permissionSelect, 'change', function() {
-    vscode.postMessage({ type: 'setPermissionMode', payload: permissionSelect.value });
-  });
-
-  // Two-step confirmation (window.confirm is blocked in VS Code webviews)
-  let applyPending = false, revertPending = false;
-  function resetBannerBtns() {
-    applyPending  = false; revertPending = false;
-    btnApply.textContent  = 'Apply';  btnApply.className  = 'btn primary sm';
-    btnRevert.textContent = 'Revert'; btnRevert.className = 'btn danger sm';
-  }
-
-  on(btnApply, 'click', function() {
-    if (!applyPending) { applyPending = true; btnApply.textContent = 'Confirm apply?'; return; }
-    resetBannerBtns();
-    vscode.postMessage({ type: 'applyPending', payload: true });
-  });
-
-  on(btnRevert, 'click', function() {
-    if (!revertPending) { revertPending = true; btnRevert.textContent = 'Confirm revert?'; return; }
-    resetBannerBtns();
-    vscode.postMessage({ type: 'revertLast', payload: true });
-  });
-
-  // ── Message handler ───────────────────────────────────────────────────
+  // Message handler
   window.addEventListener('message', function(event) {
-    const data = event.data || {};
-    const type    = data.type;
-    const payload = data.payload;
-
+    var data = event.data || {}, type = data.type, payload = data.payload;
     if (type === 'runtimeSummary') { renderSummary(payload); return; }
-    if (type === 'models')         { updateModels(payload); return; }
-    if (type === 'mcpServers')     { renderMcpServers(payload); return; }
-    if (type === 'sessions')       { renderSessions(payload); return; }
-    if (type === 'sessionLoaded')  { renderLoadedSession(payload); return; }
+    if (type === 'models') { updateModels(payload); return; }
+    if (type === 'mcpServers') { renderMcpServers(payload); return; }
+    if (type === 'sessions') { renderSessions(payload); return; }
+    if (type === 'sessionLoaded') { renderLoadedSession(payload); return; }
     if (type === 'sessionDeleted') { handleSessionDeleted(payload); return; }
     if (type === 'sessionAttachments') { renderAttachments(payload); return; }
-
     if (type === 'thinkingStep') { addThinkingStep(payload); return; }
-
     if (type === 'taskResult') {
       finishThinking();
-      const text = (payload && payload.responseText) || JSON.stringify(payload, null, 2);
+      var text = (payload && payload.responseText) || JSON.stringify(payload, null, 2);
       chatHistory.push({ role: 'agent', text: text, ts: Date.now() });
-      renderMessages();
-      scrollBottom();
-      statusLine.textContent = (payload && payload.proposedEdits)
-        ? payload.proposedEdits + ' file edit(s) pending'
-        : 'Done';
+      renderMessages(); scrollBottom();
       vscode.postMessage({ type: 'ping' });
       return;
     }
-
     if (type === 'actionResult') {
       finishThinking();
-      chatHistory.push({ role: 'agent', text: String(payload), ts: Date.now() });
-      renderMessages();
-      scrollBottom();
-      const txt = String(payload || 'Done');
-      const isError = txt.toLowerCase().indexOf('error:') === 0;
-      statusLine.textContent = isError ? txt.slice(0, 60) : 'Done';
-      if (!isError) { vscode.postMessage({ type: 'ping' }); }
+      var txt = String(payload || '');
+      if (txt && txt.indexOf('Approval mode set') !== 0 && txt.indexOf('Permission mode set') !== 0 && txt.indexOf('Updated ') !== 0 && txt.indexOf('Mode set to') !== 0 && txt.indexOf('MCP servers updated') !== 0) {
+        chatHistory.push({ role: 'agent', text: txt, ts: Date.now() });
+        renderMessages(); scrollBottom();
+      }
+      vscode.postMessage({ type: 'ping' });
       return;
     }
   });
 
-    // ── Bootstrap: signal ready, request state, then auto-refresh ──────
-    if (initialSummary) {
-      renderSummary(initialSummary);
-    }
+  // Bootstrap
+  if (initialSummary) renderSummary(initialSummary);
+  window.addEventListener('error', function(e) { surfaceFatalError(e && e.error ? String(e.error.stack || e.error.message || e.error) : String(e.message || 'Unknown error')); });
+  window.addEventListener('unhandledrejection', function(e) { surfaceFatalError(String(e && e.reason ? (e.reason.stack || e.reason.message || e.reason) : 'Unhandled rejection')); });
+  vscode.postMessage({ type: 'webviewReady' });
+  vscode.postMessage({ type: 'loadDashboard' });
+  setTimeout(function() { if (!summary) vscode.postMessage({ type: 'ping' }); }, 800);
+  setTimeout(function() { if (!summary) vscode.postMessage({ type: 'ping' }); }, 3000);
+  setInterval(function() { vscode.postMessage({ type: 'ping' }); }, 30000);
 
-    window.addEventListener('error', function(event) {
-      const message = event && event.error
-        ? String(event.error.stack || event.error.message || event.error)
-        : String(event.message || 'Unknown webview error');
-      surfaceFatalError(message);
-    });
-
-    window.addEventListener('unhandledrejection', function(event) {
-      const message = String(
-        event && event.reason
-          ? (event.reason.stack || event.reason.message || event.reason)
-          : 'Unhandled rejection',
-      );
-      surfaceFatalError(message);
-    });
-
-    vscode.postMessage({ type: 'webviewReady' });
-    vscode.postMessage({ type: 'loadDashboard' });
-    // Retry shortly in case the initial messages were lost due to timing
-    setTimeout(function() {
-      if (!summary) { vscode.postMessage({ type: 'ping' }); }
-    }, 800);
-    setTimeout(function() {
-      if (!summary) { vscode.postMessage({ type: 'ping' }); }
-    }, 3000);
-    setInterval(function() { vscode.postMessage({ type: 'ping' }); }, 30000);
   } catch (error) {
-    surfaceFatalError(
-      error instanceof Error ? error.stack || error.message : String(error),
-    );
+    surfaceFatalError(error instanceof Error ? error.stack || error.message : String(error));
   }
-
 }());
 </script>
 </body>
