@@ -1,7 +1,11 @@
 import * as path from "path";
 import * as vscode from "vscode";
 
-import type { AgentConfig, McpServerConfig } from "../../config/AgentConfig";
+import type {
+  AgentConfig,
+  McpServerConfig,
+  PermissionMode,
+} from "../../config/AgentConfig";
 import type { StorageState } from "../../db/StorageBootstrap";
 import type { Logger } from "../../platform/vscode/Logger";
 import { EditManager, type ProposedEdit } from "../edits/EditManager";
@@ -10,12 +14,21 @@ import { McpManager } from "../mcp/McpManager";
 import { OllamaProvider } from "../model/OllamaProvider";
 import type { ModelSummary, ProviderHealth } from "../model/ModelProvider";
 import { MemoryStore } from "../memory/MemoryStore";
+import {
+  PermissionPolicy,
+  classifyAction,
+  fromLegacyApprovalMode,
+  toLegacyApprovalMode,
+} from "../permissions/PermissionPolicy";
+import type { PermissionDecision } from "../permissions/PermissionPolicy";
 import { Planner } from "../planner/Planner";
 import {
   WebSearchService,
   type WebSearchResponse,
 } from "../search/WebSearchService";
 import { SkillRegistry, type SkillManifest } from "../skills/SkillRegistry";
+import { GitService } from "../../platform/git/GitService";
+import { ImprovementEngine } from "../improvement/ImprovementEngine";
 import type { TaskPlan } from "../planner/Planner";
 import type {
   ConversationMessage,
@@ -37,6 +50,7 @@ export interface RuntimeSummary {
   fastModel: string;
   embeddingModel: string;
   approvalMode: "strict" | "balanced" | "fast";
+  permissionMode: PermissionMode;
   storagePath: string;
   ollamaHealth: string;
   modelCount: number;
@@ -86,6 +100,12 @@ export class AgentRuntime {
 
   private readonly webSearch: WebSearchService;
 
+  private readonly permissionPolicy: PermissionPolicy;
+
+  private readonly gitService: GitService;
+
+  private readonly improvementEngine: ImprovementEngine;
+
   private currentConfig: AgentConfig;
 
   private health: ProviderHealth = { ok: false, message: "Not checked" };
@@ -115,6 +135,9 @@ export class AgentRuntime {
     this.mcpManager = new McpManager(config.mcpServers);
     this.skillRegistry = new SkillRegistry();
     this.webSearch = webSearch;
+    this.permissionPolicy = new PermissionPolicy(config.permissionMode);
+    this.gitService = new GitService();
+    this.improvementEngine = new ImprovementEngine(storage.improvementPath);
   }
 
   public setProgressCallback(
@@ -359,7 +382,7 @@ export class AgentRuntime {
         model,
         messages: [
           {
-            role: "system",
+            role: "system" as const,
             content:
               "You are Pulse in Ask mode. Be conversational, answer questions, and explain context. Do not propose code edits, terminal commands, or plan artifacts." +
               (styleHint ? " " + styleHint : ""),
@@ -368,7 +391,7 @@ export class AgentRuntime {
           ...(webResearch
             ? [
                 {
-                  role: "system",
+                  role: "system" as const,
                   content: this.formatWebResearchContext(webResearch),
                 },
               ]
@@ -376,13 +399,13 @@ export class AgentRuntime {
           ...(attachedContext.length > 0
             ? [
                 {
-                  role: "system",
+                  role: "system" as const,
                   content: this.formatAttachedContext(attachedContext),
                 },
               ]
             : []),
           {
-            role: "user",
+            role: "user" as const,
             content: objective,
           },
         ],
@@ -475,7 +498,7 @@ export class AgentRuntime {
         plan,
         responseText,
         proposal: null,
-        artifactPath,
+        artifactPath: artifactPath ?? undefined,
       };
     }
 
@@ -493,7 +516,7 @@ export class AgentRuntime {
         model,
         messages: [
           {
-            role: "system",
+            role: "system" as const,
             content:
               "You are Pulse, a concise VS Code coding assistant. Reply conversationally to greetings and general questions. Do not propose file edits unless the user explicitly asks for code changes." +
               (styleHintConvo ? " " + styleHintConvo : ""),
@@ -502,7 +525,7 @@ export class AgentRuntime {
           ...(attachedContext.length > 0
             ? [
                 {
-                  role: "system",
+                  role: "system" as const,
                   content: [
                     "Attached workspace context:",
                     ...attachedContext.map(
@@ -513,7 +536,7 @@ export class AgentRuntime {
               ]
             : []),
           {
-            role: "user",
+            role: "user" as const,
             content: objective,
           },
         ],
@@ -687,14 +710,43 @@ export class AgentRuntime {
     };
   }
 
+  /**
+   * Apply pending edits. The permission policy is the single authority
+   * for whether approval is needed. When `userApproved` is true the caller
+   * has already obtained consent from the user.
+   */
   public async applyPendingEdits(userApproved = false): Promise<string> {
-    if (this.currentConfig.approvalMode !== "fast" && !userApproved) {
+    const decision = this.permissionPolicy.evaluate({
+      action: "multi_file_edit",
+      description: "Apply pending edit proposal",
+    });
+
+    if (!decision.allowed && !userApproved) {
       return "Approval required before applying pending edits.";
+    }
+
+    // Record approval if the user explicitly approved
+    if (userApproved && !decision.allowed) {
+      this.permissionPolicy.recordDecision(
+        {
+          action: "multi_file_edit",
+          description: "Apply pending edit proposal",
+        },
+        true,
+        false,
+      );
     }
 
     const result = await this.editManager.applyPending();
     if (!result) {
       return "No pending proposal to apply.";
+    }
+
+    // Refresh git SCM after edits
+    try {
+      await this.gitService.refreshScm();
+    } catch {
+      /* non-fatal */
     }
 
     if (this.currentConfig.memoryMode !== "off") {
@@ -724,15 +776,69 @@ export class AgentRuntime {
   }
 
   public getApprovalMode(): "strict" | "balanced" | "fast" {
-    return this.currentConfig.approvalMode;
+    return toLegacyApprovalMode(this.permissionPolicy.getMode());
   }
 
   public async setApprovalMode(
     mode: "strict" | "balanced" | "fast",
   ): Promise<void> {
-    await this.updateSetting("behavior.approvalMode", mode);
-    this.currentConfig.approvalMode = mode;
-    await this.memoryStore.setPreference("approval.mode", mode);
+    const permMode = fromLegacyApprovalMode(mode);
+    await this.setPermissionMode(permMode);
+  }
+
+  // ── Permission Mode ─────────────────────────────────────────────
+
+  public getPermissionMode(): PermissionMode {
+    return this.permissionPolicy.getMode();
+  }
+
+  public async setPermissionMode(mode: PermissionMode): Promise<void> {
+    this.permissionPolicy.setMode(mode);
+    this.currentConfig.permissionMode = mode;
+    await this.updateSetting("behavior.permissionMode", mode);
+
+    // Keep legacy approvalMode in sync for backward compat
+    const legacy = toLegacyApprovalMode(mode);
+    this.currentConfig.approvalMode = legacy;
+    await this.updateSetting("behavior.approvalMode", legacy);
+    await this.memoryStore.setPreference("permission.mode", mode);
+  }
+
+  /**
+   * Evaluate a permission request through the centralized policy.
+   * UI layers should call this instead of checking approvalMode directly.
+   */
+  public evaluatePermission(
+    action: string,
+    description: string,
+  ): PermissionDecision {
+    return this.permissionPolicy.evaluate({
+      action: classifyAction(action),
+      description,
+    });
+  }
+
+  /**
+   * Check whether pending edits need user approval per the policy.
+   */
+  public needsApprovalForEdits(): boolean {
+    const decision = this.permissionPolicy.evaluate({
+      action: "multi_file_edit",
+      description: "Apply pending edit proposal",
+    });
+    return !decision.allowed;
+  }
+
+  // ── Git Service ─────────────────────────────────────────────────
+
+  public getGitService(): GitService {
+    return this.gitService;
+  }
+
+  // ── Improvement Engine ──────────────────────────────────────────
+
+  public getImprovementEngine(): ImprovementEngine {
+    return this.improvementEngine;
   }
 
   public async getPendingProposalSummary(): Promise<string> {
@@ -1035,6 +1141,7 @@ export class AgentRuntime {
       fastModel: this.currentConfig.fastModel,
       embeddingModel: this.currentConfig.embeddingModel,
       approvalMode: this.currentConfig.approvalMode,
+      permissionMode: this.permissionPolicy.getMode(),
       storagePath: this.storage.storageDir,
       ollamaHealth: this.health.message,
       modelCount: this.availableModels.length,
@@ -1142,7 +1249,7 @@ export class AgentRuntime {
       usableModels.find((model) => model.name === "qwen2.5-coder:7b") ??
       usableModels[0];
 
-    const updates: Array<Promise<void>> = [];
+    const updates: Array<Thenable<void>> = [];
     const cfg = vscode.workspace.getConfiguration("pulse");
 
     if (
@@ -1193,7 +1300,7 @@ export class AgentRuntime {
 
   private async buildConversationHistory(
     sessionId: string,
-  ): Promise<ConversationMessage[]> {
+  ): Promise<Array<{ role: "user" | "assistant"; content: string }>> {
     const session = await this.sessionStore.getSession(sessionId);
     const messages = session?.messages ?? [];
     return messages.slice(-8).map((message) => ({

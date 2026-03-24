@@ -1,74 +1,101 @@
+import { PassThrough } from "stream";
+import type * as http from "http";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { OllamaProvider } from "../src/agent/model/OllamaProvider";
 
+function fakeResponse(statusCode: number, body: string) {
+  const stream = new PassThrough();
+  (stream as any).statusCode = statusCode;
+  (stream as any).headers = {};
+  process.nextTick(() => stream.end(body));
+  return stream;
+}
+
+let mockRequestImpl: (options: any, callback?: (res: any) => void) => any;
+
+vi.mock("http", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("http")>();
+  return {
+    ...actual,
+    request: (...args: any[]) => mockRequestImpl(args[0], args[1]),
+  };
+});
+
 describe("OllamaProvider", () => {
   beforeEach(() => {
-    const fetchMock = vi.fn(async (input: Parameters<typeof fetch>[0]) => {
-      const url = String(input);
+    mockRequestImpl = (options: any, callback?: (res: any) => void) => {
+      const hostname = options.hostname ?? "localhost";
+      const urlPath = options.path ?? "";
 
-      if (url.includes("localhost")) {
-        throw new Error("connect ECONNREFUSED 127.0.0.1:11434");
-      }
+      const listeners: Record<string, Function[]> = {};
+      const req = {
+        destroy: vi.fn(),
+        write: vi.fn(),
+        on(event: string, fn: Function) {
+          if (!listeners[event]) listeners[event] = [];
+          listeners[event].push(fn);
+          return req;
+        },
+        emit(event: string, ...args: any[]) {
+          for (const fn of listeners[event] ?? []) fn(...args);
+        },
+        end() {
+          // Simulate localhost ECONNREFUSED
+          if (hostname === "localhost") {
+            process.nextTick(() => {
+              req.emit(
+                "error",
+                new Error("connect ECONNREFUSED 127.0.0.1:11434"),
+              );
+            });
+            return;
+          }
 
-      if (url.includes("/api/tags")) {
-        return new Response(
-          JSON.stringify({
-            models: [
-              {
-                name: "qwen2.5-coder:7b",
-                size: 123,
-                modified_at: "2026-03-22T00:00:00Z",
-              },
-            ],
-          }),
-          {
-            status: 200,
-            headers: { "content-type": "application/json" },
-          },
-        );
-      }
+          let body = '{"error":"not found"}';
+          let status = 404;
 
-      if (url.includes("/api/ps")) {
-        return new Response(
-          JSON.stringify({
-            models: [
-              {
-                name: "deepseek-coder-v2:16b",
-                size: 456,
-                modified_at: "2026-03-22T00:00:00Z",
-              },
-            ],
-          }),
-          {
-            status: 200,
-            headers: { "content-type": "application/json" },
-          },
-        );
-      }
+          if (urlPath.includes("/api/tags")) {
+            body = JSON.stringify({
+              models: [
+                {
+                  name: "qwen2.5-coder:7b",
+                  size: 123,
+                  modified_at: "2026-03-22T00:00:00Z",
+                },
+              ],
+            });
+            status = 200;
+          } else if (urlPath.includes("/api/ps")) {
+            body = JSON.stringify({
+              models: [
+                {
+                  name: "deepseek-coder-v2:16b",
+                  size: 456,
+                  modified_at: "2026-03-22T00:00:00Z",
+                },
+              ],
+            });
+            status = 200;
+          } else if (urlPath.includes("/api/chat")) {
+            body = JSON.stringify({
+              message: { content: "ok" },
+              prompt_eval_count: 2,
+              eval_count: 1,
+            });
+            status = 200;
+          }
 
-      if (url.includes("/api/chat")) {
-        return new Response(
-          JSON.stringify({
-            message: { content: "ok" },
-            prompt_eval_count: 2,
-            eval_count: 1,
-          }),
-          {
-            status: 200,
-            headers: { "content-type": "application/json" },
-          },
-        );
-      }
+          const res = fakeResponse(status, body);
+          if (callback) callback(res);
+        },
+      };
 
-      return new Response("not found", { status: 404 });
-    });
-
-    vi.stubGlobal("fetch", fetchMock);
+      return req;
+    };
   });
 
   afterEach(() => {
-    vi.unstubAllGlobals();
     vi.restoreAllMocks();
   });
 

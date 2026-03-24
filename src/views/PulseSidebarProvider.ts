@@ -61,6 +61,7 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
           fastModel: "unknown",
           embeddingModel: "unknown",
           approvalMode: "balanced" as const,
+          permissionMode: "default" as const,
           storagePath: "",
           ollamaHealth: `Error: ${err instanceof Error ? err.message : String(err)}`,
           modelCount: 0,
@@ -160,10 +161,11 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
           }
 
           if (message.type === "applyPending") {
-            if (
-              message.payload !== true &&
-              this.runtime.getApprovalMode() !== "fast"
-            ) {
+            // Single consent path: the runtime's PermissionPolicy decides.
+            // If the user already clicked "Apply" in the webview
+            // (payload === true), treat it as approved.
+            const userApproved = message.payload === true;
+            if (!userApproved && this.runtime.needsApprovalForEdits()) {
               await webviewView.webview.postMessage({
                 type: "actionResult",
                 payload: "Apply canceled.",
@@ -171,9 +173,7 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
               return;
             }
 
-            const applied = await this.runtime.applyPendingEdits(
-              message.payload === true,
-            );
+            const applied = await this.runtime.applyPendingEdits(userApproved);
             await webviewView.webview.postMessage({
               type: "actionResult",
               payload: applied,
@@ -208,6 +208,25 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
             await webviewView.webview.postMessage({
               type: "actionResult",
               payload: `Approval mode set to ${message.payload}`,
+            });
+            return;
+          }
+
+          if (
+            message.type === "setPermissionMode" &&
+            (message.payload === "full" ||
+              message.payload === "default" ||
+              message.payload === "strict")
+          ) {
+            await this.runtime.setPermissionMode(message.payload);
+            const summary = await this.runtime.summary();
+            await webviewView.webview.postMessage({
+              type: "runtimeSummary",
+              payload: summary,
+            });
+            await webviewView.webview.postMessage({
+              type: "actionResult",
+              payload: `Permission mode set to ${message.payload}`,
             });
             return;
           }
@@ -1179,6 +1198,15 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
       <button id="btnApplyModel" class="btn primary">Apply</button>
     </div>
 
+    <div class="srow">
+      <span class="slabel">Permissions</span>
+      <select id="permissionSelect">
+        <option value="full">Full (auto-approve all)</option>
+        <option value="default">Default (prompt for writes)</option>
+        <option value="strict">Strict (prompt for everything)</option>
+      </select>
+    </div>
+
     <div class="section">
       <div class="section-head">
         <span class="slabel">MCP Servers</span>
@@ -1323,6 +1351,7 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
   const modelSelect    = $('modelSelect');
   const btnSyncModels  = $('btnSyncModels');
   const btnApplyModel  = $('btnApplyModel');
+  const permissionSelect = $('permissionSelect');
   const btnAddMcp      = $('btnAddMcp');
   const btnReloadMcp   = $('btnReloadMcp');
   const btnSaveMcp     = $('btnSaveMcp');
@@ -1823,6 +1852,11 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
     statusTxt.textContent  = ok ? 'Online' : 'Offline';
     renderConversationMode((s && s.conversationMode) || 'agent');
 
+    // Sync permission mode dropdown
+    if (s && s.permissionMode && permissionSelect) {
+      permissionSelect.value = s.permissionMode;
+    }
+
     const model = (s && s.plannerModel) || '';
     activeModelName = model;
     chipModel.textContent = model.split(':')[0].slice(0, 14) || '\u2013';
@@ -1974,6 +2008,10 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
     const role  = roleSelect.value;
     const model = modelSelect.value;
     if (model) vscode.postMessage({ type: 'setModel', payload: { role: role, model: model } });
+  });
+
+  on(permissionSelect, 'change', function() {
+    vscode.postMessage({ type: 'setPermissionMode', payload: permissionSelect.value });
   });
 
   // Two-step confirmation (window.confirm is blocked in VS Code webviews)

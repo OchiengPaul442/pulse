@@ -11,6 +11,7 @@ export interface StorageState {
   sessionsPath: string;
   memoriesPath: string;
   editsPath: string;
+  improvementPath: string;
 }
 
 export async function bootstrapStorage(
@@ -24,6 +25,7 @@ export async function bootstrapStorage(
   const sessionsPath = path.join(storageDir, "sessions.json");
   const memoriesPath = path.join(storageDir, "memories.json");
   const editsPath = path.join(storageDir, "edits.json");
+  const improvementPath = path.join(storageDir, "improvement.json");
 
   await vscode.workspace.fs.createDirectory(vscode.Uri.file(storageDir));
   await vscode.workspace.fs.createDirectory(vscode.Uri.file(tracesDir));
@@ -46,6 +48,7 @@ export async function bootstrapStorage(
     preferences: {},
   });
   await ensureJsonFile(editsPath, { pendingProposal: null, lastApplied: null });
+  await ensureJsonFile(improvementPath, { outcomes: [] });
 
   logger.info(`Storage initialized at ${storageDir}`);
 
@@ -57,6 +60,7 @@ export async function bootstrapStorage(
     sessionsPath,
     memoriesPath,
     editsPath,
+    improvementPath,
   };
 }
 

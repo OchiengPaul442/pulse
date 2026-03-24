@@ -1,6 +1,7 @@
 import * as vscode from "vscode";
 
 export type ApprovalMode = "strict" | "balanced" | "fast";
+export type PermissionMode = "full" | "default" | "strict";
 export type ConversationMode = "agent" | "ask" | "plan";
 
 export interface McpServerConfig {
@@ -22,6 +23,7 @@ export interface AgentConfig {
   embeddingModel: string;
   fallbackModels: string[];
   approvalMode: ApprovalMode;
+  permissionMode: PermissionMode;
   conversationMode: ConversationMode;
   allowTerminalExecution: boolean;
   autoRunVerification: boolean;
@@ -48,6 +50,10 @@ export function getAgentConfig(): AgentConfig {
     embeddingModel: cfg.get<string>("models.embedding", "nomic-embed-text"),
     fallbackModels: cfg.get<string[]>("models.fallbacks", ["qwen2.5-coder:7b"]),
     approvalMode: cfg.get<ApprovalMode>("behavior.approvalMode", "balanced"),
+    permissionMode: cfg.get<PermissionMode>(
+      "behavior.permissionMode",
+      "default",
+    ),
     conversationMode: cfg.get<ConversationMode>(
       "behavior.conversationMode",
       "agent",

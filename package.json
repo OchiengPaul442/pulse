@@ -2,7 +2,7 @@
   "name": "pulse-agent",
   "displayName": "Pulse Agent",
   "description": "Personal Agentic AI coding assistant for VS Code using local models.",
-  "version": "0.0.32",
+  "version": "0.0.33",
   "publisher": "local",
   "license": "MIT",
   "icon": "media/pulse-icon.png",
@@ -160,7 +160,17 @@
             "fast"
           ],
           "default": "balanced",
-          "description": "Approval mode for write and tool actions."
+          "description": "Legacy approval mode (use permissionMode instead)."
+        },
+        "pulse.behavior.permissionMode": {
+          "type": "string",
+          "enum": [
+            "full",
+            "default",
+            "strict"
+          ],
+          "default": "default",
+          "description": "Permission mode: full (auto-approve all), default (prompt for writes), strict (prompt for everything)."
         },
         "pulse.behavior.conversationMode": {
           "type": "string",

@@ -152,11 +152,11 @@ async function resumeLastSession(runtime: AgentRuntime): Promise<void> {
 }
 
 async function applyProposedChanges(runtime: AgentRuntime): Promise<void> {
-  const mode = runtime.getApprovalMode();
-  const pendingSummary = await runtime.getPendingProposalSummary();
-  let approved = false;
+  const needsApproval = runtime.needsApprovalForEdits();
+  let approved = !needsApproval;
 
-  if (mode !== "fast") {
+  if (needsApproval) {
+    const pendingSummary = await runtime.getPendingProposalSummary();
     const decision = await vscode.window.showWarningMessage(
       `Pulse will apply pending proposal.\n\n${pendingSummary}`,
       { modal: true },
@@ -269,10 +269,17 @@ async function selectModels(runtime: AgentRuntime): Promise<void> {
 
 async function setApprovalMode(runtime: AgentRuntime): Promise<void> {
   const mode = await vscode.window.showQuickPick(
-    ["strict", "balanced", "fast"],
+    [
+      { label: "full", description: "Auto-approve everything (Autopilot)" },
+      {
+        label: "default",
+        description: "Auto-approve reads, prompt for writes",
+      },
+      { label: "strict", description: "Prompt for every action" },
+    ],
     {
-      title: "Pulse Approval Mode",
-      placeHolder: "Choose approval mode for write actions",
+      title: "Pulse Permission Mode",
+      placeHolder: "Choose permission mode for agent actions",
     },
   );
 
@@ -280,9 +287,9 @@ async function setApprovalMode(runtime: AgentRuntime): Promise<void> {
     return;
   }
 
-  await runtime.setApprovalMode(mode as "strict" | "balanced" | "fast");
+  await runtime.setPermissionMode(mode.label as "full" | "default" | "strict");
   await vscode.window.showInformationMessage(
-    `Pulse: Approval mode set to ${mode}`,
+    `Pulse: Permission mode set to ${mode.label}`,
   );
 }
 
