@@ -59,6 +59,13 @@ export interface SelfReflection {
   qualityScore: number;
 }
 
+export interface DetectedAgent {
+  id: string;
+  name: string;
+  version: string;
+  isActive: boolean;
+}
+
 export interface ImprovementStats {
   totalTasks: number;
   successRate: number;
@@ -393,6 +400,82 @@ export class ImprovementEngine {
   public async getActiveStrategies(): Promise<LearnedStrategy[]> {
     const state = await this.load();
     return state.strategies.filter((s) => s.enabled);
+  }
+
+  /**
+   * Detect other AI coding agents installed in VS Code.
+   * Records their presence so Pulse can learn from coexisting environments.
+   */
+  public detectInstalledAgents(): DetectedAgent[] {
+    const knownAgentExtensions: Array<{
+      id: string;
+      displayName: string;
+    }> = [
+      { id: "github.copilot", displayName: "GitHub Copilot" },
+      { id: "github.copilot-chat", displayName: "GitHub Copilot Chat" },
+      { id: "sourcegraph.cody-ai", displayName: "Sourcery Cody" },
+      { id: "continue.continue", displayName: "Continue" },
+      { id: "codeium.codeium", displayName: "Codeium" },
+      { id: "tabnine.tabnine-vscode", displayName: "Tabnine" },
+      {
+        id: "amazonwebservices.aws-toolkit-vscode",
+        displayName: "AWS CodeWhisperer",
+      },
+      { id: "cursor.cursor", displayName: "Cursor" },
+      { id: "aider.aider", displayName: "Aider" },
+      { id: "saoudrizwan.claude-dev", displayName: "Claude Dev" },
+      { id: "rooveterinaryinc.roo-cline", displayName: "Roo Cline" },
+      { id: "supermaven.supermaven", displayName: "Supermaven" },
+    ];
+
+    const detected: DetectedAgent[] = [];
+    for (const known of knownAgentExtensions) {
+      const ext = vscode.extensions.getExtension(known.id);
+      if (ext) {
+        detected.push({
+          id: known.id,
+          name: known.displayName,
+          version: ext.packageJSON?.version ?? "unknown",
+          isActive: ext.isActive,
+        });
+      }
+    }
+    return detected;
+  }
+
+  /**
+   * Generate enhanced behavior hints considering detected agents.
+   * If Copilot or similar is active, Pulse focuses on complementary strengths.
+   */
+  public getAgentAwarenessHints(): string {
+    const agents = this.detectInstalledAgents();
+    if (agents.length === 0) return "";
+
+    const active = agents.filter((a) => a.isActive);
+    if (active.length === 0) return "";
+
+    const hints: string[] = [];
+    const hasCopilot = active.some((a) => a.id.startsWith("github.copilot"));
+    const hasCody = active.some((a) => a.id === "sourcegraph.cody-ai");
+    const hasContinue = active.some((a) => a.id === "continue.continue");
+
+    if (hasCopilot) {
+      hints.push(
+        "GitHub Copilot is active. Focus on multi-file edits, architecture decisions, and complex refactoring that go beyond inline completions.",
+      );
+    }
+    if (hasCody) {
+      hints.push(
+        "Cody is active for code search. Focus on execution, planning, and automated workflows.",
+      );
+    }
+    if (hasContinue) {
+      hints.push(
+        "Continue is active. Focus on autonomous task execution and file editing rather than chat-only responses.",
+      );
+    }
+
+    return hints.join(" ");
   }
 
   /**

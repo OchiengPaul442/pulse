@@ -30,6 +30,10 @@ import {
 import { SkillRegistry, type SkillManifest } from "../skills/SkillRegistry";
 import { GitService } from "../../platform/git/GitService";
 import { ImprovementEngine } from "../improvement/ImprovementEngine";
+import {
+  TerminalExecutor,
+  type TerminalExecResult,
+} from "../terminal/TerminalExecutor";
 import type { TaskPlan } from "../planner/Planner";
 import type {
   ConversationMessage,
@@ -110,6 +114,8 @@ export class AgentRuntime {
 
   private readonly improvementEngine: ImprovementEngine;
 
+  private readonly terminalExecutor: TerminalExecutor;
+
   private currentConfig: AgentConfig;
 
   private health: ProviderHealth = { ok: false, message: "Not checked" };
@@ -155,6 +161,7 @@ export class AgentRuntime {
     this.permissionPolicy = new PermissionPolicy(config.permissionMode);
     this.gitService = new GitService();
     this.improvementEngine = new ImprovementEngine(storage.improvementPath);
+    this.terminalExecutor = new TerminalExecutor();
   }
 
   public setProgressCallback(
@@ -641,6 +648,7 @@ export class AgentRuntime {
       const styleHint = await this.getLearnedStyleHint(objective, mode);
       const improvementHints =
         await this.improvementEngine.getOptimizedBehaviorHints(objective, mode);
+      const agentAwareness = this.improvementEngine.getAgentAwarenessHints();
       const webResearch = await this.collectWebResearch(objective, mode);
       if (webResearch) {
         this.emitProgress(
@@ -662,7 +670,8 @@ export class AgentRuntime {
               this.getPersonaPrompt() +
               " You are in Ask mode. Be conversational, answer questions, and explain context. Do not propose code edits, terminal commands, or plan artifacts." +
               (styleHint ? " " + styleHint : "") +
-              (improvementHints ? " " + improvementHints : ""),
+              (improvementHints ? " " + improvementHints : "") +
+              (agentAwareness ? " " + agentAwareness : ""),
           },
           ...conversationHistory,
           ...(webResearch
@@ -806,6 +815,8 @@ export class AgentRuntime {
       const styleHintConvo = await this.getLearnedStyleHint(objective, mode);
       const improvementHintsConvo =
         await this.improvementEngine.getOptimizedBehaviorHints(objective, mode);
+      const agentAwarenessConvo =
+        this.improvementEngine.getAgentAwarenessHints();
       const taskStartConvo = Date.now();
       checkAborted();
       const response = await this.provider.chat({
@@ -820,7 +831,8 @@ export class AgentRuntime {
               "If they ask about code or their project, use any attached context to give a specific, accurate answer. " +
               "Do not propose file edits in this mode." +
               (styleHintConvo ? " " + styleHintConvo : "") +
-              (improvementHintsConvo ? " " + improvementHintsConvo : ""),
+              (improvementHintsConvo ? " " + improvementHintsConvo : "") +
+              (agentAwarenessConvo ? " " + agentAwarenessConvo : ""),
           },
           ...conversationHistory,
           ...(attachedContext.length > 0
@@ -923,6 +935,7 @@ export class AgentRuntime {
     const styleHintAgent = await this.getLearnedStyleHint(objective, mode);
     const improvementHintsAgent =
       await this.improvementEngine.getOptimizedBehaviorHints(objective, mode);
+    const agentAwarenessAgent = this.improvementEngine.getAgentAwarenessHints();
 
     const prompt = [
       this.getPersonaPrompt(),
@@ -930,6 +943,7 @@ export class AgentRuntime {
       "You have full access to the user's workspace and can read, write, move, and delete files.",
       ...(styleHintAgent ? [styleHintAgent] : []),
       ...(improvementHintsAgent ? [improvementHintsAgent] : []),
+      ...(agentAwarenessAgent ? [agentAwarenessAgent] : []),
       "",
       "## Operating rules",
       "- You MUST act on the user's request. Do NOT ask clarifying questions unless truly ambiguous.",
@@ -1011,6 +1025,14 @@ export class AgentRuntime {
         ? await this.editManager.setPendingProposal(objective, normalizedEdits)
         : null;
 
+    // In "full" (bypass) mode, auto-apply edits immediately without user approval
+    let autoApplied = false;
+    if (proposal && this.permissionPolicy.getMode() === "full") {
+      this.emitProgress("Auto-applying edits", "Bypass mode active", "✅");
+      await this.applyPendingEdits(true);
+      autoApplied = true;
+    }
+
     await this.sessionStore.appendMessage(session.id, {
       role: "assistant",
       content: parsed.response,
@@ -1035,7 +1057,11 @@ export class AgentRuntime {
       mode,
       editorModel,
       normalizedEdits.length,
-      proposal ? normalizedEdits.length : 0,
+      autoApplied
+        ? normalizedEdits.length
+        : proposal
+          ? normalizedEdits.length
+          : 0,
     );
 
     return {
@@ -1043,7 +1069,8 @@ export class AgentRuntime {
       objective,
       plan,
       responseText: parsed.response,
-      proposal,
+      proposal: autoApplied ? null : proposal,
+      autoApplied,
     };
   }
 
@@ -1051,6 +1078,7 @@ export class AgentRuntime {
    * Apply pending edits. The permission policy is the single authority
    * for whether approval is needed. When `userApproved` is true the caller
    * has already obtained consent from the user.
+   * In "full" (bypass) mode, edits are auto-approved without any prompt.
    */
   public async applyPendingEdits(userApproved = false): Promise<string> {
     const decision = this.permissionPolicy.evaluate({
@@ -1058,19 +1086,21 @@ export class AgentRuntime {
       description: "Apply pending edit proposal",
     });
 
-    if (!decision.allowed && !userApproved) {
+    // In full mode, always auto-approve
+    const isBypass = this.permissionPolicy.getMode() === "full";
+    if (!decision.allowed && !userApproved && !isBypass) {
       return "Approval required before applying pending edits.";
     }
 
-    // Record approval if the user explicitly approved
-    if (userApproved && !decision.allowed) {
+    // Record approval if the user explicitly approved or bypass mode
+    if ((userApproved || isBypass) && !decision.allowed) {
       this.permissionPolicy.recordDecision(
         {
           action: "multi_file_edit",
           description: "Apply pending edit proposal",
         },
         true,
-        false,
+        true,
       );
     }
 
@@ -1079,11 +1109,14 @@ export class AgentRuntime {
       return "No pending proposal to apply.";
     }
 
-    // Refresh git SCM after edits
+    // Refresh git SCM after edits (non-fatal if not a git repo)
     try {
-      await this.gitService.refreshScm();
+      const isGit = await this.gitService.isGitRepository();
+      if (isGit) {
+        await this.gitService.refreshScm();
+      }
     } catch {
-      /* non-fatal */
+      /* non-fatal — project may not use git */
     }
 
     if (this.currentConfig.memoryMode !== "off") {
@@ -1157,13 +1190,55 @@ export class AgentRuntime {
 
   /**
    * Check whether pending edits need user approval per the policy.
+   * In "full" (bypass) mode, never require approval.
    */
   public needsApprovalForEdits(): boolean {
+    if (this.permissionPolicy.getMode() === "full") {
+      return false;
+    }
     const decision = this.permissionPolicy.evaluate({
       action: "multi_file_edit",
       description: "Apply pending edit proposal",
     });
     return !decision.allowed;
+  }
+
+  // ── Terminal Execution ──────────────────────────────────────────
+
+  public getTerminalExecutor(): TerminalExecutor {
+    return this.terminalExecutor;
+  }
+
+  /**
+   * Execute a terminal command with permission checks.
+   * In full/bypass mode, auto-executes. Otherwise asks for approval.
+   */
+  public async executeTerminalCommand(
+    command: string,
+    options?: { cwd?: string; timeoutMs?: number; visible?: boolean },
+  ): Promise<TerminalExecResult | null> {
+    const decision = this.permissionPolicy.evaluate({
+      action: "terminal_exec",
+      description: `Run terminal command: ${command}`,
+    });
+
+    if (!decision.allowed && this.permissionPolicy.getMode() !== "full") {
+      this.logger.info(`Terminal exec blocked by policy: ${command}`);
+      return null;
+    }
+
+    this.logger.info(`Executing terminal command: ${command}`);
+    if (options?.visible) {
+      this.terminalExecutor.runInVisibleTerminal(command);
+      return {
+        exitCode: 0,
+        output: "",
+        command,
+        durationMs: 0,
+        timedOut: false,
+      };
+    }
+    return this.terminalExecutor.execute(command, options);
   }
 
   // ── Git Service ─────────────────────────────────────────────────

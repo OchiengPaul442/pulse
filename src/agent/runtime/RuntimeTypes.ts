@@ -29,6 +29,7 @@ export interface RuntimeTaskResult {
   responseText: string;
   proposal: EditProposal | null;
   artifactPath?: string;
+  autoApplied?: boolean;
 }
 
 export interface ExplainResult {

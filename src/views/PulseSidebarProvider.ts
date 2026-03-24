@@ -161,6 +161,7 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
                   sessionId: result.sessionId,
                   proposedEdits: result.proposal?.edits.length ?? 0,
                   cancelled: result.responseText === "Task cancelled.",
+                  autoApplied: result.autoApplied === true,
                 },
               });
             } catch (err) {
@@ -451,6 +452,11 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
               });
             }
             choices.push({
+              label: "$(file-media) Attach image\u2026",
+              description: "Open native picker for images",
+              value: "browse-image",
+            });
+            choices.push({
               label: "$(folder-opened) Browse filesystem\u2026",
               description: "Open native file picker",
               value: "browse",
@@ -475,7 +481,7 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
               attachedPaths = [activeEditorUri.fsPath];
             } else if (pickedMode.value === "search" && workspaceFolder) {
               const files = await vscode.workspace.findFiles(
-                "**/*.{ts,js,tsx,jsx,mts,mjs,py,go,rs,java,cs,cpp,c,h,md,json,yaml,yml,toml,sh,sql,env,txt,css,html,svelte,vue}",
+                "**/*.{ts,js,tsx,jsx,mts,mjs,py,go,rs,java,cs,cpp,c,h,md,json,yaml,yml,toml,sh,sql,env,txt,css,html,svelte,vue,png,jpg,jpeg,gif,bmp,webp,svg}",
                 "**/{node_modules,dist,build,.git,out,coverage,.pulse}/**",
                 300,
               );
@@ -519,6 +525,37 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
               workspaceFolder
             ) {
               attachedPaths = [workspaceFolder.fsPath];
+            } else if (pickedMode.value === "browse-image") {
+              const picked = await vscode.window.showOpenDialog({
+                canSelectFiles: true,
+                canSelectFolders: false,
+                canSelectMany: true,
+                defaultUri: workspaceFolder ?? undefined,
+                openLabel: "Attach Image",
+                title: "Attach images for Pulse to analyze",
+                filters: {
+                  Images: [
+                    "png",
+                    "jpg",
+                    "jpeg",
+                    "gif",
+                    "bmp",
+                    "webp",
+                    "svg",
+                    "avif",
+                    "ico",
+                  ],
+                },
+              });
+
+              if (!picked || picked.length === 0) {
+                await webviewView.webview.postMessage({
+                  type: "actionResult",
+                  payload: "Attachment canceled.",
+                });
+                return;
+              }
+              attachedPaths = picked.map((item) => item.fsPath);
             } else {
               const picked = await vscode.window.showOpenDialog({
                 canSelectFiles: true,
@@ -645,8 +682,8 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
     :root {
-      --amber: #f59e0b; --amber-bg: rgba(245,158,11,0.10); --amber-bdr: rgba(245,158,11,0.28);
-      --amber-glow: rgba(245,158,11,0.14);
+      --accent: #6366f1; --accent-bg: rgba(99,102,241,0.10); --accent-bdr: rgba(99,102,241,0.28);
+      --accent-glow: rgba(99,102,241,0.14); --accent-hover: #4f46e5;
       --green: #22c55e; --green-bg: rgba(34,197,94,0.08); --green-bdr: rgba(34,197,94,0.24);
       --red: var(--vscode-errorForeground, #f87171); --red-bg: rgba(248,113,113,0.06); --red-bdr: rgba(248,113,113,0.24);
       --border: var(--vscode-sideBarSectionHeader-border, rgba(128,128,128,.15));
@@ -713,7 +750,7 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
 
     /* ── Chat view ─── */
     #chatView { padding: 8px 12px 4px; display: flex; flex-direction: column; gap: 8px; }
-    .back-btn { display: inline-flex; align-items: center; gap: 4px; border: none; background: none; color: var(--amber); font: 600 11px var(--vscode-font-family); cursor: pointer; opacity: .8; padding: 0; width: fit-content; }
+    .back-btn { display: inline-flex; align-items: center; gap: 4px; border: none; background: none; color: var(--accent); font: 600 11px var(--vscode-font-family); cursor: pointer; opacity: .8; padding: 0; width: fit-content; }
     .back-btn:hover { opacity: 1; }
 
     /* ── Messages ─── */
@@ -722,8 +759,8 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
     .msg.user { align-self: flex-end; }
     .msg.agent { align-self: flex-start; width: 100%; }
     .bubble { padding: 8px 12px; border-radius: var(--r); line-height: 1.5; font-size: 13px; word-break: break-word; user-select: text; -webkit-user-select: text; position: relative; }
-    .msg.user .bubble { background: var(--amber); color: #fff; border-bottom-right-radius: 3px; }
-    .msg.agent .bubble { background: var(--bg2); border: 1px solid var(--border); border-bottom-left-radius: 3px; }
+    .msg.user .bubble { background: var(--accent); color: #fff; border-bottom-right-radius: 3px; }
+    .msg.agent .bubble { background: var(--bg2); border: 1px solid var(--border); border-bottom-left-radius: 3px; color: var(--fg); }
     .bubble code { font-family: var(--vscode-editor-font-family, monospace); font-size: 11.5px; background: rgba(0,0,0,.15); padding: 1px 4px; border-radius: 3px; }
     .bubble h1, .bubble h2, .bubble h3 { margin: 8px 0 4px; font-size: 13px; font-weight: 700; }
     .bubble ul, .bubble ol { margin: 4px 0; padding-left: 18px; }
@@ -735,7 +772,7 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
     .copy-btn:hover { opacity: 1 !important; background: rgba(128,128,128,.12); }
     .msg:hover .copy-btn { opacity: .6; }
     .retry-btn { border: none; background: transparent; color: var(--fg2); cursor: pointer; font-size: 12px; opacity: 0; transition: opacity var(--spd); padding: 1px 4px; border-radius: 4px; }
-    .retry-btn:hover { opacity: 1 !important; color: var(--amber); background: rgba(128,128,128,.12); }
+    .retry-btn:hover { opacity: 1 !important; color: var(--accent); background: rgba(128,128,128,.12); }
     .msg:hover .retry-btn { opacity: .5; }
 
     /* ── Thinking panel (dynamic single-thought, ChatGPT-style) ─── */
@@ -743,7 +780,7 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
     .thinking-panel.hidden { display: none; }
     .thinking-header { display: flex; align-items: center; gap: 6px; padding: 6px 2px; }
     .thinking-dots { display: flex; align-items: center; gap: 3px; flex-shrink: 0; }
-    .thinking-dots span { display: block; width: 5px; height: 5px; border-radius: 50%; background: var(--amber); animation: bounce-dot 1.3s ease-in-out infinite; }
+    .thinking-dots span { display: block; width: 5px; height: 5px; border-radius: 50%; background: var(--accent); animation: bounce-dot 1.3s ease-in-out infinite; }
     .thinking-dots span:nth-child(2) { animation-delay: .2s; }
     .thinking-dots span:nth-child(3) { animation-delay: .4s; }
     .thinking-panel.done .thinking-dots { display: none; }
@@ -787,7 +824,7 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
     .token-ring { position: relative; width: 32px; height: 32px; flex-shrink: 0; }
     .token-ring-svg { width: 100%; height: 100%; }
     .token-ring-bg { stroke: rgba(128,128,128,.12); }
-    .token-ring-fg { stroke: var(--amber); transition: stroke-dasharray 400ms ease; }
+    .token-ring-fg { stroke: var(--accent); transition: stroke-dasharray 400ms ease; }
     .token-ring-pct { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; font-size: 8px; font-weight: 700; color: var(--fg2); pointer-events: none; }
 
     /* ── Empty state ─── */
@@ -797,45 +834,48 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
     .empty-p { font-size: 12px; opacity: .6; }
 
     /* ── Pending edits banner ─── */
-    #editsBanner { display: none; margin: 4px 12px 0; padding: 8px 10px; border-radius: var(--r); background: var(--amber-bg); border: 1px solid var(--amber-bdr); align-items: center; justify-content: space-between; gap: 8px; flex-shrink: 0; }
+    #editsBanner { display: none; margin: 4px 12px 0; padding: 8px 10px; border-radius: var(--r); background: var(--accent-bg); border: 1px solid var(--accent-bdr); align-items: center; justify-content: space-between; gap: 8px; flex-shrink: 0; }
     #editsBanner.on { display: flex; }
-    .banner-txt { font-size: 12px; font-weight: 600; color: var(--amber); flex: 1; }
+    .banner-txt { font-size: 12px; font-weight: 600; color: var(--accent); flex: 1; }
     .banner-acts { display: flex; gap: 5px; }
 
     /* ── Composer ─── */
     .composer { padding: 6px 12px 8px; border-top: 1px solid var(--border); flex-shrink: 0; }
     .composer-box { position: relative; border-radius: 14px; border: 1.5px solid var(--vscode-input-border, rgba(128,128,128,.22)); background: var(--bg2); transition: border-color var(--spd), box-shadow var(--spd); }
-    .composer-box:focus-within { border-color: var(--amber); box-shadow: 0 0 0 2.5px var(--amber-glow); }
+    .composer-box:focus-within { border-color: var(--accent); box-shadow: 0 0 0 2.5px var(--accent-glow); }
     .composer-box textarea { display: block; width: 100%; min-height: 46px; max-height: 160px; padding: 10px 12px 2px; background: none; border: none; outline: none; color: var(--vscode-input-foreground); font: 13px/1.5 var(--vscode-font-family); resize: none; overflow-y: auto; }
     .composer-box textarea::placeholder { color: var(--vscode-input-placeholderForeground); }
     .composer-inner-row { display: flex; align-items: center; justify-content: space-between; padding: 3px 8px 6px; gap: 4px; }
     .chips { display: flex; gap: 4px; align-items: center; flex-wrap: wrap; }
 
     .mode-chip { border: 1px solid var(--border); border-radius: 999px; background: transparent; color: var(--fg2); cursor: pointer; font: 700 10px var(--vscode-font-family); letter-spacing: .4px; text-transform: uppercase; padding: 2px 8px; transition: all var(--spd); white-space: nowrap; }
-    .mode-chip:hover { border-color: var(--amber); color: var(--amber); background: var(--amber-bg); }
-    .mode-chip.active { border-color: var(--amber); color: #fff; background: var(--amber); }
+    .mode-chip:hover { border-color: var(--accent); color: var(--accent); background: var(--accent-bg); }
+    .mode-chip.active { border-color: var(--accent); color: #fff; background: var(--accent); }
 
     .chip { font-size: 10px; font-weight: 600; padding: 2px 7px; border-radius: 999px; border: 1px solid var(--border); color: var(--fg2); cursor: pointer; white-space: nowrap; max-width: 110px; overflow: hidden; text-overflow: ellipsis; transition: all var(--spd); background: transparent; }
-    .chip:hover { border-color: var(--amber); color: var(--amber); background: var(--amber-bg); }
-    .chip.attach { color: var(--amber); border-style: dashed; }
+    .chip:hover { border-color: var(--accent); color: var(--accent); background: var(--accent-bg); }
+    .chip.attach { color: var(--accent); border-style: dashed; }
 
-    .send-btn { width: 28px; height: 28px; min-width: 28px; border: none; border-radius: 8px; background: var(--amber); color: #fff; font-size: 14px; line-height: 1; cursor: default; display: flex; align-items: center; justify-content: center; transition: opacity var(--spd), transform var(--spd), background var(--spd); opacity: .25; }
+    .attach-plus { width: 28px; height: 28px; min-width: 28px; border: 1.5px solid var(--border); border-radius: 50%; background: transparent; color: var(--fg2); cursor: pointer; font-size: 16px; font-weight: 300; display: flex; align-items: center; justify-content: center; transition: all var(--spd); flex-shrink: 0; }
+    .attach-plus:hover { border-color: var(--accent); color: var(--accent); background: var(--accent-bg); }
+
+    .send-btn { width: 28px; height: 28px; min-width: 28px; border: none; border-radius: 8px; background: var(--accent); color: #fff; font-size: 14px; line-height: 1; cursor: default; display: flex; align-items: center; justify-content: center; transition: opacity var(--spd), transform var(--spd), background var(--spd); opacity: .25; }
     .send-btn:not([disabled]) { opacity: 1; cursor: pointer; }
-    .send-btn:not([disabled]):hover { background: #d97706; transform: scale(1.05); }
+    .send-btn:not([disabled]):hover { background: var(--accent-hover); transform: scale(1.05); }
     .send-btn.stop { background: #ef4444; opacity: 1; cursor: pointer; }
     .send-btn.stop:hover { background: #dc2626; transform: scale(1.05); }
 
     /* --- Scroll-to-bottom button --- */
     #scrollBtn { position: fixed; right: 16px; bottom: 130px; z-index: 500; width: 26px; height: 26px; border-radius: 50%; background: var(--bg2); border: 1px solid var(--border); color: var(--fg2); cursor: pointer; opacity: 0; pointer-events: none; transition: opacity var(--spd), transform var(--spd); box-shadow: 0 2px 8px rgba(0,0,0,.25); display: flex; align-items: center; justify-content: center; font-size: 13px; }
     #scrollBtn.visible { opacity: 1; pointer-events: all; }
-    #scrollBtn:hover { color: var(--amber); border-color: var(--amber); transform: translateY(-2px); }
+    #scrollBtn:hover { color: var(--accent); border-color: var(--accent); transform: translateY(-2px); }
 
     /* --- Rich code blocks --- */
     .code-block { margin: 6px 0; border-radius: 8px; overflow: hidden; border: 1px solid rgba(255,255,255,.08); }
     .code-header { display: flex; align-items: center; justify-content: space-between; background: rgba(0,0,0,.28); padding: 5px 10px; }
     .code-lang { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .6px; color: var(--fg2); }
     .code-copy { border: none; background: transparent; color: var(--fg2); cursor: pointer; font-size: 10px; padding: 1px 7px; border-radius: 4px; transition: all var(--spd); }
-    .code-copy:hover { color: var(--amber); background: rgba(255,255,255,.07); }
+    .code-copy:hover { color: var(--accent); background: rgba(255,255,255,.07); }
     .code-block pre { margin: 0; border-radius: 0; border: none; padding: 10px 12px; background: rgba(0,0,0,.18); }
     .bubble pre { font-family: var(--vscode-editor-font-family, monospace); font-size: 11.5px; line-height: 1.45; background: rgba(0,0,0,.18); border-radius: 6px; padding: 8px 10px; margin: 6px 0; overflow-x: auto; white-space: pre-wrap; position: relative; }
     .bubble pre code { background: none; padding: 0; }
@@ -854,8 +894,8 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
     /* ── Generic buttons ─── */
     .btn { font: 600 11px var(--vscode-font-family); padding: 4px 9px; border-radius: 6px; border: 1px solid var(--border); background: transparent; color: var(--fg); cursor: pointer; transition: all var(--spd); }
     .btn:hover { background: var(--vscode-toolbar-hoverBackground, rgba(128,128,128,.1)); }
-    .btn.primary { background: var(--amber); border-color: var(--amber); color: #fff; }
-    .btn.primary:hover { background: #d97706; }
+    .btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+    .btn.primary:hover { background: var(--accent-hover); }
     .btn.danger { color: var(--red); border-color: var(--red-bdr); }
     .btn.danger:hover { background: var(--red-bg); }
     .btn.sm { padding: 3px 7px; font-size: 10px; }
@@ -869,7 +909,7 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
     .toggle-switch input { opacity: 0; width: 0; height: 0; position: absolute; }
     .toggle-track { position: absolute; inset: 0; background: rgba(128,128,128,.2); border-radius: 99px; cursor: pointer; transition: background var(--spd); }
     .toggle-track::after { content: ''; position: absolute; top: 2px; left: 2px; width: 16px; height: 16px; border-radius: 50%; background: #fff; transition: transform var(--spd); }
-    .toggle-switch input:checked + .toggle-track { background: var(--amber); }
+    .toggle-switch input:checked + .toggle-track { background: var(--accent); }
     .toggle-switch input:checked + .toggle-track::after { transform: translateX(16px); }
 
     @keyframes fadein { from { opacity: 0; transform: translateY(3px); } to { opacity: 1; transform: translateY(0); } }
@@ -899,7 +939,6 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
   <div id="settingsDrawer">
     <div class="srow"><span class="slabel">Persona</span><select id="personaSelect"><option value="software-engineer">Software Engineer</option><option value="full-stack-developer">Full-Stack Developer</option><option value="data-scientist">Data Scientist</option><option value="designer">Designer</option><option value="devops-engineer">DevOps Engineer</option><option value="researcher">Researcher</option></select></div>
     <div class="srow"><span class="slabel">Model</span><select id="modelSelect"></select></div>
-    <div class="srow"><span class="slabel">Assign</span><select id="roleSelect"><option value="planner">Planner</option><option value="editor">Editor</option><option value="fast">Fast</option><option value="embedding">Embedding</option></select></div>
     <div class="sbtns"><button id="btnSyncModels" class="btn">Sync models</button><button id="btnApplyModel" class="btn primary">Apply</button></div>
     <div class="section">
       <div class="section-head"><span class="slabel">MCP Servers</span><span id="mcpCount" class="mcp-count">0 configured</span></div>
@@ -964,6 +1003,7 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
       <textarea id="taskInput" placeholder="Ask Pulse anything about your code\u2026" rows="2" aria-label="Message"></textarea>
       <div class="composer-inner-row">
         <div class="chips">
+          <button id="btnAttach" type="button" class="attach-plus" title="Attach files or images">&#43;</button>
           <button id="chipMode" type="button" class="mode-chip active" title="Switch mode">AGENT</button>
           <div id="modePopup" class="popup hidden">
             <button type="button" class="popup-opt" data-mode="agent">&#9889; Agent</button>
@@ -975,7 +1015,6 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
             <div class="model-popup-title">Switch model</div>
             <div id="modelPopupList" class="model-popup-list"></div>
           </div>
-          <button id="btnAttach" type="button" class="chip attach" title="Attach files">+ attach</button>
         </div>
         <button id="btnSend" class="send-btn" title="Send (Enter)" disabled>&#8593;</button>
       </div>
@@ -1035,7 +1074,7 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
   var statusBadge = D('statusBadge'), statusTxt = D('statusTxt');
   var btnSettings = D('btnSettings'), btnRefresh = D('btnRefresh'), btnNewChat = D('btnNewChat');
   var settingsDrawer = D('settingsDrawer');
-  var personaSelect = D('personaSelect'), roleSelect = D('roleSelect'), modelSelect = D('modelSelect');
+  var personaSelect = D('personaSelect'), modelSelect = D('modelSelect');
   var btnSyncModels = D('btnSyncModels'), btnApplyModel = D('btnApplyModel');
   var btnAddMcp = D('btnAddMcp'), btnReloadMcp = D('btnReloadMcp'), btnSaveMcp = D('btnSaveMcp');
   var btnOpenMcpSettings = D('btnOpenMcpSettings'), btnManageMcp = D('btnManageMcp');
@@ -1147,7 +1186,10 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
       btn.textContent = m.name; btn.title = m.name;
       btn.addEventListener('click', function(e) { e.stopPropagation(); activeModelName = m.name;
         if (chipModel) { chipModel.textContent = m.name.split(':')[0].slice(0,14) || '\u2013'; chipModel.title = m.name; }
-        vscode.postMessage({ type: 'setModel', payload: { role: 'planner', model: m.name } }); closeModelPopup(); });
+        vscode.postMessage({ type: 'setModel', payload: { role: 'planner', model: m.name } });
+        vscode.postMessage({ type: 'setModel', payload: { role: 'editor', model: m.name } });
+        vscode.postMessage({ type: 'setModel', payload: { role: 'fast', model: m.name } });
+        closeModelPopup(); });
       list.appendChild(btn);
     }); }
     popup.classList.remove('hidden'); modelPopupOpen = true;
@@ -1467,7 +1509,7 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
   (function() { var p = D('permPopup'); if (!p) return; p.querySelectorAll('.perm-opt').forEach(function(btn) { btn.addEventListener('click', function(e) { e.stopPropagation(); var m = btn.dataset.perm; if (m) { vscode.postMessage({ type: 'setPermissionMode', payload: m }); updatePermUI(m); } closePermPopup(); }); }); }());
 
   on(btnSyncModels, 'click', function() { vscode.postMessage({ type: 'refreshModels' }); });
-  on(btnApplyModel, 'click', function() { var r = roleSelect.value, m = modelSelect.value; if (m) vscode.postMessage({ type: 'setModel', payload: { role: r, model: m } }); });
+  on(btnApplyModel, 'click', function() { var m = modelSelect.value; if (m) { vscode.postMessage({ type: 'setModel', payload: { role: 'planner', model: m } }); vscode.postMessage({ type: 'setModel', payload: { role: 'editor', model: m } }); vscode.postMessage({ type: 'setModel', payload: { role: 'fast', model: m } }); } });
   on(personaSelect, 'change', function() { vscode.postMessage({ type: 'setPersona', payload: personaSelect.value }); });
   on(btnAddMcp, 'click', function() { mcpServers = snapshotMcpServers().concat([normalizeMcpServer({ enabled: true, trust: 'workspace', transport: 'stdio', args: [] })]); renderMcpServers(mcpServers); });
   on(btnReloadMcp, 'click', function() { vscode.postMessage({ type: 'reloadMcpServers' }); });
@@ -1498,6 +1540,9 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
       finishThinking(isCancelled);
       if (!isCancelled) {
         var text = (payload && payload.responseText) || JSON.stringify(payload, null, 2);
+        if (payload && payload.autoApplied && payload.proposedEdits > 0) {
+          text += '\n\n\u2705 **' + payload.proposedEdits + ' edit(s) auto-applied** (bypass mode active)';
+        }
         chatHistory.push({ role: 'agent', text: text, ts: Date.now() });
         renderMessages(); scrollBottom();
       }
