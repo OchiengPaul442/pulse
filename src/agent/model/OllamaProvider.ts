@@ -43,18 +43,27 @@ interface SimpleResponse {
   json(): Promise<any>;
 }
 
+interface RequestOptions extends RequestInit {
+  timeoutMs?: number;
+}
+
+const DEFAULT_TIMEOUT_MS = 5_000;
+const CHAT_TIMEOUT_MS = 120_000;
+
 export class OllamaProvider implements ModelProvider {
   public constructor(private readonly baseUrl: string) {}
 
   public async healthCheck(): Promise<ProviderHealth> {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 5000);
+    const { signal, cleanup } = this.createSignalWithTimeout(
+      undefined,
+      DEFAULT_TIMEOUT_MS,
+    );
     try {
       const response = await this.fetchFromCandidates("/api/tags", {
         method: "GET",
-        signal: controller.signal,
+        signal,
+        timeoutMs: DEFAULT_TIMEOUT_MS,
       });
-      clearTimeout(timer);
       if (!response.ok) {
         return {
           ok: false,
@@ -67,12 +76,13 @@ export class OllamaProvider implements ModelProvider {
         message: "Ollama reachable",
       };
     } catch (error) {
-      clearTimeout(timer);
       return {
         ok: false,
         message:
           error instanceof Error ? error.message : "Unknown Ollama error",
       };
+    } finally {
+      cleanup();
     }
   }
 
@@ -86,12 +96,17 @@ export class OllamaProvider implements ModelProvider {
   }
 
   public async chat(request: ChatRequest): Promise<ChatResponse> {
+    const { signal, cleanup } = this.createSignalWithTimeout(
+      request.signal,
+      CHAT_TIMEOUT_MS,
+    );
     const response = await this.fetchFromCandidates("/api/chat", {
       method: "POST",
       headers: {
         "content-type": "application/json",
       },
-      ...(request.signal ? { signal: request.signal } : {}),
+      signal,
+      timeoutMs: CHAT_TIMEOUT_MS,
       body: JSON.stringify({
         model: request.model,
         messages: request.messages,
@@ -104,7 +119,7 @@ export class OllamaProvider implements ModelProvider {
         },
         format: request.format,
       }),
-    });
+    }).finally(cleanup);
 
     if (!response.ok) {
       throw new Error(`Ollama chat failed (HTTP ${response.status})`);
@@ -133,6 +148,7 @@ export class OllamaProvider implements ModelProvider {
   private async fetchLocalModels(): Promise<ModelSummary[]> {
     const response = await this.fetchFromCandidates("/api/tags", {
       method: "GET",
+      timeoutMs: DEFAULT_TIMEOUT_MS,
     });
     if (!response.ok) {
       throw new Error(`Failed to list Ollama models (HTTP ${response.status})`);
@@ -152,6 +168,7 @@ export class OllamaProvider implements ModelProvider {
     try {
       const response = await this.fetchFromCandidates("/api/ps", {
         method: "GET",
+        timeoutMs: DEFAULT_TIMEOUT_MS,
       });
       if (!response.ok) {
         return [];
@@ -187,7 +204,7 @@ export class OllamaProvider implements ModelProvider {
 
   private async fetchFromCandidates(
     path: string,
-    init: RequestInit,
+    init: RequestOptions,
   ): Promise<SimpleResponse> {
     let lastError: unknown;
 
@@ -210,12 +227,25 @@ export class OllamaProvider implements ModelProvider {
 
   private async makeRequest(
     urlStr: string,
-    init: RequestInit,
+    init: RequestOptions,
   ): Promise<SimpleResponse> {
     return new Promise((resolve, reject) => {
+      let settled = false;
+      const settleResolve = (value: SimpleResponse): void => {
+        if (settled) return;
+        settled = true;
+        resolve(value);
+      };
+      const settleReject = (error: unknown): void => {
+        if (settled) return;
+        settled = true;
+        reject(error);
+      };
+
       const parsedUrl = new URL(urlStr);
       const isHttps = parsedUrl.protocol === "https:";
       const client = isHttps ? https : http;
+      const timeoutMs = Math.max(1, init.timeoutMs ?? DEFAULT_TIMEOUT_MS);
 
       const options: http.RequestOptions = {
         hostname: parsedUrl.hostname,
@@ -223,8 +253,13 @@ export class OllamaProvider implements ModelProvider {
         path: parsedUrl.pathname + parsedUrl.search,
         method: init.method || "GET",
         headers: init.headers as Record<string, string>,
-        timeout: 5000,
+        timeout: timeoutMs,
       };
+
+      if (init.signal?.aborted) {
+        settleReject(new Error("Aborted"));
+        return;
+      }
 
       const req = client.request(options, (res) => {
         let data = "";
@@ -232,23 +267,39 @@ export class OllamaProvider implements ModelProvider {
           data += chunk;
         });
         res.on("end", () => {
+          const statusCode = res.statusCode ?? 0;
           const response: SimpleResponse = {
-            ok: res.statusCode! >= 200 && res.statusCode! < 300,
-            status: res.statusCode!,
-            json: async () => JSON.parse(data),
+            ok: statusCode >= 200 && statusCode < 300,
+            status: statusCode,
+            json: async () => {
+              try {
+                return JSON.parse(data);
+              } catch (error) {
+                throw new Error(
+                  `Invalid JSON from Ollama: ${error instanceof Error ? error.message : String(error)}`,
+                );
+              }
+            },
           };
-          resolve(response);
+          settleResolve(response);
+        });
+        res.on("error", (error) => {
+          settleReject(error);
         });
       });
 
       req.on("error", (err) => {
-        reject(err);
+        settleReject(err);
+      });
+      req.on("timeout", () => {
+        req.destroy(
+          new Error(`Request timed out after ${timeoutMs}ms: ${urlStr}`),
+        );
       });
 
       if (init.signal) {
         init.signal.addEventListener("abort", () => {
-          req.destroy();
-          reject(new Error("Aborted"));
+          req.destroy(new Error("Aborted"));
         });
       }
 
@@ -257,6 +308,37 @@ export class OllamaProvider implements ModelProvider {
       }
       req.end();
     });
+  }
+
+  private createSignalWithTimeout(
+    inputSignal: AbortSignal | undefined,
+    timeoutMs: number,
+  ): { signal: AbortSignal; cleanup: () => void } {
+    const controller = new AbortController();
+    const safeTimeoutMs = Math.max(1, timeoutMs);
+    const timer = setTimeout(() => {
+      controller.abort();
+    }, safeTimeoutMs);
+
+    const onAbort = (): void => {
+      controller.abort();
+    };
+
+    if (inputSignal) {
+      if (inputSignal.aborted) {
+        controller.abort();
+      } else {
+        inputSignal.addEventListener("abort", onAbort, { once: true });
+      }
+    }
+
+    return {
+      signal: controller.signal,
+      cleanup: () => {
+        clearTimeout(timer);
+        inputSignal?.removeEventListener("abort", onAbort);
+      },
+    };
   }
 
   private getCandidateBaseUrls(): string[] {

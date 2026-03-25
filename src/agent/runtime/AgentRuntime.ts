@@ -11,7 +11,7 @@ import type { StorageState } from "../../db/StorageBootstrap";
 import type { Logger } from "../../platform/vscode/Logger";
 import { EditManager, type ProposedEdit } from "../edits/EditManager";
 import { WorkspaceScanner } from "../indexing/WorkspaceScanner";
-import { McpManager } from "../mcp/McpManager";
+import { McpManager, type McpServerStatus } from "../mcp/McpManager";
 import { OllamaProvider } from "../model/OllamaProvider";
 import type { ModelSummary, ProviderHealth } from "../model/ModelProvider";
 import { MemoryStore } from "../memory/MemoryStore";
@@ -140,6 +140,15 @@ export class AgentRuntime {
 
   /** Self-learn background loop timer. */
   private selfLearnTimer: ReturnType<typeof setInterval> | null = null;
+
+  private mcpStatusCache:
+    | {
+        checkedAt: number;
+        statuses: McpServerStatus[];
+      }
+    | null = null;
+
+  private mcpStatusPromise: Promise<McpServerStatus[]> | null = null;
 
   public constructor(
     config: AgentConfig,
@@ -348,6 +357,8 @@ export class AgentRuntime {
 
     this.currentConfig.mcpServers = [...servers];
     this.mcpManager.updateServerDefinitions(servers);
+    this.mcpStatusCache = null;
+    this.mcpStatusPromise = null;
     this.logger.info(`Updated MCP server definitions (${servers.length})`);
   }
 
@@ -1375,7 +1386,7 @@ export class AgentRuntime {
   }
 
   public async mcpSummary(): Promise<string> {
-    const servers = await this.mcpManager.listServerStatus();
+    const servers = await this.getMcpStatuses(true);
     if (servers.length === 0) {
       return "No MCP servers configured.";
     }
@@ -1443,7 +1454,7 @@ export class AgentRuntime {
 
     const diagnostics = this.verifier.runDiagnostics();
     const pending = await this.editManager.getPendingProposal();
-    const mcpStatuses = await this.mcpManager.listServerStatus();
+    const mcpStatuses = await this.getMcpStatuses(true);
     const models = await this.listAvailableModels();
     const modelNames = new Set(models.map((model) => model.name));
     const requiredModels = [
@@ -1533,7 +1544,7 @@ export class AgentRuntime {
   public async summary(): Promise<RuntimeSummary> {
     const active = await this.sessionStore.getActiveSession();
     const pending = await this.editManager.getPendingProposal();
-    const mcpStatuses = await this.mcpManager.listServerStatus();
+    const mcpStatuses = await this.getMcpStatuses();
     const mcpConfigured = mcpStatuses.filter((s) => s.enabled).length;
     const mcpHealthy = mcpStatuses.filter(
       (s) => s.state === "configured",
@@ -1567,6 +1578,41 @@ export class AgentRuntime {
       mcpHealthy,
       selfLearnEnabled: this.currentConfig.selfLearnEnabled ?? false,
     };
+  }
+
+  private async getMcpStatuses(force = false): Promise<McpServerStatus[]> {
+    const now = Date.now();
+    const cacheTtlMs = 15_000;
+    if (
+      !force &&
+      this.mcpStatusCache &&
+      now - this.mcpStatusCache.checkedAt < cacheTtlMs
+    ) {
+      return this.mcpStatusCache.statuses;
+    }
+
+    if (this.mcpStatusPromise) {
+      return this.mcpStatusPromise;
+    }
+
+    this.mcpStatusPromise = this.mcpManager
+      .listServerStatus()
+      .then((statuses) => {
+        this.mcpStatusCache = {
+          checkedAt: Date.now(),
+          statuses,
+        };
+        return statuses;
+      })
+      .catch((error) => {
+        this.logger.warn(`Failed to load MCP status: ${stringifyError(error)}`);
+        return this.mcpStatusCache?.statuses ?? [];
+      })
+      .finally(() => {
+        this.mcpStatusPromise = null;
+      });
+
+    return this.mcpStatusPromise;
   }
 
   private mergeConfiguredModels(discovered: ModelSummary[]): ModelSummary[] {

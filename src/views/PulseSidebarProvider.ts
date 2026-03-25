@@ -35,68 +35,86 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
       });
 
     // ── Push the full runtime state to the webview ─────────────────────
+    let pushInFlight = false;
+    let pushQueued = false;
+    const fallbackSummary = (error: unknown) => ({
+      status: "degraded" as const,
+      ollamaReachable: false,
+      conversationMode: "agent" as const,
+      persona: "software-engineer",
+      plannerModel: "unknown",
+      editorModel: "unknown",
+      fastModel: "unknown",
+      embeddingModel: "unknown",
+      approvalMode: "balanced" as const,
+      permissionMode: "default" as const,
+      storagePath: "",
+      ollamaHealth: `Error: ${error instanceof Error ? error.message : String(error)}`,
+      modelCount: 0,
+      activeSessionId: null,
+      hasPendingEdits: false,
+      tokenBudget: 32000,
+      tokensConsumed: 0,
+      tokenUsagePercent: 0,
+      mcpConfigured: 0,
+      mcpHealthy: 0,
+      selfLearnEnabled: false,
+    });
+
     const pushState = async (): Promise<void> => {
-      // Refresh Ollama health — errors here are non-fatal
-      try {
-        await this.runtime.refreshProviderState();
-      } catch (err) {
-        this.logger.warn(
-          `refreshProviderState failed: ${err instanceof Error ? err.message : String(err)}`,
-        );
+      if (pushInFlight) {
+        pushQueued = true;
+        return;
       }
+      pushInFlight = true;
 
-      // Always post runtimeSummary — even a degraded one — so the badge updates
-      let summary;
       try {
-        summary = await this.runtime.summary();
-      } catch (err) {
-        this.logger.warn(
-          `runtime.summary() failed: ${err instanceof Error ? err.message : String(err)}`,
-        );
-        summary = {
-          status: "degraded" as const,
-          ollamaReachable: false,
-          conversationMode: "agent" as const,
-          persona: "software-engineer",
-          plannerModel: "unknown",
-          editorModel: "unknown",
-          fastModel: "unknown",
-          embeddingModel: "unknown",
-          approvalMode: "balanced" as const,
-          permissionMode: "default" as const,
-          storagePath: "",
-          ollamaHealth: `Error: ${err instanceof Error ? err.message : String(err)}`,
-          modelCount: 0,
-          activeSessionId: null,
-          hasPendingEdits: false,
-          tokenBudget: 32000,
-          tokensConsumed: 0,
-          tokenUsagePercent: 0,
-          mcpConfigured: 0,
-          mcpHealthy: 0,
-        };
-      }
-      void webviewView.webview.postMessage({
-        type: "runtimeSummary",
-        payload: summary,
-      });
-
-      // Secondary data — each isolated so one failure can't block the rest
-      const sessions = await this.runtime.listRecentSessions().catch(() => []);
-      void webviewView.webview.postMessage({
-        type: "sessions",
-        payload: sessions,
-      });
-      void webviewView.webview.postMessage({
-        type: "mcpServers",
-        payload: this.runtime.getConfiguredMcpServers(),
-      });
-      if (summary?.ollamaReachable) {
-        const models = await this.runtime.listAvailableModels().catch(() => []);
-        void webviewView.webview.postMessage({
-          type: "models",
-          payload: models,
+        // Refresh in background so UI state can render immediately.
+        void this.runtime.refreshProviderState().catch((err) => {
+          this.logger.warn(
+            `refreshProviderState failed: ${err instanceof Error ? err.message : String(err)}`,
+          );
         });
+
+        // Primary dashboard state
+        const [summary, sessions] = await Promise.all([
+          this.runtime.summary().catch((err) => {
+            this.logger.warn(
+              `runtime.summary() failed: ${err instanceof Error ? err.message : String(err)}`,
+            );
+            return fallbackSummary(err);
+          }),
+          this.runtime.listRecentSessions().catch(() => []),
+        ]);
+
+        void webviewView.webview.postMessage({
+          type: "runtimeSummary",
+          payload: summary,
+        });
+        void webviewView.webview.postMessage({
+          type: "sessions",
+          payload: sessions,
+        });
+        void webviewView.webview.postMessage({
+          type: "mcpServers",
+          payload: this.runtime.getConfiguredMcpServers(),
+        });
+
+        if (summary?.ollamaReachable) {
+          const models = await this.runtime
+            .listAvailableModels()
+            .catch(() => []);
+          void webviewView.webview.postMessage({
+            type: "models",
+            payload: models,
+          });
+        }
+      } finally {
+        pushInFlight = false;
+        if (pushQueued) {
+          pushQueued = false;
+          void pushState();
+        }
       }
     };
 
@@ -181,7 +199,9 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
               });
             }
 
-            const sessions = await this.runtime.listRecentSessions();
+            const sessions = await this.runtime
+              .listRecentSessions()
+              .catch(() => []);
             await webviewView.webview.postMessage({
               type: "sessions",
               payload: sessions,
@@ -666,12 +686,22 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
       initialSummary &&
       (initialSummary.ollamaReachable || initialSummary.status === "ready"),
     );
-    const initialSummaryJson = JSON.stringify(initialSummary ?? null).replace(
-      /</g,
-      "\\u003c",
-    );
+    const initialSummaryJson = JSON.stringify(initialSummary ?? null)
+      .replace(/</g, "\\u003c")
+      .replace(/\u2028/g, "\\u2028")
+      .replace(/\u2029/g, "\\u2029");
     const initialStatusText = initialOnline ? "Online" : "Offline";
     const initialStatusClass = initialOnline ? "on" : "off";
+    const initialModel = initialSummary?.plannerModel ?? "";
+    const initialModelLabel =
+      initialModel.split(":")[0].slice(0, 14) || "\u2013";
+    const initialModelTitle = initialModel || "Active model";
+    const htmlEscape = (value: string): string =>
+      String(value)
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;");
 
     return `<!DOCTYPE html>
 <html lang="en">
@@ -684,6 +714,7 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
     :root {
       --accent: #6366f1; --accent-bg: rgba(99,102,241,0.10); --accent-bdr: rgba(99,102,241,0.28);
       --accent-glow: rgba(99,102,241,0.14); --accent-hover: #4f46e5;
+      --orange: #d97706; --orange-hover: #b45309; --orange-glow: rgba(217,119,6,0.16);
       --green: #22c55e; --green-bg: rgba(34,197,94,0.08); --green-bdr: rgba(34,197,94,0.24);
       --red: var(--vscode-errorForeground, #f87171); --red-bg: rgba(248,113,113,0.06); --red-bdr: rgba(248,113,113,0.24);
       --border: var(--vscode-sideBarSectionHeader-border, rgba(128,128,128,.15));
@@ -824,7 +855,7 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
     .token-ring { position: relative; width: 32px; height: 32px; flex-shrink: 0; }
     .token-ring-svg { width: 100%; height: 100%; }
     .token-ring-bg { stroke: rgba(128,128,128,.12); }
-    .token-ring-fg { stroke: var(--accent); transition: stroke-dasharray 400ms ease; }
+    .token-ring-fg { stroke: var(--orange); transition: stroke-dasharray 400ms ease; }
     .token-ring-pct { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; font-size: 8px; font-weight: 700; color: var(--fg2); pointer-events: none; }
 
     /* ── Empty state ─── */
@@ -859,9 +890,9 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
     .attach-plus { width: 28px; height: 28px; min-width: 28px; border: 1.5px solid var(--border); border-radius: 50%; background: transparent; color: var(--fg2); cursor: pointer; font-size: 16px; font-weight: 300; display: flex; align-items: center; justify-content: center; transition: all var(--spd); flex-shrink: 0; }
     .attach-plus:hover { border-color: var(--accent); color: var(--accent); background: var(--accent-bg); }
 
-    .send-btn { width: 28px; height: 28px; min-width: 28px; border: none; border-radius: 8px; background: var(--accent); color: #fff; font-size: 14px; line-height: 1; cursor: default; display: flex; align-items: center; justify-content: center; transition: opacity var(--spd), transform var(--spd), background var(--spd); opacity: .25; }
+    .send-btn { width: 28px; height: 28px; min-width: 28px; border: none; border-radius: 8px; background: var(--orange); color: #fff; font-size: 14px; line-height: 1; cursor: default; display: flex; align-items: center; justify-content: center; transition: opacity var(--spd), transform var(--spd), background var(--spd); opacity: .25; }
     .send-btn:not([disabled]) { opacity: 1; cursor: pointer; }
-    .send-btn:not([disabled]):hover { background: var(--accent-hover); transform: scale(1.05); }
+    .send-btn:not([disabled]):hover { background: var(--orange-hover); transform: scale(1.05); }
     .send-btn.stop { background: #ef4444; opacity: 1; cursor: pointer; }
     .send-btn.stop:hover { background: #dc2626; transform: scale(1.05); }
 
@@ -1010,13 +1041,13 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
             <button type="button" class="popup-opt" data-mode="ask">&#128172; Ask</button>
             <button type="button" class="popup-opt" data-mode="plan">&#128203; Plan</button>
           </div>
-          <button id="chipModel" type="button" class="chip" title="Active model">\u2013</button>
+          <button id="chipModel" type="button" class="chip" title="${htmlEscape(initialModelTitle)}">${htmlEscape(initialModelLabel)}</button>
           <div id="modelPopup" class="model-popup hidden">
             <div class="model-popup-title">Switch model</div>
             <div id="modelPopupList" class="model-popup-list"></div>
           </div>
         </div>
-        <button id="btnSend" class="send-btn" title="Send (Enter)" disabled>&#8593;</button>
+        <button id="btnSend" type="button" class="send-btn" title="Send (Enter)" disabled>&#8593;</button>
       </div>
     </div>
     <!-- Permission bar — GitHub Copilot style -->
@@ -1172,7 +1203,7 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
 
   // Popups
   function closeAllPopups() { closeModePopup(); closeModelPopup(); closePermPopup(); }
-  function openModePopup() { closeAllPopups(); D('modePopup').classList.remove('hidden'); modePopupOpen = true; }
+  function openModePopup() { closeAllPopups(); var p = D('modePopup'); if (p) p.classList.remove('hidden'); modePopupOpen = true; }
   function closeModePopup() { var p = D('modePopup'); if (p) p.classList.add('hidden'); modePopupOpen = false; }
   function openModelPopup() {
     closeAllPopups();
@@ -1541,7 +1572,7 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
       if (!isCancelled) {
         var text = (payload && payload.responseText) || JSON.stringify(payload, null, 2);
         if (payload && payload.autoApplied && payload.proposedEdits > 0) {
-          text += '\n\n\u2705 **' + payload.proposedEdits + ' edit(s) auto-applied** (bypass mode active)';
+          text += '\\n\\n\\u2705 **' + payload.proposedEdits + ' edit(s) auto-applied** (bypass mode active)';
         }
         chatHistory.push({ role: 'agent', text: text, ts: Date.now() });
         renderMessages(); scrollBottom();
@@ -1570,6 +1601,13 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
   setTimeout(function() { if (!summary) vscode.postMessage({ type: 'ping' }); }, 800);
   setTimeout(function() { if (!summary) vscode.postMessage({ type: 'ping' }); }, 3000);
   setInterval(function() { vscode.postMessage({ type: 'ping' }); }, 30000);
+
+  // Auto-focus the textarea when the webview gains focus (fixes VS Code sidebar focus)
+  window.addEventListener('focus', function() {
+    if (taskInput && !isBusy) { setTimeout(function() { taskInput.focus(); }, 0); }
+  });
+  // Give initial focus so user can type immediately
+  setTimeout(function() { if (taskInput) taskInput.focus(); }, 200);
 
   } catch (error) {
     surfaceFatalError(error instanceof Error ? error.stack || error.message : String(error));

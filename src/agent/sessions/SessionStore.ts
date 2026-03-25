@@ -24,6 +24,8 @@ interface SessionsFile {
 }
 
 export class SessionStore {
+  private writeQueue: Promise<void> = Promise.resolve();
+
   public constructor(private readonly sessionsPath: string) {}
 
   public async createSession(
@@ -145,25 +147,74 @@ export class SessionStore {
   }
 
   private async load(): Promise<SessionsFile> {
-    try {
-      const bytes = await vscode.workspace.fs.readFile(
-        vscode.Uri.file(this.sessionsPath),
-      );
-      const raw = Buffer.from(bytes).toString("utf8");
-      const parsed = JSON.parse(raw) as SessionsFile;
-      return {
-        activeSessionId: parsed.activeSessionId ?? null,
-        sessions: parsed.sessions ?? [],
-      };
-    } catch {
-      return { activeSessionId: null, sessions: [] };
+    const primary = await this.readStateFile(this.sessionsPath);
+    if (primary) {
+      return primary;
     }
+
+    const backup = await this.readStateFile(this.getBackupPath());
+    if (backup) {
+      await this.save(backup);
+      return backup;
+    }
+
+    return { activeSessionId: null, sessions: [] };
   }
 
   private async save(state: SessionsFile): Promise<void> {
-    await vscode.workspace.fs.writeFile(
-      vscode.Uri.file(this.sessionsPath),
-      Buffer.from(JSON.stringify(state, null, 2), "utf8"),
-    );
+    const normalized = this.normalizeState(state);
+    this.writeQueue = this.writeQueue
+      .catch(() => {})
+      .then(() => this.persistState(normalized));
+    await this.writeQueue;
+  }
+
+  private async persistState(state: SessionsFile): Promise<void> {
+    const primaryUri = vscode.Uri.file(this.sessionsPath);
+    const backupUri = vscode.Uri.file(this.getBackupPath());
+    const tempUri = vscode.Uri.file(this.getTempPath());
+    const payload = Buffer.from(JSON.stringify(state, null, 2), "utf8");
+
+    try {
+      await vscode.workspace.fs.copy(primaryUri, backupUri, {
+        overwrite: true,
+      });
+    } catch {
+      // No previous file yet, nothing to back up.
+    }
+
+    await vscode.workspace.fs.writeFile(tempUri, payload);
+    await vscode.workspace.fs.rename(tempUri, primaryUri, {
+      overwrite: true,
+    });
+  }
+
+  private async readStateFile(filePath: string): Promise<SessionsFile | null> {
+    try {
+      const bytes = await vscode.workspace.fs.readFile(vscode.Uri.file(filePath));
+      const raw = Buffer.from(bytes).toString("utf8");
+      const parsed = JSON.parse(raw) as SessionsFile;
+      return this.normalizeState(parsed);
+    } catch {
+      return null;
+    }
+  }
+
+  private normalizeState(parsed: SessionsFile): SessionsFile {
+    return {
+      activeSessionId:
+        typeof parsed.activeSessionId === "string"
+          ? parsed.activeSessionId
+          : null,
+      sessions: Array.isArray(parsed.sessions) ? parsed.sessions : [],
+    };
+  }
+
+  private getBackupPath(): string {
+    return `${this.sessionsPath}.bak`;
+  }
+
+  private getTempPath(): string {
+    return `${this.sessionsPath}.tmp`;
   }
 }
