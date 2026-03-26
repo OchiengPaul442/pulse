@@ -23,6 +23,7 @@ describe("Planner", () => {
     const plan = await planner.createPlan("Add tests", "model-a");
 
     expect(plan.objective).toBe("Add tests");
+    expect(plan.todos.length).toBeGreaterThan(0);
     expect(plan.steps.length).toBeGreaterThan(0);
     expect(plan.assumptions.length).toBeGreaterThan(0);
   });

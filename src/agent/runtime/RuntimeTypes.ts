@@ -1,5 +1,7 @@
 import type { EditProposal } from "../edits/EditManager";
 import type { TaskPlan } from "../planner/Planner";
+import type { TaskTodo } from "./TaskProtocols";
+import type { TaskToolObservation } from "./TaskProtocols";
 
 export interface ConversationMessage {
   role: "user" | "assistant";
@@ -26,10 +28,16 @@ export interface RuntimeTaskResult {
   sessionId: string;
   objective: string;
   plan: TaskPlan;
+  todos: TaskTodo[];
   responseText: string;
   proposal: EditProposal | null;
   artifactPath?: string;
   autoApplied?: boolean;
+  toolSummary?: string;
+  toolTrace?: TaskToolObservation[];
+  qualityScore?: number;
+  qualityTarget?: number;
+  meetsQualityTarget?: boolean;
 }
 
 export interface ExplainResult {

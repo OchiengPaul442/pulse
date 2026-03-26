@@ -1,4 +1,5 @@
 import type { ModelProvider } from "../model/ModelProvider";
+import type { TaskTodo } from "../runtime/TaskProtocols";
 
 export interface PlanStep {
   id: string;
@@ -20,6 +21,7 @@ export interface TaskPlan {
   objective: string;
   assumptions: string[];
   acceptanceCriteria: string[];
+  todos: TaskTodo[];
   steps: PlanStep[];
   taskSlices: TaskSlice[];
   verification: Array<{ type: string; command: string }>;
@@ -31,8 +33,9 @@ export class Planner {
   public async createPlan(objective: string, model: string): Promise<TaskPlan> {
     const prompt = [
       "Create a rigorous JSON plan for a coding agent task.",
-      "Return valid JSON only with fields: objective, assumptions, acceptanceCriteria, steps, taskSlices, verification.",
+      "Return valid JSON only with fields: objective, assumptions, acceptanceCriteria, todos, steps, taskSlices, verification.",
       "Each step must contain id, goal, tools, expectedOutput.",
+      "Each todo must contain id, title, status, and optionally detail.",
       "Each taskSlice must contain id, title, scope, steps, deliverable, acceptanceCriteria.",
       "Make acceptance criteria observable and testable.",
       "Task slices should be small enough to implement and verify independently.",
@@ -74,6 +77,7 @@ function normalizePlan(plan: Partial<TaskPlan>, objective: string): TaskPlan {
       "Changes are scoped to the intended files or workflow artifacts.",
       "Verification steps are defined and actionable.",
     ],
+    todos: normalizeTodos(plan.todos, objective),
     steps: (plan.steps ?? []).map((step, index) => ({
       id: step.id ?? `step_${index + 1}`,
       goal: step.goal ?? "Execute task step",
@@ -112,6 +116,23 @@ function fallbackPlan(objective: string): TaskPlan {
       "The plan is understandable and actionable.",
       "Work is split into manageable slices.",
       "Verification is explicitly described.",
+    ],
+    todos: [
+      {
+        id: "todo_1",
+        title: "Inspect relevant workspace context",
+        status: "pending",
+      },
+      {
+        id: "todo_2",
+        title: "Propose a focused implementation approach",
+        status: "pending",
+      },
+      {
+        id: "todo_3",
+        title: "Verify the result with an appropriate check",
+        status: "pending",
+      },
     ],
     steps: [
       {
@@ -161,4 +182,43 @@ function fallbackPlan(objective: string): TaskPlan {
       },
     ],
   };
+}
+
+function normalizeTodos(
+  todos: Partial<TaskTodo>[] | undefined,
+  objective: string,
+): TaskTodo[] {
+  if (!todos || todos.length === 0) {
+    return [
+      {
+        id: "todo_1",
+        title: `Review the workspace context for: ${objective}`,
+        status: "pending",
+      },
+      {
+        id: "todo_2",
+        title: "Implement the smallest correct change set",
+        status: "pending",
+      },
+      {
+        id: "todo_3",
+        title: "Run verification and summarize results",
+        status: "pending",
+      },
+    ];
+  }
+
+  return todos
+    .map((todo, index) => ({
+      id: todo.id ?? `todo_${index + 1}`,
+      title: todo.title ?? `Task item ${index + 1}`,
+      status:
+        todo.status === "in-progress" ||
+        todo.status === "blocked" ||
+        todo.status === "done"
+          ? todo.status
+          : "pending",
+      detail: todo.detail,
+    }))
+    .filter((todo) => todo.title.trim().length > 0);
 }

@@ -1,4 +1,5 @@
 import * as path from "path";
+import { existsSync } from "fs";
 import * as vscode from "vscode";
 
 import type {
@@ -9,7 +10,11 @@ import type {
 } from "../../config/AgentConfig";
 import type { StorageState } from "../../db/StorageBootstrap";
 import type { Logger } from "../../platform/vscode/Logger";
-import { EditManager, type ProposedEdit } from "../edits/EditManager";
+import {
+  EditManager,
+  type EditProposal,
+  type ProposedEdit,
+} from "../edits/EditManager";
 import { WorkspaceScanner } from "../indexing/WorkspaceScanner";
 import { McpManager, type McpServerStatus } from "../mcp/McpManager";
 import { OllamaProvider } from "../model/OllamaProvider";
@@ -46,6 +51,19 @@ import type {
 import { SessionStore } from "../sessions/SessionStore";
 import type { SessionRecord } from "../sessions/SessionStore";
 import { VerificationRunner } from "../verification/VerificationRunner";
+import {
+  assessTaskQuality,
+  buildTaskRefinementPrompt,
+  formatToolObservations,
+  isSafeTerminalCommand,
+  parseTaskResponse,
+  TARGET_TASK_QUALITY_SCORE,
+  type TaskQualityAssessment,
+  type TaskModelResponse,
+  type TaskToolCall,
+  type TaskToolObservation,
+  type TaskTodo,
+} from "./TaskProtocols";
 
 export interface RuntimeSummary {
   status: "ready" | "degraded";
@@ -141,12 +159,10 @@ export class AgentRuntime {
   /** Self-learn background loop timer. */
   private selfLearnTimer: ReturnType<typeof setInterval> | null = null;
 
-  private mcpStatusCache:
-    | {
-        checkedAt: number;
-        statuses: McpServerStatus[];
-      }
-    | null = null;
+  private mcpStatusCache: {
+    checkedAt: number;
+    statuses: McpServerStatus[];
+  } | null = null;
 
   private mcpStatusPromise: Promise<McpServerStatus[]> | null = null;
 
@@ -564,10 +580,12 @@ export class AgentRuntime {
         objective,
         assumptions: [],
         acceptanceCriteria: [],
+        todos: [],
         steps: [],
         taskSlices: [],
         verification: [],
       },
+      todos: [],
       responseText: "Task cancelled.",
       proposal: null,
     };
@@ -642,10 +660,12 @@ export class AgentRuntime {
             "The response lists workspace files or explains the scan clearly.",
             "No file edits are proposed.",
           ],
+          todos: [],
           steps: [],
           taskSlices: [],
           verification: [],
         },
+        todos: [],
         responseText,
         proposal: null,
       };
@@ -749,10 +769,12 @@ export class AgentRuntime {
             "The answer stays conversational and accurate.",
             "No file edits, terminal commands, or plan artifacts are produced.",
           ],
+          todos: [],
           steps: [],
           taskSlices: [],
           verification: [],
         },
+        todos: [],
         responseText: response.text,
         proposal: null,
       };
@@ -919,169 +941,58 @@ export class AgentRuntime {
 
     this.emitProgress("Agent mode", "Analyzing request", "🧠");
     const taskStartAgent = Date.now();
-    const plannerModel = await this.resolveModelOrFallback(
-      this.currentConfig.plannerModel,
-    );
-    const editorModel = await this.resolveModelOrFallback(
-      this.currentConfig.editorModel,
-    );
-
-    this.emitProgress("Building plan", plannerModel, "📋");
-    const plan = await this.planner.createPlan(objective, plannerModel);
-    const selectedSkills = this.skillRegistry.selectForObjective(objective);
-    this.emitProgress("Scanning workspace", "Finding relevant files", "🔍");
-    const candidateFiles = await this.scanner.findRelevantFiles(objective, 8);
-    const contextSnippets = await this.scanner.readContextSnippets(
-      candidateFiles.slice(0, 4),
-      2400,
-    );
-    const episodes =
-      this.currentConfig.memoryMode === "off"
-        ? []
-        : await this.memoryStore.latestEpisodes(3);
-    const webResearch = await this.collectWebResearch(objective, mode);
-    if (webResearch) {
-      this.emitProgress("Web research", webResearch.query ?? "searching", "🌐");
-    }
-    const styleHintAgent = await this.getLearnedStyleHint(objective, mode);
-    const improvementHintsAgent =
-      await this.improvementEngine.getOptimizedBehaviorHints(objective, mode);
-    const agentAwarenessAgent = this.improvementEngine.getAgentAwarenessHints();
-
-    const prompt = [
-      this.getPersonaPrompt(),
-      "You are running in autonomous agent mode inside VS Code.",
-      "You have full access to the user's workspace and can read, write, move, and delete files.",
-      ...(styleHintAgent ? [styleHintAgent] : []),
-      ...(improvementHintsAgent ? [improvementHintsAgent] : []),
-      ...(agentAwarenessAgent ? [agentAwarenessAgent] : []),
-      "",
-      "## Operating rules",
-      "- You MUST act on the user's request. Do NOT ask clarifying questions unless truly ambiguous.",
-      "- Read the workspace context provided below carefully before making changes.",
-      "- Prefer minimal, targeted edits over broad rewrites.",
-      "- Keep behavior backward compatible unless the objective requires change.",
-      "- Never propose edits outside the current workspace.",
-      "- If requirements are ambiguous, state your assumptions and proceed with the best approach.",
-      "- When the user asks you to do something in agent mode, DO it — produce the edits.",
-      "- If you need to understand more files, say which files you'd want to read and why in your response.",
-      "",
-      "## Response format",
-      "Return strict JSON with these fields:",
-      '{"response":"A clear explanation of what you did and why","edits":[...]}',
-      "",
-      "## Edit operations",
-      "Each edit is an object with:",
-      '- {"operation":"write","filePath":"relative/path","content":"full file content","reason":"why"}',
-      '- {"operation":"delete","filePath":"relative/path","reason":"why"}',
-      '- {"operation":"move","filePath":"old/path","targetPath":"new/path","reason":"why"}',
-      "",
-      "If no file changes are needed, return edits as an empty array.",
-      "Always include a helpful response explaining what you did or what you found.",
-      "",
-      webResearch
-        ? "## Web research results\n" + JSON.stringify(webResearch, null, 2)
-        : "",
-      `## User objective\n${objective}`,
-      `\n## Skills available\n${this.skillRegistry.summarizeSelection(selectedSkills)}`,
-      `\n## Plan\n${JSON.stringify(plan, null, 2)}`,
-      episodes.length > 0
-        ? `\n## Recent memory\n${JSON.stringify(episodes, null, 2)}`
-        : "",
-      `\n## Workspace files (context)\n${JSON.stringify(contextSnippets, null, 2)}`,
-      attachedContext.length > 0
-        ? `\n## Attached files\n${JSON.stringify(attachedContext, null, 2)}`
-        : "",
-    ]
-      .filter(Boolean)
-      .join("\n");
-
-    this.emitProgress("Generating response", editorModel, "✨");
-    checkAborted();
-    const response = await this.provider.chat({
-      model: editorModel,
-      format: "json",
+    const agentResult = await this.runAgentWorkflow(
+      objective,
+      session.id,
       signal,
-      messages: [
-        {
-          role: "system",
-          content:
-            "Follow instructions exactly and produce valid JSON. Do not include markdown fences. Optimize for correctness, minimal diffs, and safe file operations.",
-        },
-        {
-          role: "user",
-          content: prompt,
-        },
-      ],
-    });
-    this.consumeTokens(response.tokenUsage);
-
-    const parsed = parseTaskResponse(response.text);
-    const normalizedEdits = parsed.edits
-      .map((edit) =>
-        normalizeEditPath(edit, vscode.workspace.workspaceFolders ?? []),
-      )
-      .filter((edit): edit is ProposedEdit => edit !== null);
-
-    if (normalizedEdits.length > 0) {
-      this.emitProgress(
-        "Preparing edits",
-        `${normalizedEdits.length} file change(s)`,
-        "✏️",
-      );
-    }
-
-    const proposal =
-      normalizedEdits.length > 0
-        ? await this.editManager.setPendingProposal(objective, normalizedEdits)
-        : null;
-
-    // In "full" (bypass) mode, auto-apply edits immediately without user approval
-    let autoApplied = false;
-    if (proposal && this.permissionPolicy.getMode() === "full") {
-      this.emitProgress("Auto-applying edits", "Bypass mode active", "✅");
-      await this.applyPendingEdits(true);
-      autoApplied = true;
-    }
+    );
 
     await this.sessionStore.appendMessage(session.id, {
       role: "assistant",
-      content: parsed.response,
+      content: agentResult.responseText,
       createdAt: new Date().toISOString(),
     });
-    await this.sessionStore.updateSessionResult(session.id, parsed.response);
-    await this.learnFromExchange(objective, parsed.response, mode);
+    await this.sessionStore.updateSessionResult(
+      session.id,
+      agentResult.responseText,
+    );
+    await this.learnFromExchange(objective, agentResult.responseText, mode);
     if (this.currentConfig.memoryMode !== "off") {
       await this.memoryStore.addEpisode(
         objective,
-        parsed.response.slice(0, 400),
+        agentResult.responseText.slice(0, 400),
       );
     }
 
     const taskDurAgent = Date.now() - taskStartAgent;
+    const proposedEditCount = agentResult.proposal?.edits.length ?? 0;
+    const appliedEditCount = agentResult.autoApplied
+      ? proposedEditCount
+      : agentResult.proposal
+        ? proposedEditCount
+        : 0;
     this.selfReflectBackground(
       session.id,
       objective,
-      parsed.response,
+      agentResult.responseText,
       true,
       taskDurAgent,
       mode,
-      editorModel,
-      normalizedEdits.length,
-      autoApplied
-        ? normalizedEdits.length
-        : proposal
-          ? normalizedEdits.length
-          : 0,
+      this.currentConfig.editorModel,
+      proposedEditCount,
+      appliedEditCount,
     );
 
     return {
       sessionId: session.id,
       objective,
-      plan,
-      responseText: parsed.response,
-      proposal: autoApplied ? null : proposal,
-      autoApplied,
+      plan: agentResult.plan,
+      responseText: agentResult.responseText,
+      todos: agentResult.todos,
+      proposal: agentResult.autoApplied ? null : agentResult.proposal,
+      autoApplied: agentResult.autoApplied,
+      toolSummary: formatToolObservations(agentResult.toolTrace),
+      toolTrace: agentResult.toolTrace,
     };
   }
 
@@ -1226,14 +1137,27 @@ export class AgentRuntime {
    */
   public async executeTerminalCommand(
     command: string,
-    options?: { cwd?: string; timeoutMs?: number; visible?: boolean },
+    options?: {
+      cwd?: string;
+      timeoutMs?: number;
+      visible?: boolean;
+      purpose?: "tool" | "verification" | "manual";
+    },
   ): Promise<TerminalExecResult | null> {
     const decision = this.permissionPolicy.evaluate({
       action: "terminal_exec",
       description: `Run terminal command: ${command}`,
     });
+    const safeCommand = isSafeTerminalCommand(command);
+    const canAutoRunSafeCommand =
+      safeCommand &&
+      (this.permissionPolicy.getMode() === "full" ||
+        (options?.purpose === "verification" &&
+          this.currentConfig.autoRunVerification) ||
+        (options?.purpose === "tool" &&
+          this.currentConfig.allowTerminalExecution));
 
-    if (!decision.allowed && this.permissionPolicy.getMode() !== "full") {
+    if (!decision.allowed && !canAutoRunSafeCommand) {
       this.logger.info(`Terminal exec blocked by policy: ${command}`);
       return null;
     }
@@ -1955,6 +1879,13 @@ export class AgentRuntime {
       "",
       ...plan.acceptanceCriteria.map((item) => `- ${item}`),
       "",
+      "## TODOs",
+      "",
+      ...plan.todos.map(
+        (todo) =>
+          `- [${todo.status}] ${todo.title}${todo.detail ? ` — ${todo.detail}` : ""}`,
+      ),
+      "",
       "## Steps",
       "",
       ...plan.steps.map(
@@ -2117,6 +2048,682 @@ export class AgentRuntime {
     return lines.join("\n");
   }
 
+  private async runAgentWorkflow(
+    objective: string,
+    sessionId: string,
+    signal?: AbortSignal,
+  ): Promise<{
+    plan: TaskPlan;
+    responseText: string;
+    todos: TaskTodo[];
+    proposal: EditProposal | null;
+    autoApplied: boolean;
+    toolTrace: TaskToolObservation[];
+  }> {
+    const checkAborted = () => {
+      if (signal?.aborted) {
+        throw new Error("__TASK_CANCELLED__");
+      }
+    };
+
+    checkAborted();
+
+    const plannerModel = await this.resolveModelOrFallback(
+      this.currentConfig.plannerModel,
+    );
+    const editorModel = await this.resolveModelOrFallback(
+      this.currentConfig.editorModel,
+    );
+
+    this.emitProgress("Building plan", plannerModel, "📋");
+    const plan = await this.planner.createPlan(objective, plannerModel);
+    const selectedSkills = this.skillRegistry.selectForObjective(objective);
+
+    this.emitProgress("Scanning workspace", "Finding relevant files", "🔍");
+    const candidateFiles = await this.scanner.findRelevantFiles(objective, 8);
+    const contextSnippets = await this.scanner.readContextSnippets(
+      candidateFiles.slice(0, 4),
+      2400,
+    );
+    const episodes =
+      this.currentConfig.memoryMode === "off"
+        ? []
+        : await this.memoryStore.latestEpisodes(3);
+    const webResearch = await this.collectWebResearch(objective, "agent");
+    if (webResearch) {
+      this.emitProgress("Web research", webResearch.query ?? "searching", "🌐");
+    }
+
+    const styleHintAgent = await this.getLearnedStyleHint(objective, "agent");
+    const improvementHintsAgent =
+      await this.improvementEngine.getOptimizedBehaviorHints(
+        objective,
+        "agent",
+      );
+    const agentAwarenessAgent = this.improvementEngine.getAgentAwarenessHints();
+    const session = await this.sessionStore.getSession(sessionId);
+    const attachedContext = await this.loadAttachedFileContext(
+      session?.attachedFiles ?? [],
+    );
+    const conversationHistory = await this.buildConversationHistory(sessionId);
+    const skillsSummary = this.skillRegistry.summarizeSelection(selectedSkills);
+
+    const buildPrompt = (
+      toolContext: string,
+      critiqueContext: string,
+    ): string =>
+      [
+        this.getPersonaPrompt(),
+        "You are running in autonomous agent mode inside VS Code.",
+        "You have access to workspace context, terminal verification, web research, and file edits.",
+        ...(styleHintAgent ? [styleHintAgent] : []),
+        ...(improvementHintsAgent ? [improvementHintsAgent] : []),
+        ...(agentAwarenessAgent ? [agentAwarenessAgent] : []),
+        "",
+        "## Operating rules",
+        "- Always create a short todo list before making changes.",
+        "- Read the workspace context carefully before editing or running commands.",
+        "- Use tool calls when you need more evidence. Do not guess if a tool can answer the question.",
+        "- Prefer small, targeted edits over broad rewrites.",
+        "- Keep the current workspace as the only edit target.",
+        "- Use terminal verification for builds, tests, diagnostics, or other safe checks.",
+        "- If you need to explain a decision, keep the explanation brief and concrete.",
+        "- If refinement feedback is present, revise the previous answer to address it.",
+        `- Aim for a quality score of at least ${TARGET_TASK_QUALITY_SCORE.toFixed(2)} before finalizing.`,
+        "",
+        "## Response format",
+        "Return strict JSON with these fields:",
+        '{"response":"...","todos":[{"id":"todo_1","title":"...","status":"pending","detail":"..."}],"toolCalls":[{"tool":"workspace_scan|read_files|run_terminal|run_verification|web_search|git_diff|mcp_status|diagnostics","args":{},"reason":"..."}],"edits":[...]}',
+        "",
+        "## Tool guidance",
+        "- workspace_scan: inspect the workspace when you need more file-level context.",
+        "- read_files: request specific file paths you want summarized or inspected.",
+        "- run_terminal: use only for safe, non-destructive commands when command execution is enabled.",
+        "- run_verification: use for tests, lint, build, and diagnostics.",
+        "- web_search: use when the answer depends on current external docs or releases.",
+        "- git_diff: inspect the repository changes or file diffs.",
+        "- mcp_status: inspect MCP connectivity and configuration health.",
+        "- diagnostics: inspect active VS Code diagnostics.",
+        "",
+        "## Context",
+        `Objective: ${objective}`,
+        `Skills: ${skillsSummary}`,
+        `Plan: ${JSON.stringify(plan, null, 2)}`,
+        plan.todos.length > 0
+          ? `Current todo draft: ${JSON.stringify(plan.todos, null, 2)}`
+          : "",
+        episodes.length > 0
+          ? `Recent memory: ${JSON.stringify(episodes, null, 2)}`
+          : "",
+        `Workspace files: ${JSON.stringify(contextSnippets, null, 2)}`,
+        attachedContext.length > 0
+          ? `Attached files: ${JSON.stringify(attachedContext, null, 2)}`
+          : "",
+        webResearch
+          ? `Web research: ${JSON.stringify(webResearch, null, 2)}`
+          : "",
+        toolContext
+          ? `Tool observations from the last round:\n${toolContext}`
+          : "",
+        critiqueContext
+          ? `Refinement feedback from the evaluator:\n${critiqueContext}`
+          : "",
+      ]
+        .filter((value) => value.length > 0)
+        .join("\n");
+
+    let parsed: TaskModelResponse = {
+      response: "",
+      todos: plan.todos,
+      toolCalls: [],
+      edits: [],
+    };
+    const toolTrace: TaskToolObservation[] = [];
+    let toolContext = "";
+    let critiqueContext = "";
+    let requestedVerification = false;
+    let finalAssessment: TaskQualityAssessment | null = null;
+
+    for (let iteration = 0; iteration < 3; iteration += 1) {
+      this.emitProgress("Generating response", editorModel, "✨");
+      checkAborted();
+      const response = await this.provider.chat({
+        model: editorModel,
+        format: "json",
+        signal,
+        messages: [
+          {
+            role: "system",
+            content:
+              "Follow instructions exactly and produce valid JSON only. Do not include markdown fences.",
+          },
+          ...conversationHistory,
+          {
+            role: "user",
+            content: buildPrompt(toolContext, critiqueContext),
+          },
+        ],
+        maxTokens: 4096,
+      });
+      this.consumeTokens(response.tokenUsage);
+
+      parsed = parseTaskResponse(response.text);
+      if (parsed.todos.length === 0) {
+        parsed.todos = plan.todos;
+      }
+
+      requestedVerification ||= parsed.toolCalls.some(
+        (call) => call.tool === "run_verification",
+      );
+
+      const observations =
+        parsed.toolCalls.length > 0
+          ? await this.executeTaskToolCalls(parsed.toolCalls, objective, signal)
+          : [];
+
+      if (observations.length > 0) {
+        toolTrace.push(...observations);
+        toolContext = formatToolObservations(toolTrace.slice(-5));
+        this.emitProgress(
+          "Tool results",
+          `${observations.length} observation(s) collected`,
+          "🛠️",
+        );
+      }
+
+      finalAssessment = assessTaskQuality(parsed, {
+        objective,
+        toolTrace: observations,
+        editCount: parsed.edits.length,
+        verificationRan: observations.some(
+          (observation) =>
+            observation.tool === "run_verification" && observation.ok,
+        ),
+        isEditTask: this.isLikelyEditTaskObjective(objective),
+      });
+
+      if (finalAssessment.meetsTarget || iteration === 2) {
+        break;
+      }
+
+      critiqueContext = buildTaskRefinementPrompt(
+        objective,
+        parsed,
+        finalAssessment,
+        observations,
+      );
+    }
+
+    const normalizedEdits = parsed.edits
+      .map((edit) =>
+        normalizeEditPath(edit, vscode.workspace.workspaceFolders ?? []),
+      )
+      .filter((edit): edit is ProposedEdit => edit !== null);
+
+    if (normalizedEdits.length > 0) {
+      this.emitProgress(
+        "Preparing edits",
+        `${normalizedEdits.length} file change(s)`,
+        "✏️",
+      );
+    }
+
+    const proposal =
+      normalizedEdits.length > 0
+        ? await this.editManager.setPendingProposal(objective, normalizedEdits)
+        : null;
+
+    let autoApplied = false;
+    if (proposal && this.shouldAutoApplyProposal(normalizedEdits)) {
+      this.emitProgress("Auto-applying edits", "Safe workspace edits", "✅");
+      await this.applyPendingEdits(true);
+      autoApplied = true;
+    }
+
+    if (
+      this.currentConfig.autoRunVerification &&
+      (normalizedEdits.length > 0 ||
+        /\b(fix|bug|error|test|build|compile|lint|diagnos|fail)\b/i.test(
+          objective,
+        )) &&
+      !requestedVerification
+    ) {
+      const verificationObservations = await this.runVerificationWorkflow(
+        objective,
+        signal,
+      );
+      if (verificationObservations.length > 0) {
+        toolTrace.push(...verificationObservations);
+      }
+    }
+
+    return {
+      plan: {
+        ...plan,
+        todos: parsed.todos.length > 0 ? parsed.todos : plan.todos,
+      },
+      responseText: parsed.response || "Task completed.",
+      todos: parsed.todos.length > 0 ? parsed.todos : plan.todos,
+      proposal: autoApplied ? null : proposal,
+      autoApplied,
+      toolTrace,
+      qualityScore: finalAssessment?.score,
+      qualityTarget: finalAssessment?.target,
+      meetsQualityTarget: finalAssessment?.meetsTarget,
+    };
+  }
+
+  private async executeTaskToolCalls(
+    toolCalls: TaskToolCall[],
+    objective: string,
+    signal?: AbortSignal,
+  ): Promise<TaskToolObservation[]> {
+    const observations: TaskToolObservation[] = [];
+    const workspaceRoot = this.workspaceRoot?.fsPath ?? null;
+
+    const checkAborted = () => {
+      if (signal?.aborted) {
+        throw new Error("__TASK_CANCELLED__");
+      }
+    };
+
+    for (const call of toolCalls.slice(0, 5)) {
+      checkAborted();
+
+      try {
+        if (call.tool === "workspace_scan") {
+          const inventory = await this.buildWorkspaceInventory(250);
+          observations.push({
+            tool: call.tool,
+            ok: true,
+            summary: `Found ${inventory.totalFiles} file(s) in the workspace.`,
+            detail: inventory.listedFiles.slice(0, 20).join("\n"),
+          });
+          continue;
+        }
+
+        if (call.tool === "read_files") {
+          const requestedPaths = this.extractStringList(
+            call.args.paths,
+            call.args.files,
+            call.args.filePaths,
+            call.args.path,
+          );
+          const resolvedPaths = requestedPaths
+            .map((item) => this.resolveWorkspacePath(item))
+            .filter((item): item is string => Boolean(item));
+          const snippets = await this.scanner.readContextSnippets(
+            resolvedPaths.slice(0, 8),
+            2400,
+          );
+          observations.push({
+            tool: call.tool,
+            ok: snippets.length > 0,
+            summary:
+              snippets.length > 0
+                ? `Read ${snippets.length} file(s).`
+                : "No readable files were returned.",
+            detail: snippets
+              .map(
+                (snippet) =>
+                  `File: ${this.normalizeDisplayPath(snippet.path)}\n${snippet.content}`,
+              )
+              .join("\n\n")
+              .slice(0, 5000),
+          });
+          continue;
+        }
+
+        if (call.tool === "run_terminal") {
+          const command = this.firstString(call.args.command, call.args.cmd);
+          if (!command) {
+            observations.push({
+              tool: call.tool,
+              ok: false,
+              summary: "No terminal command was provided.",
+            });
+            continue;
+          }
+
+          if (
+            !isSafeTerminalCommand(command) &&
+            !this.currentConfig.allowTerminalExecution
+          ) {
+            observations.push({
+              tool: call.tool,
+              ok: false,
+              summary: "Terminal execution is disabled for unsafe commands.",
+              detail: command,
+            });
+            continue;
+          }
+
+          this.emitProgress("Terminal", command, "🖥️");
+          const result = await this.executeTerminalCommand(command, {
+            cwd: workspaceRoot ?? undefined,
+            timeoutMs: 120_000,
+            purpose: "tool",
+          });
+          observations.push({
+            tool: call.tool,
+            ok: result !== null && result.exitCode === 0,
+            summary: result
+              ? `Exit ${result.exitCode ?? "unknown"} in ${result.durationMs}ms.`
+              : "Terminal command was blocked.",
+            detail: result ? result.output.slice(0, 5000) : command,
+          });
+          continue;
+        }
+
+        if (call.tool === "run_verification") {
+          const verificationObservations = await this.runVerificationWorkflow(
+            objective,
+            signal,
+            call.args,
+          );
+          observations.push(...verificationObservations);
+          continue;
+        }
+
+        if (call.tool === "web_search") {
+          const query = this.firstString(call.args.query) ?? objective;
+          const result = await this.researchWeb(query);
+          observations.push({
+            tool: call.tool,
+            ok: true,
+            summary: `Web search returned ${result.results.length} result(s).`,
+            detail: this.webSearch.formatResult(result).slice(0, 5000),
+          });
+          continue;
+        }
+
+        if (call.tool === "git_diff") {
+          const filePath = this.firstString(call.args.filePath, call.args.path);
+          if (filePath) {
+            const diff = await this.gitService.getFileDiff(
+              this.resolveWorkspacePath(filePath) ?? filePath,
+            );
+            observations.push({
+              tool: call.tool,
+              ok: diff !== null,
+              summary: diff
+                ? `Loaded diff for ${this.normalizeDisplayPath(diff.path)}.`
+                : "No diff available.",
+              detail: diff?.diff.slice(0, 5000),
+            });
+            continue;
+          }
+
+          const diffSummary = await this.gitService.getDiffSummary();
+          observations.push({
+            tool: call.tool,
+            ok: diffSummary.isGitRepo,
+            summary: diffSummary.summary,
+            detail: JSON.stringify(diffSummary, null, 2).slice(0, 5000),
+          });
+          continue;
+        }
+
+        if (call.tool === "mcp_status") {
+          const summary = await this.mcpSummary();
+          observations.push({
+            tool: call.tool,
+            ok: true,
+            summary: "Loaded MCP connection summary.",
+            detail: summary.slice(0, 5000),
+          });
+          continue;
+        }
+
+        if (call.tool === "diagnostics") {
+          const diagnostics = this.verifier.runDiagnostics();
+          observations.push({
+            tool: call.tool,
+            ok: !diagnostics.hasErrors,
+            summary: diagnostics.summary,
+            detail: JSON.stringify(diagnostics, null, 2),
+          });
+        }
+      } catch (error) {
+        observations.push({
+          tool: call.tool,
+          ok: false,
+          summary: `Tool execution failed: ${stringifyError(error)}`,
+          detail: call.reason,
+        });
+      }
+    }
+
+    return observations;
+  }
+
+  private async runVerificationWorkflow(
+    objective: string,
+    signal?: AbortSignal,
+    args?: Record<string, unknown>,
+  ): Promise<TaskToolObservation[]> {
+    const observations: TaskToolObservation[] = [];
+    const commands = await this.collectVerificationCommands(objective, args);
+    if (commands.length === 0) {
+      observations.push({
+        tool: "run_verification",
+        ok: false,
+        summary: "No safe verification command could be inferred.",
+      });
+      return observations;
+    }
+
+    const checkAborted = () => {
+      if (signal?.aborted) {
+        throw new Error("__TASK_CANCELLED__");
+      }
+    };
+
+    for (const command of commands.slice(0, 3)) {
+      checkAborted();
+      this.emitProgress("Verification", command, "🧪");
+      const result = await this.executeTerminalCommand(command, {
+        cwd: this.workspaceRoot?.fsPath,
+        timeoutMs: 120_000,
+        purpose: "verification",
+      });
+
+      if (!result) {
+        observations.push({
+          tool: "run_verification",
+          ok: false,
+          summary: `Blocked verification command: ${command}`,
+        });
+        continue;
+      }
+
+      observations.push({
+        tool: "run_verification",
+        ok: result.exitCode === 0,
+        summary: `${command} exited with ${result.exitCode ?? "unknown"}.`,
+        detail: result.output.slice(0, 5000),
+      });
+    }
+
+    return observations;
+  }
+
+  private async collectVerificationCommands(
+    objective: string,
+    args?: Record<string, unknown>,
+  ): Promise<string[]> {
+    const explicit = this.extractStringList(
+      args?.commands,
+      args?.command,
+      args?.scripts,
+    ).filter((command) => isSafeTerminalCommand(command));
+    if (explicit.length > 0) {
+      return explicit;
+    }
+
+    const packageJsonPath = this.workspaceRoot
+      ? path.join(this.workspaceRoot.fsPath, "package.json")
+      : null;
+    const scripts = packageJsonPath
+      ? await this.readPackageScripts(packageJsonPath)
+      : null;
+
+    const candidateScripts = [
+      "test",
+      "lint",
+      "typecheck",
+      "build",
+      "compile",
+    ].filter((name) => Boolean(scripts?.[name]));
+
+    if (candidateScripts.length > 0) {
+      return candidateScripts.map((script) => {
+        const manager = this.detectPackageManager();
+        if (manager === "pnpm") {
+          return `pnpm run ${script}`;
+        }
+        if (manager === "yarn") {
+          return `yarn run ${script}`;
+        }
+        return `npm run ${script}`;
+      });
+    }
+
+    const lowered = objective.toLowerCase();
+    if (
+      /\b(test|bug|fix|error|fail|diagnos|compile|build|lint)\b/.test(lowered)
+    ) {
+      const manager = this.detectPackageManager();
+      if (manager === "pnpm") {
+        return ["pnpm test", "pnpm run build"];
+      }
+      if (manager === "yarn") {
+        return ["yarn test", "yarn build"];
+      }
+      return ["npm test", "npm run build"];
+    }
+
+    return [];
+  }
+
+  private shouldAutoApplyProposal(edits: ProposedEdit[]): boolean {
+    if (this.permissionPolicy.getMode() === "strict") {
+      return false;
+    }
+
+    if (this.permissionPolicy.getMode() === "full") {
+      return true;
+    }
+
+    if (this.currentConfig.conversationMode !== "agent") {
+      return false;
+    }
+
+    return (
+      edits.length > 0 &&
+      edits.every((edit) => (edit.operation ?? "write") === "write")
+    );
+  }
+
+  private async readPackageScripts(
+    packageJsonPath: string,
+  ): Promise<Record<string, string> | null> {
+    try {
+      const bytes = await vscode.workspace.fs.readFile(
+        vscode.Uri.file(packageJsonPath),
+      );
+      const parsed = JSON.parse(Buffer.from(bytes).toString("utf8")) as {
+        scripts?: Record<string, unknown>;
+      };
+
+      if (!parsed.scripts || typeof parsed.scripts !== "object") {
+        return null;
+      }
+
+      return Object.fromEntries(
+        Object.entries(parsed.scripts).flatMap(([name, value]) =>
+          typeof value === "string" ? [[name, value]] : [],
+        ),
+      );
+    } catch {
+      return null;
+    }
+  }
+
+  private detectPackageManager(): "npm" | "pnpm" | "yarn" {
+    if (!this.workspaceRoot) {
+      return "npm";
+    }
+
+    const fsPath = this.workspaceRoot.fsPath;
+    const hasPnpm = existsSync(path.join(fsPath, "pnpm-lock.yaml"));
+    if (hasPnpm) {
+      return "pnpm";
+    }
+
+    const hasYarn = existsSync(path.join(fsPath, "yarn.lock"));
+    if (hasYarn) {
+      return "yarn";
+    }
+
+    return "npm";
+  }
+
+  private resolveWorkspacePath(value: string): string | null {
+    if (!value.trim()) {
+      return null;
+    }
+
+    if (path.isAbsolute(value)) {
+      return value;
+    }
+
+    if (!this.workspaceRoot) {
+      return null;
+    }
+
+    return path.join(this.workspaceRoot.fsPath, value);
+  }
+
+  private extractStringList(...values: unknown[]): string[] {
+    const output: string[] = [];
+    for (const value of values) {
+      if (typeof value === "string") {
+        const trimmed = value.trim();
+        if (trimmed) {
+          output.push(trimmed);
+        }
+        continue;
+      }
+
+      if (Array.isArray(value)) {
+        for (const item of value) {
+          if (typeof item === "string" && item.trim()) {
+            output.push(item.trim());
+          }
+        }
+      }
+    }
+
+    return output;
+  }
+
+  private firstString(...values: unknown[]): string | undefined {
+    for (const value of values) {
+      if (typeof value === "string" && value.trim()) {
+        return value.trim();
+      }
+    }
+
+    return undefined;
+  }
+
+  private isLikelyEditTaskObjective(objective: string): boolean {
+    return /\b(fix|bug|error|crash|test|build|compile|lint|diagnos|fail|refactor|implement|add|update|remove|delete|write|create|edit)\b/i.test(
+      objective,
+    );
+  }
+
   private getWebSearchResultLimit(): number {
     const configured = Number(
       vscode.workspace
@@ -2127,62 +2734,6 @@ export class AgentRuntime {
     return Number.isFinite(configured)
       ? Math.max(1, Math.min(10, configured))
       : 5;
-  }
-}
-
-function parseTaskResponse(raw: string): {
-  response: string;
-  edits: ProposedEdit[];
-} {
-  try {
-    const parsed = JSON.parse(raw) as {
-      response?: unknown;
-      edits?: Array<{
-        operation?: unknown;
-        filePath?: unknown;
-        targetPath?: unknown;
-        content?: unknown;
-        reason?: unknown;
-      }>;
-    };
-
-    const response =
-      typeof parsed.response === "string" ? parsed.response : "Task completed.";
-    const edits: ProposedEdit[] = [];
-    for (const edit of parsed.edits ?? []) {
-      if (typeof edit.filePath !== "string") {
-        continue;
-      }
-
-      const operation =
-        edit.operation === "delete" || edit.operation === "move"
-          ? edit.operation
-          : "write";
-
-      if (operation === "write" && typeof edit.content !== "string") {
-        continue;
-      }
-
-      if (operation === "move" && typeof edit.targetPath !== "string") {
-        continue;
-      }
-
-      edits.push({
-        operation,
-        filePath: edit.filePath,
-        targetPath:
-          typeof edit.targetPath === "string" ? edit.targetPath : undefined,
-        content: typeof edit.content === "string" ? edit.content : undefined,
-        reason: typeof edit.reason === "string" ? edit.reason : undefined,
-      });
-    }
-
-    return { response, edits };
-  } catch {
-    return {
-      response: raw,
-      edits: [],
-    };
   }
 }
 

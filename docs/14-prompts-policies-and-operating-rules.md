@@ -8,7 +8,9 @@ Version them, test them, and keep them modular.
 ## Prompt stack
 
 ### System policy prompt
+
 Defines hard rules:
+
 - safe tool usage
 - allowed scope
 - honesty about uncertainty
@@ -16,25 +18,31 @@ Defines hard rules:
 - no hidden edits
 
 ### Runtime behavior prompt
+
 Defines style of operation:
+
 - plan before large edits
 - cite file evidence
 - prefer minimal diffs
 - verify after changes
 
 ### Workspace convention prompt
+
 Defines repo-specific norms:
+
 - frameworks
 - style rules
 - test commands
 - architecture notes
 
 ### Task prompt
+
 Contains current user request, scope, constraints, selected context, and expected schema.
 
 ## Planner prompt requirements
 
 The planner must:
+
 - define assumptions
 - identify likely files
 - propose verification
@@ -44,6 +52,7 @@ The planner must:
 ## Editor prompt requirements
 
 The editor must:
+
 - preserve surrounding code style
 - edit smallest correct scope
 - avoid inventing APIs
@@ -53,15 +62,28 @@ The editor must:
 ## Tool-use prompt requirements
 
 The tool-use policy must instruct the model to:
+
 - read before write
 - re-read before applying if content may be stale
 - use diagnostics before guessing
 - use search before broad rewrite
 - stop if tool output contradicts assumption
 
+## Agent loop requirements
+
+The autonomous agent loop must:
+
+- create a short todo list before editing
+- prefer tool calls over guessing when more evidence is needed
+- report which tools were used and what they returned
+- run safe terminal verification for fixes, tests, and build checks
+- auto-apply only clearly safe workspace edits
+- keep destructive or ambiguous operations behind explicit approval
+
 ## Verification prompt requirements
 
 The verification model or step must:
+
 - inspect command output
 - distinguish passed, failed, flaky, not-run
 - identify next likely fix when failed
@@ -70,12 +92,14 @@ The verification model or step must:
 ## Memory extraction prompt
 
 Extract only:
+
 - durable preferences
 - durable repo facts
 - reusable lessons
 - useful follow-up items
 
 Reject:
+
 - transient details
 - sensitive secrets
 - low-confidence assumptions
@@ -83,6 +107,7 @@ Reject:
 ## Prompt versioning
 
 Store:
+
 - prompt id
 - semantic version
 - last updated

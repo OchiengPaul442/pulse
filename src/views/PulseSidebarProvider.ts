@@ -172,14 +172,30 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
           ) {
             try {
               const result = await this.runtime.runTask(message.payload);
+              const taskText = [
+                result.responseText,
+                result.todos.length > 0
+                  ? `\n\n## TODOs\n${result.todos.map((todo) => `- [${todo.status}] ${todo.title}${todo.detail ? ` — ${todo.detail}` : ""}`).join("\n")}`
+                  : "",
+                result.toolSummary
+                  ? `\n\n## Tools Used\n${result.toolSummary}`
+                  : "",
+                typeof result.qualityScore === "number"
+                  ? `\n\n## Quality\nScore: ${result.qualityScore.toFixed(2)} / ${(result.qualityTarget ?? 0.9).toFixed(2)}\nTarget met: ${result.meetsQualityTarget ? "yes" : "no"}`
+                  : "",
+              ]
+                .filter((value) => value.length > 0)
+                .join("");
               await webviewView.webview.postMessage({
                 type: "taskResult",
                 payload: {
-                  responseText: result.responseText,
+                  responseText: taskText,
                   sessionId: result.sessionId,
                   proposedEdits: result.proposal?.edits.length ?? 0,
                   cancelled: result.responseText === "Task cancelled.",
                   autoApplied: result.autoApplied === true,
+                  todos: result.todos,
+                  toolSummary: result.toolSummary,
                 },
               });
             } catch (err) {

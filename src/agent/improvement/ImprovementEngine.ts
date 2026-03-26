@@ -9,6 +9,8 @@
  */
 import * as vscode from "vscode";
 
+export const TARGET_AGENT_QUALITY_SCORE = 0.9;
+
 export interface TaskOutcome {
   id: string;
   timestamp: string;
@@ -76,6 +78,9 @@ export interface ImprovementStats {
   tasksByMode: Record<string, number>;
   activeStrategies: number;
   averageQuality: number;
+  performanceScore: number;
+  targetScore: number;
+  meetsTarget: boolean;
   improvementTrend: "improving" | "stable" | "declining";
 }
 
@@ -320,6 +325,9 @@ export class ImprovementEngine {
         tasksByMode: {},
         activeStrategies: 0,
         averageQuality: 0,
+        performanceScore: 0,
+        targetScore: TARGET_AGENT_QUALITY_SCORE,
+        meetsTarget: false,
         improvementTrend: "stable",
       };
     }
@@ -373,6 +381,8 @@ export class ImprovementEngine {
     }
 
     const activeStrategies = state.strategies.filter((s) => s.enabled).length;
+    const performanceScore =
+      Math.round((successes / total) * 60 + avgQuality * 40) / 100;
 
     return {
       totalTasks: total,
@@ -386,6 +396,9 @@ export class ImprovementEngine {
       tasksByMode,
       activeStrategies,
       averageQuality: Math.round(avgQuality * 100) / 100,
+      performanceScore,
+      targetScore: TARGET_AGENT_QUALITY_SCORE,
+      meetsTarget: performanceScore >= TARGET_AGENT_QUALITY_SCORE,
       improvementTrend: trend,
     };
   }

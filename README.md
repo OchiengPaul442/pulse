@@ -22,6 +22,8 @@ Pulse is a VS Code extension that gives you a personal AI coding assistant that 
 | **Session memory**         | Conversations are persisted and resumable across VS Code sessions          |
 | **Episodic learning**      | Builds a rolling memory of past tasks to improve future responses          |
 | **Approval modes**         | Strict (always confirm), Balanced, or Fast (auto-apply)                    |
+| - **Todo checklists**      | Tasks generate an actionable checklist before changes are applied          |
+| - **Tool traces**          | Task runs show workspace scans, terminal checks, and verification output   |
 | **Safe reverts**           | Every applied edit creates a snapshot — one click to undo                  |
 | **MCP support**            | Visibility into configured MCP servers and direct setup entry points       |
 | **Skills registry**        | Built-in skill manifests with objective-based skill routing                |

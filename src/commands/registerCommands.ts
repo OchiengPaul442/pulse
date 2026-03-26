@@ -111,10 +111,21 @@ async function startNewTask(runtime: AgentRuntime): Promise<void> {
   const proposalSummary = result.proposal
     ? `\n\n## Pending Edits\n\n${result.proposal.edits.map((e) => `- [${e.operation ?? "write"}] ${e.filePath}${e.targetPath ? ` -> ${e.targetPath}` : ""}`).join("\n")}`
     : "\n\nNo pending edits were proposed.";
+  const todoSummary =
+    result.todos.length > 0
+      ? `\n\n## TODOs\n\n${result.todos.map((todo) => `- [${todo.status}] ${todo.title}${todo.detail ? ` — ${todo.detail}` : ""}`).join("\n")}`
+      : "\n\nNo todos were generated.";
+  const toolSummary = result.toolSummary
+    ? `\n\n## Tools Used\n\n${result.toolSummary}`
+    : "";
+  const qualitySummary =
+    typeof result.qualityScore === "number"
+      ? `\n\n## Quality\n\nScore: ${result.qualityScore.toFixed(2)} / ${(result.qualityTarget ?? 0.9).toFixed(2)}\nTarget met: ${result.meetsQualityTarget ? "yes" : "no"}`
+      : "";
 
   const doc = await vscode.workspace.openTextDocument({
     language: "markdown",
-    content: `# Pulse Task Result\n\nSession: ${result.sessionId}\n\n## Objective\n\n${result.objective}\n\n## Plan\n\n\`\`\`json\n${JSON.stringify(result.plan, null, 2)}\n\`\`\`\n\n## Response\n\n${result.responseText}${proposalSummary}`,
+    content: `# Pulse Task Result\n\nSession: ${result.sessionId}\n\n## Objective\n\n${result.objective}\n\n## Plan\n\n\`\`\`json\n${JSON.stringify(result.plan, null, 2)}\n\`\`\`\n\n## Response\n\n${result.responseText}${todoSummary}${proposalSummary}${toolSummary}${qualitySummary}`,
   });
 
   await vscode.window.showTextDocument(doc, { preview: false });
@@ -139,9 +150,20 @@ async function startNewTaskWithObjective(
   objective: string,
 ): Promise<void> {
   const result = await runtime.runTask(objective);
+  const todoSummary =
+    result.todos.length > 0
+      ? `\n\n## TODOs\n\n${result.todos.map((todo) => `- [${todo.status}] ${todo.title}${todo.detail ? ` — ${todo.detail}` : ""}`).join("\n")}`
+      : "";
+  const toolSummary = result.toolSummary
+    ? `\n\n## Tools Used\n\n${result.toolSummary}`
+    : "";
+  const qualitySummary =
+    typeof result.qualityScore === "number"
+      ? `\n\n## Quality\n\nScore: ${result.qualityScore.toFixed(2)} / ${(result.qualityTarget ?? 0.9).toFixed(2)}\nTarget met: ${result.meetsQualityTarget ? "yes" : "no"}`
+      : "";
   const doc = await vscode.workspace.openTextDocument({
     language: "markdown",
-    content: `# Pulse Task Result\n\nSession: ${result.sessionId}\n\n## Objective\n\n${result.objective}\n\n## Response\n\n${result.responseText}`,
+    content: `# Pulse Task Result\n\nSession: ${result.sessionId}\n\n## Objective\n\n${result.objective}\n\n## Response\n\n${result.responseText}${todoSummary}${toolSummary}${qualitySummary}`,
   });
   await vscode.window.showTextDocument(doc, { preview: false });
 }
