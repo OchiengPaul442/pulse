@@ -84,6 +84,7 @@ export interface RuntimeSummary {
   modelCount: number;
   activeSessionId: string | null;
   hasPendingEdits: boolean;
+  pendingEditCount: number;
   tokenBudget: number;
   tokensConsumed: number;
   tokenUsagePercent: number;
@@ -214,6 +215,47 @@ export class AgentRuntime {
 
   private emitProgress(step: string, detail?: string, icon = "⚡"): void {
     this.progressCallback?.({ icon, step, detail });
+  }
+
+  private emitFilePatch(filename: string, lineCount: number): void {
+    this.progressCallback?.({
+      icon: "✏️",
+      step: "Generating patch",
+      detail: filename,
+      kind: "file_patch",
+      file: filename,
+      lineCount,
+    });
+  }
+
+  private emitFilePatched(filename: string, linesAdded: number): void {
+    this.progressCallback?.({
+      icon: "✅",
+      step: "Edited",
+      detail: filename,
+      kind: "file_patched",
+      file: filename,
+      linesAdded,
+      linesRemoved: 0,
+    });
+  }
+
+  private emitTerminalRun(command: string): void {
+    this.progressCallback?.({
+      icon: "🖥️",
+      step: "Terminal",
+      detail: command,
+      kind: "terminal",
+    });
+  }
+
+  private emitReasoningChunk(chunk: string): void {
+    this.progressCallback?.({
+      icon: "✨",
+      step: "Reasoning",
+      detail: chunk.slice(0, 240),
+      kind: "reasoning",
+    });
   }
 
   private emitTokenUpdate(): void {
@@ -728,7 +770,7 @@ export class AgentRuntime {
         model,
         signal,
         onChunk: (chunk) => {
-          this.emitProgress("Streaming", chunk.slice(0, 120), "✨");
+          this.emitReasoningChunk(chunk);
         },
         messages: [
           {
@@ -865,7 +907,7 @@ export class AgentRuntime {
         model,
         signal,
         onChunk: (chunk) => {
-          this.emitProgress("Streaming", chunk.slice(0, 120), "✨");
+          this.emitReasoningChunk(chunk);
         },
         messages: [
           {
@@ -1142,9 +1184,12 @@ export class AgentRuntime {
       description: `Run terminal command: ${command}`,
     });
     const safeCommand = isSafeTerminalCommand(command);
+    // Safe commands always run in non-strict mode.
+    // Unsafe commands require allowTerminalExecution or autoRunVerification.
+    const mode = this.permissionPolicy.getMode();
     const canAutoRunSafeCommand =
-      safeCommand &&
-      (this.permissionPolicy.getMode() === "full" ||
+      mode !== "strict" &&
+      (safeCommand ||
         (options?.purpose === "verification" &&
           this.currentConfig.autoRunVerification) ||
         (options?.purpose === "tool" &&
@@ -1495,6 +1540,7 @@ export class AgentRuntime {
       modelCount: this.availableModels.length,
       activeSessionId: active?.id ?? null,
       hasPendingEdits: pending !== null,
+      pendingEditCount: pending?.edits.length ?? 0,
       tokenBudget,
       tokensConsumed: this.tokensConsumed,
       tokenUsagePercent,
@@ -1939,13 +1985,62 @@ export class AgentRuntime {
     return this.normalizeDisplayPath(planPath.fsPath);
   }
 
-  private shouldAllowEdits(_objective: string): boolean {
-    // In agent mode, always allow edits. The permission policy controls
-    // whether the user must approve before applying — not whether the
-    // agent may *propose* them. This matches GitHub Copilot's behaviour
-    // where agent mode always generates edits when appropriate and the
-    // permission level gates the apply step.
+  private shouldAllowEdits(objective: string): boolean {
+    // Simple greetings, small talk, and conversational messages don't need
+    // the full agent workflow — route them to the lighter conversation path.
+    if (this.isSimpleConversational(objective)) {
+      return false;
+    }
+    // Otherwise, always allow edits in agent mode. The permission policy
+    // controls whether the user must approve before applying.
     return true;
+  }
+
+  private isSimpleConversational(objective: string): boolean {
+    const trimmed = objective.trim();
+    // Very short messages (< 12 chars) that don't contain code-like signals
+    if (trimmed.length < 12 && !/[{}<>/\\=]/.test(trimmed)) {
+      return true;
+    }
+    const lower = trimmed
+      .toLowerCase()
+      .replace(/[!?.]+$/, "")
+      .trim();
+    const greetings = [
+      "hello",
+      "hi",
+      "hey",
+      "yo",
+      "sup",
+      "howdy",
+      "greetings",
+      "good morning",
+      "good afternoon",
+      "good evening",
+      "good night",
+      "thanks",
+      "thank you",
+      "ty",
+      "thx",
+      "bye",
+      "goodbye",
+      "see you",
+      "later",
+      "ok",
+      "okay",
+      "sure",
+      "yes",
+      "no",
+      "yep",
+      "nope",
+      "got it",
+      "what can you do",
+      "who are you",
+      "what are you",
+      "help",
+      "help me",
+    ];
+    return greetings.includes(lower);
   }
 
   private async collectWebResearch(
@@ -2165,6 +2260,7 @@ export class AgentRuntime {
         "## Operating rules",
         "- Always create a short todo list before making changes.",
         "- Keep TODOs to 3-5 short, imperative lines.",
+        "- CRITICAL: When the user asks you to run, execute, or create something with a command, call run_terminal IMMEDIATELY with that exact command. Never write a numbered list of instructions when you can use a tool to do the work.",
         "- Use tools only when you are at least 0.90 confident they will improve accuracy.",
         "- Read the workspace context carefully before editing or running commands.",
         "- Use tool calls when you need more evidence. Do not guess if a tool can answer the question.",
@@ -2177,14 +2273,15 @@ export class AgentRuntime {
         `- Aim for a quality score of at least ${TARGET_TASK_QUALITY_SCORE.toFixed(2)} before finalizing.`,
         "",
         "## Response format",
-        "Return strict JSON with these fields:",
-        '{"response":"...","todos":[{"id":"todo_1","title":"...","status":"pending","detail":"..."}],"shortcuts":["read","scan","verify"],"toolCalls":[{"tool":"workspace_scan|read_files|run_terminal|run_verification|web_search|git_diff|mcp_status|diagnostics","args":{},"reason":"..."}],"edits":[...]}',
+        "Return strict JSON with these fields. Use ONE tool per toolCall entry — never join tool names with |.",
+        '{"response":"Brief summary of what was done","todos":[{"id":"todo_1","title":"Run scaffold command","status":"pending","detail":"Use run_terminal to execute pnpm create next-app"}],"shortcuts":["read","scan","verify"],"toolCalls":[{"tool":"run_terminal","args":{"command":"pnpm test"},"reason":"Verify current state before making changes"}],"edits":[]}',
+        "Each toolCall must have a single tool name from: workspace_scan, read_files, run_terminal, run_verification, web_search, git_diff, mcp_status, diagnostics.",
         "",
         "## Tool guidance",
         "- workspace_scan: inspect the workspace when you need more file-level context.",
         "- read_files: request specific file paths you want summarized or inspected.",
-        "- run_terminal: use only for safe, non-destructive commands when command execution is enabled.",
-        "- run_verification: use for tests, lint, build, and diagnostics.",
+        "- run_terminal: execute terminal commands directly. Use this when the user asks to run, execute, build, create, or scaffold anything.",
+        "- run_verification: use for tests, lint, build, and diagnostics after edits.",
         "- web_search: use when the answer depends on current external docs or releases.",
         "- git_diff: inspect the repository changes or file diffs.",
         "- mcp_status: inspect MCP connectivity and configuration health.",
@@ -2233,12 +2330,22 @@ export class AgentRuntime {
     for (let iteration = 0; iteration < 3; iteration += 1) {
       this.emitProgress("Generating response", editorModel, "✨");
       checkAborted();
+      let agentChunkCount = 0;
       const response = await this.provider.chat({
         model: editorModel,
         format: "json",
         signal,
-        onChunk: (chunk) => {
-          this.emitProgress("Streaming", chunk.slice(0, 120), "✨");
+        onChunk: () => {
+          // Agent mode streams JSON — individual fragments are not useful as
+          // reasoning text. Emit a generic progress update periodically.
+          agentChunkCount++;
+          if (agentChunkCount % 20 === 1) {
+            this.emitProgress(
+              "Generating response",
+              `${agentChunkCount} tokens`,
+              "✨",
+            );
+          }
         },
         messages: [
           {
@@ -2313,17 +2420,25 @@ export class AgentRuntime {
       .filter((edit): edit is ProposedEdit => edit !== null);
 
     if (normalizedEdits.length > 0) {
-      this.emitProgress(
-        "Preparing edits",
-        `${normalizedEdits.length} file change(s)`,
-        "✏️",
-      );
+      for (const edit of normalizedEdits) {
+        const basename = path.basename(edit.filePath);
+        const lineCount = (edit.content ?? "").split("\n").length;
+        this.emitFilePatch(basename, lineCount);
+      }
     }
 
     const proposal =
       normalizedEdits.length > 0
         ? await this.editManager.setPendingProposal(objective, normalizedEdits)
         : null;
+
+    if (proposal) {
+      for (const edit of normalizedEdits) {
+        const basename = path.basename(edit.filePath);
+        const linesAdded = (edit.content ?? "").split("\n").length;
+        this.emitFilePatched(basename, linesAdded);
+      }
+    }
 
     let autoApplied = false;
     if (proposal && this.shouldAutoApplyProposal(normalizedEdits)) {
@@ -2482,7 +2597,7 @@ export class AgentRuntime {
         ];
       }
 
-      this.emitProgress("Terminal", command, "🖥️");
+      this.emitTerminalRun(command);
       const result = await this.executeTerminalCommand(command, {
         cwd: workspaceRoot ?? undefined,
         timeoutMs: 120_000,

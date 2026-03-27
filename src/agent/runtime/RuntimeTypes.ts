@@ -22,6 +22,22 @@ export interface AgentProgressStep {
   icon: string;
   step: string;
   detail?: string;
+  /** Distinguishes how the UI renders this step */
+  kind?:
+    | "step"
+    | "reasoning"
+    | "file_patch"
+    | "file_patched"
+    | "terminal"
+    | "tool";
+  /** For file_patch / file_patched: the file's basename */
+  file?: string;
+  /** For file_patch: total line count of new content */
+  lineCount?: number;
+  /** For file_patched: lines added (new content line count) */
+  linesAdded?: number;
+  /** For file_patched: lines removed (0 when not computed) */
+  linesRemoved?: number;
 }
 
 /** Lightweight token-usage snapshot pushed to the webview in real time. */

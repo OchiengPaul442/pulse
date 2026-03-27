@@ -6,10 +6,6 @@ import type { AgentRuntime } from "../agent/runtime/AgentRuntime";
 import type { RuntimeSummary } from "../agent/runtime/AgentRuntime";
 import type { AgentPersona } from "../config/AgentConfig";
 import type { Logger } from "../platform/vscode/Logger";
-import {
-  formatCompactTodos,
-  formatShortcutHints,
-} from "../agent/runtime/TaskProtocols";
 
 export class PulseSidebarProvider implements vscode.WebviewViewProvider {
   public static readonly viewType = "pulse.sidebar";
@@ -218,23 +214,10 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
 
             try {
               const result = await this.runtime.runTask(request);
-              const taskText = [
-                result.responseText,
-                formatCompactTodos(result.todos)
-                  ? `\n\n${formatCompactTodos(result.todos)}`
-                  : "",
-                formatShortcutHints(result.shortcuts ?? [])
-                  ? `\n\n${formatShortcutHints(result.shortcuts ?? [])}`
-                  : "",
-                result.toolSummary
-                  ? `\n\n## Tools Used\n${result.toolSummary}`
-                  : "",
-                typeof result.qualityScore === "number"
-                  ? `\n\n## Quality\nScore: ${result.qualityScore.toFixed(2)} / ${(result.qualityTarget ?? 0.9).toFixed(2)}\nTarget met: ${result.meetsQualityTarget ? "yes" : "no"}`
-                  : "",
-              ]
-                .filter((value) => value.length > 0)
-                .join("");
+              // Only show the actual response text in the chat bubble.
+              // TODOs, tool summaries, quality scores are tracked in the
+              // thinking panel — don't dump them into the message.
+              const taskText = result.responseText;
               await webviewView.webview.postMessage({
                 type: "taskResult",
                 payload: {
@@ -861,16 +844,14 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
     .msg-footer { display: flex; align-items: center; justify-content: space-between; gap: 4px; margin-top: 2px; padding: 0 2px; }
     .msg.user .msg-footer { justify-content: flex-end; }
     .msg-time { font-size: 10px; color: var(--fg2); }
-    .copy-btn { border: none; background: transparent; color: var(--fg2); cursor: pointer; font-size: 11px; opacity: .75; transition: opacity var(--spd), color var(--spd), background var(--spd); padding: 1px 4px; border-radius: 4px; }
-    .copy-btn:hover { opacity: 1 !important; background: rgba(128,128,128,.12); }
-    .retry-btn { border: none; background: transparent; color: var(--fg2); cursor: pointer; font-size: 12px; opacity: .8; transition: opacity var(--spd), color var(--spd), background var(--spd); padding: 1px 4px; border-radius: 4px; }
-    .retry-btn:hover { opacity: 1 !important; color: var(--accent); background: rgba(128,128,128,.12); }
-    .edit-btn { font-size: 11px; }
+    .copy-btn, .retry-btn, .edit-btn { border: none; background: transparent; color: var(--fg2); cursor: pointer; opacity: .6; transition: opacity var(--spd), color var(--spd), background var(--spd); padding: 3px; border-radius: 4px; display: flex; align-items: center; justify-content: center; width: 22px; height: 22px; line-height: 1; flex-shrink: 0; }
+    .copy-btn:hover, .retry-btn:hover { opacity: 1 !important; background: rgba(128,128,128,.12); }
+    .retry-btn:hover { color: var(--accent); }
 
-    /* ── Thinking panel (dynamic single-thought, ChatGPT-style) ─── */
+    /* ── Thinking panel (GitHub Copilot-style step list) ─── */
     .thinking-panel { align-self: flex-start; width: 100%; overflow: hidden; font-size: 12px; }
     .thinking-panel.hidden { display: none; }
-    .thinking-header { display: flex; align-items: center; gap: 6px; padding: 6px 2px; }
+    .thinking-header { display: flex; align-items: center; gap: 6px; padding: 6px 2px; cursor: default; }
     .thinking-shimmer { display: block; width: 42px; height: 8px; flex-shrink: 0; border-radius: 999px; background: linear-gradient(90deg, rgba(37,99,235,0.12) 0%, rgba(37,99,235,0.66) 50%, rgba(37,99,235,0.12) 100%); background-size: 200% 100%; animation: shimmer 1.2s linear infinite; }
     .thinking-panel.done .thinking-shimmer { display: none; }
     .thinking-done-icon { flex-shrink: 0; font-size: 11px; font-weight: 700; color: var(--green); display: none; }
@@ -879,10 +860,56 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
     #thinkingTitle { flex: 1; font-size: 11px; font-weight: 600; color: var(--fg2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     .thinking-panel:not(.done) #thinkingTitle { color: var(--fg); }
     .thinking-elapsed { font-size: 10px; color: var(--fg2); opacity: .5; flex-shrink: 0; }
-    .thinking-active-thought { padding: 0 2px 6px 20px; font-size: 11px; color: var(--fg2); line-height: 1.4; min-height: 0; overflow: hidden; transition: opacity 200ms ease; }
-    .thinking-active-thought:empty { display: none; }
-    .thinking-active-thought.fading { opacity: 0; }
-    .thinking-panel.done .thinking-active-thought { display: none; }
+    .steps-toggle-btn { border: none; background: transparent; color: var(--fg2); cursor: pointer; font-size: 10px; opacity: .55; padding: 1px 3px; border-radius: 3px; transition: opacity var(--spd), transform var(--spd); flex-shrink: 0; line-height: 1; }
+    .steps-toggle-btn:hover { opacity: 1; background: rgba(128,128,128,.1); }
+    .thinking-panel.steps-collapsed .steps-toggle-btn { transform: rotate(-90deg); }
+
+    /* Steps list */
+    .steps-list { display: flex; flex-direction: column; gap: 0; padding: 0 2px 6px 8px; max-height: 260px; overflow-y: auto; }
+    .thinking-panel.steps-collapsed .steps-list { display: none; }
+
+    /* Generic step item */
+    .step-item { display: flex; align-items: center; gap: 6px; padding: 2px 2px; font-size: 11px; color: var(--fg2); min-height: 20px; }
+    .step-icon { flex-shrink: 0; font-size: 11px; opacity: .75; width: 16px; text-align: center; }
+    .step-label { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .step-detail { font-size: 10px; color: var(--fg2); opacity: .55; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 130px; }
+
+    /* Reasoning block */
+    .step-item.step-reasoning { flex-direction: column; align-items: flex-start; gap: 2px; padding: 5px 8px; background: rgba(128,128,128,.06); border-radius: 6px; margin: 2px 0; color: var(--fg); }
+    .step-reasoning-label { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .5px; color: var(--fg2); opacity: .6; margin-bottom: 1px; }
+    .step-reasoning-text { font-size: 11px; color: var(--fg2); line-height: 1.45; white-space: pre-wrap; word-break: break-word; max-height: 120px; overflow-y: auto; }
+    /* Shimmer-over-text while the reasoning block is live */
+    .step-reasoning-active .step-reasoning-text {
+      background: linear-gradient(90deg, var(--vscode-foreground, #ccc) 0%, rgba(255,255,255,0.9) 40%, var(--vscode-foreground, #ccc) 80%);
+      background-size: 250% 100%;
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+      animation: reasoning-shimmer 2s linear infinite;
+    }
+    /* Once the block is sealed (class removed), show plain text */
+    .step-item.step-reasoning:not(.step-reasoning-active) .step-reasoning-text {
+      -webkit-text-fill-color: var(--fg2);
+      background: none;
+      animation: none;
+    }
+    @keyframes reasoning-shimmer { 0% { background-position: 250% 0; } 100% { background-position: -250% 0; } }
+
+    /* File patch progress */
+    .step-item.step-file_patch .step-icon { color: var(--orange); opacity: 1; }
+    .step-file-name { font-family: var(--vscode-editor-font-family, monospace); font-size: 11px; color: var(--accent); font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 160px; }
+    .step-line-count { font-size: 10px; color: var(--fg2); opacity: .6; }
+
+    /* File patched (done) */
+    .step-item.step-file_patched .step-icon { color: var(--green); opacity: 1; }
+    .step-item.step-file_patched .step-file-name { color: var(--fg); }
+    .step-diff-added { color: var(--green); font-weight: 700; font-size: 10px; flex-shrink: 0; }
+    .step-diff-removed { color: var(--red); font-weight: 700; font-size: 10px; flex-shrink: 0; }
+
+    /* Terminal command */
+    .step-item.step-terminal { background: rgba(128,128,128,.07); border-radius: 5px; padding: 3px 8px; gap: 5px; margin: 1px 0; }
+    .step-item.step-terminal .step-icon { color: var(--accent); opacity: 1; }
+    .step-cmd { font-family: var(--vscode-editor-font-family, monospace); font-size: 11px; color: var(--fg); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
     /* ── Popups ─── */
     .popup { position: absolute; bottom: calc(100% + 4px); left: 0; z-index: 200; background: var(--vscode-editorWidget-background, var(--bg2)); border: 1px solid var(--border); border-radius: var(--r); display: flex; flex-direction: column; gap: 1px; padding: 4px; min-width: 140px; box-shadow: 0 4px 14px rgba(0,0,0,.2); }
@@ -1072,8 +1099,9 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
           <span class="thinking-done-icon">&#10003;</span>
           <span id="thinkingTitle">Thinking\u2026</span>
           <span id="thinkingElapsed" class="thinking-elapsed"></span>
+          <button class="steps-toggle-btn" id="stepsToggleBtn" title="Show/hide steps">&#9660;</button>
         </div>
-        <div id="thinkingActiveThought" class="thinking-active-thought"></div>
+        <div id="stepsList" class="steps-list"></div>
       </div>
     </div>
   </div>
@@ -1083,8 +1111,8 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
   <div id="editsBanner">
     <span id="bannerTxt" class="banner-txt">Pending edits ready</span>
     <div class="banner-acts">
-      <button id="btnApply" class="btn primary sm">Apply</button>
-      <button id="btnRevert" class="btn danger sm">Revert</button>
+      <button id="btnApply" class="btn primary sm">Keep</button>
+      <button id="btnRevert" class="btn danger sm">Undo</button>
     </div>
   </div>
 
@@ -1246,27 +1274,50 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
 
   // Markdown rendering
   function renderMarkdown(raw) {
-    var html = esc(raw);
+    if (!raw) return '';
+    // Extract fenced code blocks first, replace with placeholders
+    var blocks = [];
     var blockIdx = 0;
-    html = html.replace(/\`\`\`(\\w*)\\n([\\s\\S]*?)\`\`\`/g, function(_, lang, code) {
+    var stripped = raw.replace(/\`\`\`(\\w*)\\n([\\s\\S]*?)\`\`\`/g, function(_, lang, code) {
       var label = lang || 'code';
-      var bid = 'cb-' + (blockIdx++);
-      return '<div class="code-block"><div class="code-header"><span class="code-lang">' + esc(label) + '</span>' +
+      var bid = 'cb-' + (blockIdx);
+      var placeholder = '%%CODEBLOCK_' + (blockIdx++) + '%%';
+      blocks.push('<div class="code-block"><div class="code-header"><span class="code-lang">' + esc(label) + '</span>' +
         '<button class="code-copy" data-bid="' + bid + '">Copy</button></div>' +
-        '<pre id="' + bid + '"><code>' + code + '</code></pre></div>';
+        '<pre id="' + bid + '"><code>' + esc(code) + '</code></pre></div>');
+      return placeholder;
     });
-    html = html.replace(/\`\`\`([\\s\\S]*?)\`\`\`/g, '<div class="code-block"><pre><code>$1</code></pre></div>');
+    // Also match fenced code blocks without language
+    stripped = stripped.replace(/\`\`\`([\\s\\S]*?)\`\`\`/g, function(_, code) {
+      var bid = 'cb-' + (blockIdx);
+      var placeholder = '%%CODEBLOCK_' + (blockIdx++) + '%%';
+      blocks.push('<div class="code-block"><pre id="' + bid + '"><code>' + esc(code) + '</code></pre></div>');
+      return placeholder;
+    });
+    // Now escape the rest
+    var html = esc(stripped);
+    // Inline code
     html = html.replace(/\`([^\`\\n]+)\`/g, '<code>$1</code>');
+    // Bold and italic
     html = html.replace(/\\*\\*(.+?)\\*\\*/g, '<strong>$1</strong>');
     html = html.replace(/\\*(.+?)\\*/g, '<em>$1</em>');
+    // Headings
     html = html.replace(/^### (.+)$/gm, '<h3>$1</h3>');
     html = html.replace(/^## (.+)$/gm, '<h2>$1</h2>');
     html = html.replace(/^# (.+)$/gm, '<h1>$1</h1>');
-    html = html.replace(/^- (.+)$/gm, '<li>$1</li>');
+    // Lists
+    html = html.replace(/^[\\-\\*] (.+)$/gm, '<li>$1</li>');
+    html = html.replace(/^(\\d+)\\. (.+)$/gm, '<li>$2</li>');
+    // Wrap adjacent <li> in <ul>
+    html = html.replace(/((?:<li>.*?<\\/li>\\n?)+)/g, '<ul>$1</ul>');
+    // Links: [text](url)
+    html = html.replace(/\\[([^\\]]+)\\]\\(([^)]+)\\)/g, '<a href="$2" title="$2">$1</a>');
+    // Newlines to br (except inside pre/code)
     html = html.replace(/\\n/g, '<br>');
-    html = html.replace(/<pre[^>]*><code>([\\s\\S]*?)<\\/code><\\/pre>/g, function(match) {
-      return match.replace(/<br>/g, '\\n');
-    });
+    // Restore code block placeholders
+    for (var bi = 0; bi < blocks.length; bi++) {
+      html = html.replace('%%CODEBLOCK_' + bi + '%%', blocks[bi]);
+    }
     return html;
   }
 
@@ -1332,16 +1383,16 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
   function closePermPopup() { var p = D('permPopup'); if (p) p.classList.add('hidden'); permPopupOpen = false; }
   document.addEventListener('click', closeAllPopups);
 
-  // Thinking — dynamic single active thought (ChatGPT-style)
-  var thinkingTimer = null;
+  // Thinking — GitHub Copilot-style step list
+  var thinkingTimer = null, stepsCollapsed = false;
   function startThinking() {
-    thinkingSteps = []; thinkingStartTime = Date.now();
-    var panel = D('thinkingPanel'), title = D('thinkingTitle'), thought = D('thinkingActiveThought'), elapsed = D('thinkingElapsed');
+    thinkingSteps = []; thinkingStartTime = Date.now(); stepsCollapsed = false;
+    var panel = D('thinkingPanel'), title = D('thinkingTitle'), elapsed = D('thinkingElapsed'), list = D('stepsList');
     if (!panel) return;
-    panel.classList.remove('hidden', 'done');
+    panel.classList.remove('hidden', 'done', 'steps-collapsed');
     if (title) title.textContent = 'Thinking\u2026';
-    if (thought) { thought.textContent = ''; thought.classList.remove('fading'); }
     if (elapsed) elapsed.textContent = '';
+    if (list) list.innerHTML = '';
     if (thinkingTimer) clearInterval(thinkingTimer);
     thinkingTimer = setInterval(function() {
       if (elapsed && thinkingStartTime) {
@@ -1350,34 +1401,130 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
       }
     }, 1000);
   }
-  function addThinkingStep(step) {
-    thinkingSteps.push(step);
-    var title = D('thinkingTitle'), thought = D('thinkingActiveThought');
-    // Update the header with the step name
-    var label = step.step || step.detail || 'Processing';
-    if (title) title.textContent = label;
-    // Animate the detail as the active thought
-    if (thought && step.detail) {
-      thought.classList.add('fading');
-      setTimeout(function() {
-        thought.textContent = step.detail;
-        thought.classList.remove('fading');
-      }, 150);
+    var reasoningLabels = ['Thinking\u2026', 'Reasoning\u2026', 'Analyzing\u2026', 'Checking\u2026', 'Processing\u2026'];
+    var reasoningLabelIdx = 0;
+    var reasoningLabelTimer = null;
+    function startReasoningLabelCycle(labelEl) {
+      if (reasoningLabelTimer) return;
+      reasoningLabelTimer = setInterval(function() {
+        reasoningLabelIdx = (reasoningLabelIdx + 1) % reasoningLabels.length;
+        if (labelEl) labelEl.textContent = reasoningLabels[reasoningLabelIdx];
+      }, 1800);
     }
+    function stopReasoningLabelCycle() {
+      if (reasoningLabelTimer) { clearInterval(reasoningLabelTimer); reasoningLabelTimer = null; }
+      reasoningLabelIdx = 0;
+    }
+
+    function addThinkingStep(step) {
+    thinkingSteps.push(step);
+    var title = D('thinkingTitle'), list = D('stepsList');
+    var kind = step.kind || 'step';
+    var label = step.step || 'Processing';
+    if (!list) return;
+
+    if (kind === 'reasoning') {
+      // Update the live reasoning block — APPEND new chunk to accumulated text
+      var active = list.querySelector('.step-reasoning-active');
+      if (active) {
+        var rt = active.querySelector('.step-reasoning-text');
+        if (rt) {
+          // Append new tokens; keep only the last 800 chars to avoid DOM bloat
+          var current = rt.textContent || '';
+          var appended = current + (step.detail || '');
+          rt.textContent = appended.length > 800 ? appended.slice(appended.length - 800) : appended;
+        }
+        scrollBottom(); return;
+      }
+      var item = document.createElement('div');
+      item.className = 'step-item step-reasoning step-reasoning-active';
+      var labelEl = document.createElement('span');
+      labelEl.className = 'step-reasoning-label';
+      labelEl.textContent = reasoningLabels[0];
+      var textEl = document.createElement('span');
+      textEl.className = 'step-reasoning-text';
+      textEl.textContent = step.detail || '';
+      item.appendChild(labelEl);
+      item.appendChild(textEl);
+      list.appendChild(item);
+      if (title) title.textContent = 'Generating\u2026';
+      startReasoningLabelCycle(labelEl);
+      scrollBottom(); return;
+    }
+
+    // Seal the previous reasoning block so the next reasoning chunk starts fresh
+    var prevActive = list.querySelector('.step-reasoning-active');
+    if (prevActive) {
+      prevActive.classList.remove('step-reasoning-active');
+      var prevLabel = prevActive.querySelector('.step-reasoning-label');
+      if (prevLabel) prevLabel.textContent = 'Thought';
+      stopReasoningLabelCycle();
+    }
+
+    var item = document.createElement('div');
+    item.className = 'step-item step-' + kind;
+
+    if (kind === 'file_patch') {
+      if (title) title.textContent = 'Generating patch\u2026';
+      item.innerHTML =
+        '<span class="step-icon">&#9998;</span>' +
+        '<span class="step-label">Generating patch</span>' +
+        '<span class="step-line-count">(' + esc(String(step.lineCount || 0)) + ' lines) in&nbsp;</span>' +
+        '<span class="step-file-name">' + esc(step.file || '') + '</span>';
+    } else if (kind === 'file_patched') {
+      if (title) title.textContent = 'Edited ' + (step.file || '');
+      item.innerHTML =
+        '<span class="step-icon" style="color:var(--green)">&#10003;</span>' +
+        '<span class="step-label">Edited</span>' +
+        '<span class="step-file-name">' + esc(step.file || '') + '</span>' +
+        '<span class="step-diff-added">+' + esc(String(step.linesAdded || 0)) + '</span>' +
+        '<span class="step-diff-removed">\u2212' + esc(String(step.linesRemoved || 0)) + '</span>';
+    } else if (kind === 'terminal') {
+      if (title) title.textContent = 'Running terminal';
+      item.innerHTML =
+        '<span class="step-icon">&#9654;</span>' +
+        '<span class="step-cmd">$ ' + esc(step.detail || step.step || '') + '</span>';
+    } else {
+      // Generic step
+      if (title) title.textContent = label;
+      item.innerHTML =
+        '<span class="step-icon">' + esc(step.icon || '\u25cf') + '</span>' +
+        '<span class="step-label">' + esc(label) + '</span>' +
+        (step.detail ? '<span class="step-detail">' + esc(step.detail) + '</span>' : '');
+    }
+
+    list.appendChild(item);
+    // Auto-scroll the step list itself if it overflows
+    list.scrollTop = list.scrollHeight;
     scrollBottom();
   }
   function finishThinking(cancelled) {
-    var panel = D('thinkingPanel'), title = D('thinkingTitle'), thought = D('thinkingActiveThought'), elapsed = D('thinkingElapsed');
+    var panel = D('thinkingPanel'), title = D('thinkingTitle'), elapsed = D('thinkingElapsed'), list = D('stepsList');
     if (thinkingTimer) { clearInterval(thinkingTimer); thinkingTimer = null; }
     if (!panel) return;
     panel.classList.add('done');
+    // Unseal any active reasoning block and stop label cycling
+    stopReasoningLabelCycle();
+    if (list) {
+      var ar = list.querySelector('.step-reasoning-active');
+      if (ar) {
+        ar.classList.remove('step-reasoning-active');
+        var arLabel = ar.querySelector('.step-reasoning-label');
+        if (arLabel) arLabel.textContent = 'Thought';
+      }
+    }
     var sec = thinkingStartTime ? ((Date.now() - thinkingStartTime) / 1000).toFixed(1) : '0';
     var count = thinkingSteps.length;
     if (title) title.textContent = cancelled ? 'Cancelled after ' + sec + 's' : 'Completed in ' + sec + 's \u00b7 ' + count + ' step' + (count !== 1 ? 's' : '');
-    if (thought) thought.textContent = '';
     if (elapsed) elapsed.textContent = '';
     setBusyMode(false);
   }
+  on(D('stepsToggleBtn'), 'click', function(e) {
+    e.stopPropagation();
+    var panel = D('thinkingPanel'); if (!panel) return;
+    stepsCollapsed = !stepsCollapsed;
+    panel.classList.toggle('steps-collapsed', stepsCollapsed);
+  });
 
   // MCP utils
   function normalizeMcpServer(s) {
@@ -1430,6 +1577,12 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
   function showHome() { inChat = false; homeView.classList.remove('hidden'); chatView.classList.add('hidden'); }
   function showChat() { inChat = true; homeView.classList.add('hidden'); chatView.classList.remove('hidden'); scrollBottom(); }
 
+  // SVG icons for message action buttons (VS Code codicon style)
+  var SVG_RETRY = '<svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 3a5 5 0 1 0 4.546 2.914.5.5 0 0 1 .908-.417A6 6 0 1 1 8 2v1z"/><path d="M8 4.466V.534a.25.25 0 0 1 .41-.192l2.36 1.966c.12.1.12.284 0 .384L8.41 4.658A.25.25 0 0 1 8 4.466z"/></svg>';
+  var SVG_COPY = '<svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M4 1.5H3a2 2 0 0 0-2 2V14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V3.5a2 2 0 0 0-2-2h-1v1h1a1 1 0 0 1 1 1V14a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V3.5a1 1 0 0 1 1-1h1v-1z"/><path d="M9.5 1a.5.5 0 0 1 .5.5v1a.5.5 0 0 1-.5.5h-3a.5.5 0 0 1-.5-.5v-1a.5.5 0 0 1 .5-.5h3zm-3-1A1.5 1.5 0 0 0 5 1.5v1A1.5 1.5 0 0 0 6.5 4h3A1.5 1.5 0 0 0 11 2.5v-1A1.5 1.5 0 0 0 9.5 0h-3z"/></svg>';
+  var SVG_COPY_OK = '<svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M13.854 3.646a.5.5 0 0 1 0 .708l-7 7a.5.5 0 0 1-.708 0l-3.5-3.5a.5.5 0 1 1 .708-.708L6.5 10.293l6.646-6.647a.5.5 0 0 1 .708 0z"/></svg>';
+  var SVG_EDIT = '<svg width="13" height="13" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M12.146.146a.5.5 0 0 1 .708 0l3 3a.5.5 0 0 1 0 .708l-10 10a.5.5 0 0 1-.168.11l-5 2a.5.5 0 0 1-.65-.65l2-5a.5.5 0 0 1 .11-.168l10-10zM11.207 2.5 13.5 4.793 14.793 3.5 12.5 1.207zm1.586 3L10.5 3.207 4 9.707V10h.5a.5.5 0 0 1 .5.5v.5h.5a.5.5 0 0 1 .5.5v.5h.293zm-9.761 5.175-.106.106-1.528 3.821 3.821-1.528.106-.106A.5.5 0 0 1 5 12.5V12h-.5a.5.5 0 0 1-.5-.5V11h-.5a.5.5 0 0 1-.468-.325z"/></svg>';
+
   // Render messages
   function renderMessages() {
     if (!chatHistory.length) {
@@ -1453,8 +1606,8 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
       var rawTs = m.ts || m.createdAt || null;
       var ts = rawTs ? relTime(new Date(rawTs).toISOString()) : '';
       var footerActions = role === 'agent'
-        ? '<button class="retry-btn" title="Retry">\u21ba</button><button class="copy-btn" title="Copy message">\uD83D\uDCCB</button>'
-        : '<button class="retry-btn edit-btn" title="Edit message">\u270F</button><button class="copy-btn" title="Copy message">\uD83D\uDCCB</button>';
+        ? '<button class="retry-btn" title="Retry">' + SVG_RETRY + '</button><button class="copy-btn" title="Copy message">' + SVG_COPY + '</button>'
+        : '<button class="retry-btn edit-btn" title="Edit message">' + SVG_EDIT + '</button><button class="copy-btn" title="Copy message">' + SVG_COPY + '</button>';
       div.innerHTML = '<div class="bubble">' + html + '</div>' +
         '<div class="msg-footer">' +
         '<span class="msg-time">' + esc(ts) + '</span>' +
@@ -1465,8 +1618,8 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
           e.stopPropagation();
           var target = e.currentTarget;
           navigator.clipboard.writeText(t).then(function() {
-            target.textContent = '\u2713';
-            setTimeout(function() { target.textContent = '\uD83D\uDCCB'; }, 1200);
+            target.innerHTML = SVG_COPY_OK;
+            setTimeout(function() { target.innerHTML = SVG_COPY; }, 1400);
           });
         });
         if (msgRole === 'user') {
@@ -1551,7 +1704,10 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
     chipModel.title = model || 'none';
     var hasPending = s && s.hasPendingEdits;
     editsBanner.classList.toggle('on', Boolean(hasPending));
-    if (hasPending) bannerTxt.textContent = 'Pending file edits \u2014 review before applying';
+    if (hasPending) {
+      var eCount = s && typeof s.pendingEditCount === 'number' ? s.pendingEditCount : 0;
+      bannerTxt.textContent = eCount > 0 ? eCount + ' file' + (eCount === 1 ? '' : 's') + ' changed \u2014 review before applying' : 'Pending file edits \u2014 review before applying';
+    }
     if (s) updateTokenRing(s.tokenUsagePercent || 0);
     if (learningBadge) {
       var learningPct = s && typeof s.learningProgressPercent === 'number' ? s.learningProgressPercent : 0;
@@ -1692,9 +1848,9 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
 
   // Edits banner
   var applyPending = false, revertPending = false;
-  function resetBannerBtns() { applyPending = false; revertPending = false; btnApply.textContent = 'Apply'; btnApply.className = 'btn primary sm'; btnRevert.textContent = 'Revert'; btnRevert.className = 'btn danger sm'; }
-  on(btnApply, 'click', function() { if (!applyPending) { applyPending = true; btnApply.textContent = 'Confirm?'; return; } resetBannerBtns(); vscode.postMessage({ type: 'applyPending', payload: true }); });
-  on(btnRevert, 'click', function() { if (!revertPending) { revertPending = true; btnRevert.textContent = 'Confirm?'; return; } resetBannerBtns(); vscode.postMessage({ type: 'revertLast', payload: true }); });
+  function resetBannerBtns() { applyPending = false; revertPending = false; btnApply.textContent = 'Keep'; btnApply.className = 'btn primary sm'; btnRevert.textContent = 'Undo'; btnRevert.className = 'btn danger sm'; }
+  on(btnApply, 'click', function() { if (!applyPending) { applyPending = true; btnApply.textContent = 'Keep?'; return; } resetBannerBtns(); vscode.postMessage({ type: 'applyPending', payload: true }); });
+  on(btnRevert, 'click', function() { if (!revertPending) { revertPending = true; btnRevert.textContent = 'Undo?'; return; } resetBannerBtns(); vscode.postMessage({ type: 'revertLast', payload: true }); });
 
   // Message handler
   window.addEventListener('message', function(event) {
@@ -1715,6 +1871,11 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
         var text = (payload && payload.responseText) || JSON.stringify(payload, null, 2);
         if (payload && payload.autoApplied && payload.proposedEdits > 0) {
           text += '\\n\\n\\u2705 **' + payload.proposedEdits + ' edit(s) auto-applied** (bypass mode active)';
+        }
+        // Update banner text with actual file count when pending edits exist
+        if (payload && payload.proposedEdits > 0 && !payload.autoApplied) {
+          var fc = payload.proposedEdits;
+          bannerTxt.textContent = fc + ' file' + (fc === 1 ? '' : 's') + ' changed \u2014 review before applying';
         }
         var shouldReplaceAgent = pendingRequest && pendingRequest.action === 'retry' && pendingRequest.messageId;
         if (shouldReplaceAgent) {

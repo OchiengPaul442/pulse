@@ -55,9 +55,12 @@ export function getAgentConfig(): AgentConfig {
     ollamaBaseUrl: cfg.get<string>("ollama.baseUrl", ollamaDefaultUrl),
     plannerModel: cfg.get<string>("models.planner", "qwen2.5-coder:7b"),
     editorModel: cfg.get<string>("models.editor", "qwen2.5-coder:7b"),
-    fastModel: cfg.get<string>("models.fast", "qwen2.5-coder:7b"),
+    fastModel: cfg.get<string>("models.fast", "qwen2.5-coder:1.5b"),
     embeddingModel: cfg.get<string>("models.embedding", "nomic-embed-text"),
-    fallbackModels: cfg.get<string[]>("models.fallbacks", ["qwen2.5-coder:7b"]),
+    fallbackModels: cfg.get<string[]>("models.fallbacks", [
+      "deepseek-r1:7b",
+      "qwen2.5-coder:7b",
+    ]),
     approvalMode: cfg.get<ApprovalMode>("behavior.approvalMode", "balanced"),
     permissionMode: cfg.get<PermissionMode>(
       "behavior.permissionMode",

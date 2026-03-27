@@ -236,6 +236,11 @@ export function isSafeTerminalCommand(command: string): boolean {
     /\bls\b/,
     /\bdir\b/,
     /\bfind\b/,
+    // Scaffolding / project-creation commands
+    /\b(pnpm|npm|yarn)\s+create\b/,
+    /\bnpx\s+create-/,
+    /\bpnpm\s+dlx\s+create-/,
+    /\bnpx\s+@[a-z0-9@/-]+\b/,
   ];
 
   return safePatterns.some((pattern) => pattern.test(normalized));

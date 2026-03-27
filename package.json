@@ -2,7 +2,7 @@
   "name": "pulse-agent",
   "displayName": "Pulse Agent",
   "description": "Personal Agentic AI coding assistant for VS Code using local models.",
-  "version": "0.0.48",
+  "version": "0.0.51",
   "publisher": "local",
   "license": "MIT",
   "icon": "media/pulse-icon.png",
@@ -134,7 +134,7 @@
         },
         "pulse.models.fast": {
           "type": "string",
-          "default": "qwen2.5-coder:7b",
+          "default": "qwen2.5-coder:1.5b",
           "description": "Fast model for quick interactions."
         },
         "pulse.models.embedding": {
@@ -145,6 +145,7 @@
         "pulse.models.fallbacks": {
           "type": "array",
           "default": [
+            "deepseek-r1:7b",
             "qwen2.5-coder:7b"
           ],
           "description": "Fallback model list when the primary model fails.",
@@ -197,7 +198,7 @@
         },
         "pulse.behavior.allowTerminalExecution": {
           "type": "boolean",
-          "default": false,
+          "default": true,
           "description": "Allow Pulse to run terminal commands after policy checks."
         },
         "pulse.behavior.autoRunVerification": {
