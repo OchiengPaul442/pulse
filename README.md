@@ -39,7 +39,9 @@ Pulse is a VS Code extension that gives you a personal AI coding assistant that 
 - At least one pulled model, e.g.:
   ```bash
   ollama pull qwen2.5-coder:7b
-  ollama pull deepseek-coder-v2:latest
+  ollama pull deepseek-r1:7b
+  ollama pull nemotron-mini:latest
+  ollama pull nomic-embed-text:latest
   ```
 
 ---
@@ -120,11 +122,11 @@ All settings live under the `pulse.*` namespace in VS Code settings:
   "pulse.ollama.baseUrl": "http://127.0.0.1:11434",
 
   // Model assignments
-  "pulse.models.planner": "qwen2.5-coder:14b",
-  "pulse.models.editor": "deepseek-coder-v2:16b",
-  "pulse.models.fast": "qwen2.5-coder:7b",
+  "pulse.models.planner": "qwen2.5-coder:7b",
+  "pulse.models.editor": "qwen2.5-coder:7b",
+  "pulse.models.fast": "nemotron-mini:latest",
   "pulse.models.embedding": "nomic-embed-text:latest",
-  "pulse.models.fallbacks": ["qwen2.5-coder:7b"],
+  "pulse.models.fallbacks": ["deepseek-r1:7b", "nemotron-mini:latest"],
 
   // Approval mode: "strict" | "balanced" | "fast"
   "pulse.behavior.approvalMode": "balanced",

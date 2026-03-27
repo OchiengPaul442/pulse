@@ -3,11 +3,11 @@
 ```json
 {
   "pulse.ollama.baseUrl": "http://localhost:11434",
-  "pulse.models.planner": "qwen2.5-coder:14b",
-  "pulse.models.editor": "deepseek-coder-v2:16b",
-  "pulse.models.fast": "qwen2.5-coder:7b",
+  "pulse.models.planner": "qwen2.5-coder:7b",
+  "pulse.models.editor": "qwen2.5-coder:7b",
+  "pulse.models.fast": "nemotron-mini:latest",
   "pulse.models.embedding": "nomic-embed-text:latest",
-  "pulse.models.fallbacks": ["qwen2.5-coder:7b"],
+  "pulse.models.fallbacks": ["deepseek-r1:7b", "nemotron-mini:latest"],
   "pulse.behavior.approvalMode": "balanced",
   "pulse.behavior.allowTerminalExecution": false,
   "pulse.behavior.autoRunVerification": true,

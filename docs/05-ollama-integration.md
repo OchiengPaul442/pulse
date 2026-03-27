@@ -40,11 +40,11 @@ Support settings like:
 ```json
 {
   "agent.ollama.baseUrl": "http://localhost:11434",
-  "agent.models.planner": "qwen2.5-coder:14b",
-  "agent.models.editor": "deepseek-coder-v2:16b",
-  "agent.models.fast": "qwen2.5-coder:7b",
-  "agent.models.embedding": "nomic-embed-text",
-  "agent.models.fallbacks": ["qwen2.5-coder:7b"]
+  "agent.models.planner": "qwen2.5-coder:7b",
+  "agent.models.editor": "qwen2.5-coder:7b",
+  "agent.models.fast": "nemotron-mini:latest",
+  "agent.models.embedding": "nomic-embed-text:latest",
+  "agent.models.fallbacks": ["deepseek-r1:7b", "nemotron-mini:latest"]
 }
 ```
 

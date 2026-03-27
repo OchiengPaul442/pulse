@@ -4,7 +4,9 @@
   "pulse.models.planner": "qwen2.5-coder:7b",
   "pulse.behavior.conversationMode": "agent",
   "pulse.models.editor": "qwen2.5-coder:7b",
-  "pulse.models.fast": "qwen2.5-coder:1.5b",
+  "pulse.models.fast": "nemotron-mini:latest",
+  "pulse.models.embedding": "nomic-embed-text:latest",
+  "pulse.models.fallbacks": ["deepseek-r1:7b", "nemotron-mini:latest"],
   "pulse.behavior.selfLearn": true,
   "pulse.mcp.servers": []
 }

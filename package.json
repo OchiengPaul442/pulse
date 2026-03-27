@@ -2,7 +2,7 @@
   "name": "pulse-agent",
   "displayName": "Pulse Agent",
   "description": "Personal Agentic AI coding assistant for VS Code using local models.",
-  "version": "0.0.51",
+  "version": "0.0.52",
   "publisher": "local",
   "license": "MIT",
   "icon": "media/pulse-icon.png",
@@ -134,19 +134,19 @@
         },
         "pulse.models.fast": {
           "type": "string",
-          "default": "qwen2.5-coder:1.5b",
+          "default": "nemotron-mini:latest",
           "description": "Fast model for quick interactions."
         },
         "pulse.models.embedding": {
           "type": "string",
-          "default": "nomic-embed-text",
+          "default": "nomic-embed-text:latest",
           "description": "Embedding model for semantic memory and retrieval."
         },
         "pulse.models.fallbacks": {
           "type": "array",
           "default": [
             "deepseek-r1:7b",
-            "qwen2.5-coder:7b"
+            "nemotron-mini:latest"
           ],
           "description": "Fallback model list when the primary model fails.",
           "items": {
