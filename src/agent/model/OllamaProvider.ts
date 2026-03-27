@@ -40,6 +40,7 @@ interface OllamaPsResponse {
 interface SimpleResponse {
   ok: boolean;
   status: number;
+  body?: NodeJS.ReadableStream;
   text(): Promise<string>;
   json(): Promise<any>;
 }
@@ -101,55 +102,63 @@ export class OllamaProvider implements ModelProvider {
       request.signal,
       CHAT_TIMEOUT_MS,
     );
-    const response = await this.fetchFromCandidates("/api/chat", {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-      },
-      signal,
-      timeoutMs: CHAT_TIMEOUT_MS,
-      body: JSON.stringify({
-        model: request.model,
-        messages: request.messages,
-        stream: false,
-        options: {
-          temperature: request.temperature ?? 0.1,
-          ...(typeof request.maxTokens === "number"
-            ? { num_predict: request.maxTokens }
-            : {}),
+    try {
+      const response = await this.fetchFromCandidates("/api/chat", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
         },
-        format: request.format,
-      }),
-    }).finally(cleanup);
+        signal,
+        timeoutMs: CHAT_TIMEOUT_MS,
+        body: JSON.stringify({
+          model: request.model,
+          messages: request.messages,
+          stream: true,
+          options: {
+            temperature: request.temperature ?? 0.1,
+            ...(typeof request.maxTokens === "number"
+              ? { num_predict: request.maxTokens }
+              : {}),
+          },
+          format: request.format,
+        }),
+      });
 
-    if (!response.ok) {
-      const body = await response.text().catch(() => "");
-      const detail = extractOllamaError(body);
-      throw new Error(
-        detail
-          ? `Ollama chat failed (HTTP ${response.status}): ${detail}`
-          : `Ollama chat failed (HTTP ${response.status})`,
-      );
+      if (!response.ok) {
+        const body = await response.text().catch(() => "");
+        const detail = extractOllamaError(body);
+        throw new Error(
+          detail
+            ? `Ollama chat failed (HTTP ${response.status}): ${detail}`
+            : `Ollama chat failed (HTTP ${response.status})`,
+        );
+      }
+
+      if (!response.body) {
+        const data = (await response.json()) as OllamaChatResponse;
+        const text = data.message?.content?.trim() ?? "";
+        const promptTokens = Number.isFinite(data.prompt_eval_count)
+          ? Number(data.prompt_eval_count)
+          : 0;
+        const completionTokens = Number.isFinite(data.eval_count)
+          ? Number(data.eval_count)
+          : 0;
+
+        return {
+          text,
+          raw: data,
+          tokenUsage: {
+            promptTokens,
+            completionTokens,
+            totalTokens: promptTokens + completionTokens,
+          },
+        };
+      }
+
+      return this.consumeStream(response, request.onChunk);
+    } finally {
+      cleanup();
     }
-
-    const data = (await response.json()) as OllamaChatResponse;
-    const text = data.message?.content?.trim() ?? "";
-    const promptTokens = Number.isFinite(data.prompt_eval_count)
-      ? Number(data.prompt_eval_count)
-      : 0;
-    const completionTokens = Number.isFinite(data.eval_count)
-      ? Number(data.eval_count)
-      : 0;
-
-    return {
-      text,
-      raw: data,
-      tokenUsage: {
-        promptTokens,
-        completionTokens,
-        totalTokens: promptTokens + completionTokens,
-      },
-    };
   }
 
   private async fetchLocalModels(): Promise<ModelSummary[]> {
@@ -213,23 +222,27 @@ export class OllamaProvider implements ModelProvider {
     path: string,
     init: RequestOptions,
   ): Promise<SimpleResponse> {
-    let lastError: unknown;
-
-    for (const baseUrl of this.getCandidateBaseUrls()) {
-      try {
-        const response = await this.makeRequest(
-          this.buildUrl(baseUrl, path),
-          init,
-        );
-        return response;
-      } catch (error) {
-        lastError = error;
-      }
+    const candidates = this.getCandidateBaseUrls();
+    if (candidates.length === 1) {
+      return this.makeRequest(this.buildUrl(candidates[0], path), init);
     }
 
-    throw lastError instanceof Error
-      ? lastError
-      : new Error("Failed to connect to Ollama");
+    const attempts = candidates.map((baseUrl) =>
+      this.makeRequest(this.buildUrl(baseUrl, path), init),
+    );
+
+    try {
+      return await Promise.any(attempts);
+    } catch (error) {
+      if (error instanceof AggregateError && error.errors.length > 0) {
+        const first = error.errors[0];
+        throw first instanceof Error ? first : new Error(String(first));
+      }
+
+      throw error instanceof Error
+        ? error
+        : new Error("Failed to connect to Ollama");
+    }
   }
 
   private async makeRequest(
@@ -270,30 +283,64 @@ export class OllamaProvider implements ModelProvider {
 
       const req = client.request(options, (res) => {
         let data = "";
+        let finished = false;
+        let finishResolve: (() => void) | null = null;
+        let finishReject: ((error: unknown) => void) | null = null;
+        const finishedPromise = new Promise<void>(
+          (resolveFinished, rejectFinished) => {
+            finishResolve = resolveFinished;
+            finishReject = rejectFinished;
+          },
+        );
+
+        const complete = (): void => {
+          if (finished) {
+            return;
+          }
+          finished = true;
+          finishResolve?.();
+        };
+
+        const fail = (error: unknown): void => {
+          if (finished) {
+            return;
+          }
+          finished = true;
+          finishReject?.(error);
+        };
+
         res.on("data", (chunk) => {
-          data += chunk;
+          data += typeof chunk === "string" ? chunk : chunk.toString("utf8");
         });
         res.on("end", () => {
-          const statusCode = res.statusCode ?? 0;
-          const response: SimpleResponse = {
-            ok: statusCode >= 200 && statusCode < 300,
-            status: statusCode,
-            text: async () => data,
-            json: async () => {
-              try {
-                return JSON.parse(data);
-              } catch (error) {
-                throw new Error(
-                  `Invalid JSON from Ollama: ${error instanceof Error ? error.message : String(error)}`,
-                );
-              }
-            },
-          };
-          settleResolve(response);
+          complete();
         });
         res.on("error", (error) => {
+          fail(error);
           settleReject(error);
         });
+
+        const statusCode = res.statusCode ?? 0;
+        const response: SimpleResponse = {
+          ok: statusCode >= 200 && statusCode < 300,
+          status: statusCode,
+          body: res,
+          text: async () => {
+            await finishedPromise;
+            return data;
+          },
+          json: async () => {
+            await finishedPromise;
+            try {
+              return JSON.parse(data);
+            } catch (error) {
+              throw new Error(
+                `Invalid JSON from Ollama: ${error instanceof Error ? error.message : String(error)}`,
+              );
+            }
+          },
+        };
+        settleResolve(response);
       });
 
       req.on("error", (err) => {
@@ -315,6 +362,78 @@ export class OllamaProvider implements ModelProvider {
         req.write(init.body);
       }
       req.end();
+    });
+  }
+
+  private async consumeStream(
+    response: SimpleResponse,
+    onChunk?: (text: string) => void,
+  ): Promise<ChatResponse> {
+    const stream = response.body;
+    if (!stream) {
+      return {
+        text: "",
+        raw: {},
+        tokenUsage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
+      };
+    }
+
+    return new Promise<ChatResponse>((resolve, reject) => {
+      let buffer = "";
+      let fullText = "";
+      let promptTokens = 0;
+      let completionTokens = 0;
+
+      const flushLine = (line: string): void => {
+        const trimmed = line.trim();
+        if (!trimmed) {
+          return;
+        }
+
+        try {
+          const chunk = JSON.parse(trimmed) as OllamaChatResponse;
+          const delta = chunk.message?.content ?? "";
+          if (delta) {
+            fullText += delta;
+            onChunk?.(delta);
+          }
+          promptTokens = chunk.prompt_eval_count ?? promptTokens;
+          completionTokens = chunk.eval_count ?? completionTokens;
+        } catch {
+          // Skip malformed streaming chunk.
+        }
+      };
+
+      stream.on("data", (chunk: unknown) => {
+        buffer +=
+          typeof chunk === "string"
+            ? chunk
+            : Buffer.from(chunk as Buffer).toString("utf8");
+
+        let newlineIndex = buffer.indexOf("\n");
+        while (newlineIndex >= 0) {
+          flushLine(buffer.slice(0, newlineIndex));
+          buffer = buffer.slice(newlineIndex + 1);
+          newlineIndex = buffer.indexOf("\n");
+        }
+      });
+
+      stream.on("end", () => {
+        flushLine(buffer);
+        resolve({
+          text: fullText.trim(),
+          raw: {},
+          tokenUsage: {
+            promptTokens,
+            completionTokens,
+            totalTokens: promptTokens + completionTokens,
+          },
+        });
+      });
+
+      stream.on("error", (error) => {
+        reject(error);
+      });
     });
   }
 

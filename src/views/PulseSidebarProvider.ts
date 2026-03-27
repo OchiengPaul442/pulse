@@ -6,6 +6,10 @@ import type { AgentRuntime } from "../agent/runtime/AgentRuntime";
 import type { RuntimeSummary } from "../agent/runtime/AgentRuntime";
 import type { AgentPersona } from "../config/AgentConfig";
 import type { Logger } from "../platform/vscode/Logger";
+import {
+  formatCompactTodos,
+  formatShortcutHints,
+} from "../agent/runtime/TaskProtocols";
 
 export class PulseSidebarProvider implements vscode.WebviewViewProvider {
   public static readonly viewType = "pulse.sidebar";
@@ -216,8 +220,11 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
               const result = await this.runtime.runTask(request);
               const taskText = [
                 result.responseText,
-                result.todos.length > 0
-                  ? `\n\n## TODOs\n${result.todos.map((todo) => `- [${todo.status}] ${todo.title}${todo.detail ? ` — ${todo.detail}` : ""}`).join("\n")}`
+                formatCompactTodos(result.todos)
+                  ? `\n\n${formatCompactTodos(result.todos)}`
+                  : "",
+                formatShortcutHints(result.shortcuts ?? [])
+                  ? `\n\n${formatShortcutHints(result.shortcuts ?? [])}`
                   : "",
                 result.toolSummary
                   ? `\n\n## Tools Used\n${result.toolSummary}`
@@ -693,10 +700,6 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
             await webviewView.webview.postMessage({
               type: "runtimeSummary",
               payload: await this.runtime.summary(),
-            });
-            await webviewView.webview.postMessage({
-              type: "actionResult",
-              payload: "Started a new conversation.",
             });
             return;
           }

@@ -11,6 +11,11 @@ export interface SkillSelection {
   selected: SkillManifest[];
 }
 
+interface ScoredSkill {
+  skill: SkillManifest;
+  score: number;
+}
+
 const BUILTIN_SKILLS: SkillManifest[] = [
   {
     id: "planning",
@@ -181,20 +186,25 @@ export class SkillRegistry {
   public selectForObjective(objective: string, limit = 3): SkillSelection {
     const normalized = objective.toLowerCase();
     const scored = this.skills
-      .map((skill) => ({
-        skill,
-        score: scoreSkill(skill, normalized),
-      }))
+      .map((skill) => ({ skill, score: scoreSkill(skill, normalized) }))
       .sort((a, b) => b.score - a.score);
 
-    const positive = scored.filter((row) => row.score > 0);
-    const picked = (positive.length > 0 ? positive : scored)
+    const highConfidence = scored.filter((row) => row.score >= 0.9);
+    const fallback = scored.filter((row) => row.score >= 0.45);
+    const picked =
+      highConfidence.length > 0
+        ? highConfidence
+        : fallback.length > 0
+          ? fallback
+          : scored;
+
+    const selected = picked
       .slice(0, Math.max(limit, 1))
       .map((row) => row.skill);
 
     return {
-      primary: picked[0] ?? null,
-      selected: picked,
+      primary: highConfidence[0]?.skill ?? selected[0] ?? null,
+      selected,
     };
   }
 
@@ -203,21 +213,103 @@ export class SkillRegistry {
       return "No active skills.";
     }
 
-    return selection.selected
-      .map((skill, index) => {
-        const marker = index === 0 ? "*" : "-";
-        return `${marker} ${skill.name}: ${skill.description}`;
-      })
-      .join("\n");
+    const lines = selection.selected.map((skill, index) => {
+      const marker = index === 0 ? "*" : "-";
+      return `${marker} ${skill.name}: ${skill.description}`;
+    });
+
+    const shortcuts = this.buildOptionalShortcuts(selection);
+    if (shortcuts.length > 0) {
+      lines.push(`Shortcuts: ${shortcuts.join(" | ")}`);
+    }
+
+    return lines.join("\n");
+  }
+
+  public buildOptionalShortcuts(selection: SkillSelection): string[] {
+    const labels = new Set<string>();
+
+    for (const skill of selection.selected) {
+      for (const tool of skill.tools) {
+        const label = shortcutForTool(tool);
+        if (label) {
+          labels.add(label);
+        }
+      }
+    }
+
+    return [...labels];
   }
 }
 
 function scoreSkill(skill: SkillManifest, objectiveLower: string): number {
-  let score = 0;
+  let matched = 0;
+  let exactMatches = 0;
+
   for (const keyword of skill.keywords) {
-    if (objectiveLower.includes(keyword)) {
-      score += 1;
+    if (!matchesKeyword(objectiveLower, keyword)) {
+      continue;
+    }
+
+    matched += 1;
+    if (objectiveLower.includes(keyword.toLowerCase())) {
+      exactMatches += 1;
     }
   }
-  return score;
+
+  const hasSkillId = matchesKeyword(objectiveLower, skill.id);
+  const hasSkillName = matchesKeyword(objectiveLower, skill.name.toLowerCase());
+  const coverage =
+    skill.keywords.length > 0 ? matched / skill.keywords.length : 0;
+  const focusBonus = hasSkillId || hasSkillName ? 0.45 : 0;
+  const exactBonus = exactMatches > 0 ? 0.15 : 0;
+  const score =
+    coverage * 0.5 + Math.min(0.3, matched * 0.12) + focusBonus + exactBonus;
+
+  return Math.min(1, Number(score.toFixed(2)));
+}
+
+function matchesKeyword(text: string, keyword: string): boolean {
+  const normalized = keyword.trim().toLowerCase();
+  if (!normalized) {
+    return false;
+  }
+
+  const escaped = normalized.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(`\\b${escaped}\\b`, "i").test(text);
+}
+
+function shortcutForTool(tool: string): string | null {
+  if (tool.includes("planner.createPlan")) {
+    return "plan";
+  }
+  if (tool.includes("editManager")) {
+    return "edit";
+  }
+  if (tool.includes("verificationRunner")) {
+    return "verify";
+  }
+  if (tool.includes("scanner.readContextSnippets")) {
+    return "read";
+  }
+  if (tool.includes("scanner.findRelevantFiles")) {
+    return "scan";
+  }
+  if (tool.includes("terminal.execute")) {
+    return "terminal";
+  }
+  if (tool.includes("gitService")) {
+    return "git";
+  }
+  if (tool.includes("mcpManager")) {
+    return "mcp";
+  }
+  if (tool.includes("webSearch")) {
+    return "web";
+  }
+  if (tool.includes("memoryStore")) {
+    return "memory";
+  }
+
+  return null;
 }

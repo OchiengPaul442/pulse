@@ -35,11 +35,42 @@ describe("TaskProtocols", () => {
     expect(parsed.edits[0]?.filePath).toBe("src/app.ts");
   });
 
+  it("drops malformed shortcuts and rejects unknown tool aliases", () => {
+    const parsed = parseTaskResponse(
+      JSON.stringify({
+        response: "ok",
+        shortcuts: ["  read  ", "read", "", "   ", 123, "scan"],
+        toolCalls: [
+          { tool: "read_file", args: { path: "src/app.ts" } },
+          { tool: "rm_rf", args: { path: "/" } },
+        ],
+      }),
+    );
+
+    expect(parsed.shortcuts).toEqual(["read", "scan"]);
+    expect(parsed.toolCalls).toHaveLength(1);
+    expect(parsed.toolCalls[0]?.tool).toBe("read_files");
+  });
+
+  it("falls back safely on malformed model JSON", () => {
+    const parsed = parseTaskResponse("{ not valid json");
+
+    expect(parsed.response).toBe("{ not valid json");
+    expect(parsed.todos).toEqual([]);
+    expect(parsed.toolCalls).toEqual([]);
+    expect(parsed.edits).toEqual([]);
+    expect(parsed.shortcuts).toEqual([]);
+  });
+
   it("distinguishes safe verification commands from destructive ones", () => {
     expect(isSafeTerminalCommand("npm test")).toBe(true);
+    expect(isSafeTerminalCommand("git status --short")).toBe(true);
     expect(
       isSafeTerminalCommand('node -e "process.stdout.write(\"ok\")"'),
     ).toBe(false);
     expect(isSafeTerminalCommand("rm -rf node_modules")).toBe(false);
+    expect(isSafeTerminalCommand("git status && echo hi")).toBe(false);
+    expect(isSafeTerminalCommand("npm test | tee output.txt")).toBe(false);
+    expect(isSafeTerminalCommand("python -m pytest > report.txt")).toBe(false);
   });
 });

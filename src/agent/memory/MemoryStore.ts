@@ -14,6 +14,8 @@ interface MemoryState {
 }
 
 export class MemoryStore {
+  private cache: MemoryState | null = null;
+
   public constructor(private readonly memoriesPath: string) {}
 
   public async addEpisode(objective: string, summary: string): Promise<void> {
@@ -45,23 +47,30 @@ export class MemoryStore {
   }
 
   private async load(): Promise<MemoryState> {
+    if (this.cache) {
+      return this.cache;
+    }
+
     try {
       const bytes = await vscode.workspace.fs.readFile(
         vscode.Uri.file(this.memoriesPath),
       );
       const raw = Buffer.from(bytes).toString("utf8");
       const parsed = JSON.parse(raw) as MemoryState;
-      return {
+      this.cache = {
         workspaceFacts: parsed.workspaceFacts ?? [],
         episodic: parsed.episodic ?? [],
         preferences: parsed.preferences ?? {},
       };
+      return this.cache;
     } catch {
-      return { workspaceFacts: [], episodic: [], preferences: {} };
+      this.cache = { workspaceFacts: [], episodic: [], preferences: {} };
+      return this.cache;
     }
   }
 
   private async save(state: MemoryState): Promise<void> {
+    this.cache = state;
     await vscode.workspace.fs.writeFile(
       vscode.Uri.file(this.memoriesPath),
       Buffer.from(JSON.stringify(state, null, 2), "utf8"),

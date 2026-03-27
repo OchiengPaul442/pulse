@@ -56,6 +56,7 @@ export interface TaskModelResponse {
   todos: TaskTodo[];
   toolCalls: TaskToolCall[];
   edits: ProposedEdit[];
+  shortcuts: string[];
 }
 
 const TOOL_ALIASES: Record<string, TaskToolName> = {
@@ -99,6 +100,7 @@ export function parseTaskResponse(raw: string): TaskModelResponse {
       todos: normalizeTodos(parsed.todos),
       toolCalls: normalizeToolCalls(parsed.toolCalls),
       edits: normalizeEdits(parsed.edits),
+      shortcuts: normalizeShortcuts(parsed.shortcuts),
     };
   } catch {
     return {
@@ -106,6 +108,7 @@ export function parseTaskResponse(raw: string): TaskModelResponse {
       todos: [],
       toolCalls: [],
       edits: [],
+      shortcuts: [],
     };
   }
 }
@@ -182,6 +185,11 @@ export function isSafeTerminalCommand(command: string): boolean {
     return false;
   }
 
+  const shellControlPattern = /(?:&&|\|\||;|`|\$\(|\r|\n|>|<|\|)/;
+  if (shellControlPattern.test(normalized) || /(^|\s)&(?!&)/.test(normalized)) {
+    return false;
+  }
+
   const unsafePatterns = [
     /\brm\s+-rf\b/,
     /\bdel\s+\/f?\b/,
@@ -251,6 +259,43 @@ export function formatToolObservations(
       }
       return lines.join("\n");
     }),
+  ].join("\n");
+}
+
+export function formatCompactTodos(todos: TaskTodo[]): string {
+  if (todos.length === 0) {
+    return "";
+  }
+
+  const lines = ["## TODOs"];
+  for (const todo of todos.slice(0, 5)) {
+    const marker = todo.status === "done" ? "x" : " ";
+    const detail = todo.detail ? ` — ${todo.detail}` : "";
+    lines.push(`- [${marker}] ${compactText(todo.title)}${detail}`);
+  }
+
+  return lines.join("\n");
+}
+
+export function formatShortcutHints(shortcuts: string[]): string {
+  const uniqueShortcuts = Array.from(
+    new Set(
+      shortcuts
+        .map((shortcut) => compactText(shortcut))
+        .filter((shortcut) => shortcut.length > 0),
+    ),
+  );
+
+  if (uniqueShortcuts.length === 0) {
+    return "";
+  }
+
+  return [
+    "## Shortcuts",
+    `Optional quick actions: ${uniqueShortcuts
+      .slice(0, 6)
+      .map((shortcut) => `\`${shortcut}\``)
+      .join(" · ")}`,
   ].join("\n");
 }
 
@@ -446,10 +491,24 @@ function normalizeTodoEntry(entry: unknown, index: number): TaskTodo | null {
 
   return {
     id: firstString(candidate.id) ?? `todo_${index + 1}`,
-    title,
+    title: compactText(title),
     status,
     detail: firstString(candidate.detail, candidate.reason),
   };
+}
+
+function normalizeShortcuts(value: unknown): string[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return Array.from(
+    new Set(
+      value
+        .map((entry) => (typeof entry === "string" ? compactText(entry) : ""))
+        .filter((entry) => entry.length > 0),
+    ),
+  );
 }
 
 function normalizeToolCall(entry: unknown): TaskToolCall | null {
@@ -488,4 +547,15 @@ function firstString(...values: unknown[]): string | undefined {
   }
 
   return undefined;
+}
+
+function compactText(value: string): string {
+  return value
+    .trim()
+    .replace(/\s+/g, " ")
+    .replace(/^[-*\d.\s]+/, "")
+    .replace(/\b(?:please|kindly|just)\b/gi, "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .replace(/[.。]+$/, "");
 }

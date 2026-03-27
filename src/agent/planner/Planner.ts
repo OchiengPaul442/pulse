@@ -36,6 +36,8 @@ export class Planner {
       "Return valid JSON only with fields: objective, assumptions, acceptanceCriteria, todos, steps, taskSlices, verification.",
       "Each step must contain id, goal, tools, expectedOutput.",
       "Each todo must contain id, title, status, and optionally detail.",
+      "Keep todo titles short, imperative, and concrete. Use at most 5 todo items.",
+      "If detail is needed, keep it to one short clause.",
       "Each taskSlice must contain id, title, scope, steps, deliverable, acceptanceCriteria.",
       "Make acceptance criteria observable and testable.",
       "Task slices should be small enough to implement and verify independently.",
@@ -120,17 +122,17 @@ function fallbackPlan(objective: string): TaskPlan {
     todos: [
       {
         id: "todo_1",
-        title: "Inspect relevant workspace context",
+        title: "Inspect workspace context",
         status: "pending",
       },
       {
         id: "todo_2",
-        title: "Propose a focused implementation approach",
+        title: "Make the smallest correct change",
         status: "pending",
       },
       {
         id: "todo_3",
-        title: "Verify the result with an appropriate check",
+        title: "Verify the result",
         status: "pending",
       },
     ],
@@ -192,17 +194,17 @@ function normalizeTodos(
     return [
       {
         id: "todo_1",
-        title: `Review the workspace context for: ${objective}`,
+        title: "Review workspace context",
         status: "pending",
       },
       {
         id: "todo_2",
-        title: "Implement the smallest correct change set",
+        title: "Apply the smallest correct change",
         status: "pending",
       },
       {
         id: "todo_3",
-        title: "Run verification and summarize results",
+        title: "Run verification",
         status: "pending",
       },
     ];

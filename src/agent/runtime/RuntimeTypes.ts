@@ -36,6 +36,7 @@ export interface RuntimeTaskResult {
   objective: string;
   plan: TaskPlan;
   todos: TaskTodo[];
+  shortcuts?: string[];
   responseText: string;
   proposal: EditProposal | null;
   artifactPath?: string;

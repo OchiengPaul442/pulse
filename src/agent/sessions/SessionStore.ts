@@ -26,6 +26,7 @@ interface SessionsFile {
 
 export class SessionStore {
   private writeQueue: Promise<void> = Promise.resolve();
+  private cache: SessionsFile | null = null;
 
   public constructor(private readonly sessionsPath: string) {}
 
@@ -198,22 +199,30 @@ export class SessionStore {
   }
 
   private async load(): Promise<SessionsFile> {
+    if (this.cache) {
+      return this.cache;
+    }
+
     const primary = await this.readStateFile(this.sessionsPath);
     if (primary) {
+      this.cache = primary;
       return primary;
     }
 
     const backup = await this.readStateFile(this.getBackupPath());
     if (backup) {
+      this.cache = backup;
       await this.save(backup);
       return backup;
     }
 
-    return { activeSessionId: null, sessions: [] };
+    this.cache = { activeSessionId: null, sessions: [] };
+    return this.cache;
   }
 
   private async save(state: SessionsFile): Promise<void> {
     const normalized = this.normalizeState(state);
+    this.cache = normalized;
     this.writeQueue = this.writeQueue
       .catch(() => {})
       .then(() => this.persistState(normalized));

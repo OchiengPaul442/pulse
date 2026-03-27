@@ -55,6 +55,8 @@ import { VerificationRunner } from "../verification/VerificationRunner";
 import {
   assessTaskQuality,
   buildTaskRefinementPrompt,
+  formatCompactTodos,
+  formatShortcutHints,
   formatToolObservations,
   isSafeTerminalCommand,
   parseTaskResponse,
@@ -169,6 +171,11 @@ export class AgentRuntime {
   } | null = null;
 
   private mcpStatusPromise: Promise<McpServerStatus[]> | null = null;
+
+  private readonly packageScriptsCache = new Map<
+    string,
+    Record<string, string> | null
+  >();
 
   public constructor(
     config: AgentConfig,
@@ -658,7 +665,9 @@ export class AgentRuntime {
     const allowEdits = mode === "agent" && this.shouldAllowEdits(objective);
     const attachedFiles = session.attachedFiles ?? [];
     const attachedContext = await this.loadAttachedFileContext(attachedFiles);
-    const conversationHistory = await this.buildConversationHistory(session.id);
+    const conversationHistory = await this.buildConversationHistory(
+      session.messages,
+    );
     const inventoryRequest = this.isWorkspaceDiscoveryObjective(objective);
 
     if (inventoryRequest) {
@@ -669,20 +678,7 @@ export class AgentRuntime {
         objective,
       );
 
-      await this.sessionStore.appendMessage(session.id, {
-        role: "assistant",
-        content: responseText,
-        createdAt: new Date().toISOString(),
-      });
-      await this.sessionStore.updateSessionResult(session.id, responseText);
-      await this.editManager.clearPendingProposal();
-      await this.learnFromExchange(objective, responseText, mode);
-      if (this.currentConfig.memoryMode !== "off") {
-        await this.memoryStore.addEpisode(
-          objective,
-          responseText.slice(0, 400),
-        );
-      }
+      await this.persistTaskResult(session.id, objective, responseText, mode);
 
       return {
         sessionId: session.id,
@@ -710,14 +706,14 @@ export class AgentRuntime {
 
     if (mode === "ask") {
       this.emitProgress("Ask mode", "Preparing conversational response", "💬");
-      const model = await this.resolveModelOrFallback(
-        this.currentConfig.fastModel,
-      );
-      const styleHint = await this.getLearnedStyleHint(objective, mode);
-      const improvementHints =
-        await this.improvementEngine.getOptimizedBehaviorHints(objective, mode);
+      const [model, styleHint, improvementHints, webResearch] =
+        await Promise.all([
+          this.resolveModelOrFallback(this.currentConfig.fastModel),
+          this.getLearnedStyleHint(objective, mode),
+          this.improvementEngine.getOptimizedBehaviorHints(objective, mode),
+          this.collectWebResearch(objective, mode),
+        ]);
       const agentAwareness = this.improvementEngine.getAgentAwarenessHints();
-      const webResearch = await this.collectWebResearch(objective, mode);
       if (webResearch) {
         this.emitProgress(
           "Web research",
@@ -731,6 +727,9 @@ export class AgentRuntime {
       const response = await this.provider.chat({
         model,
         signal,
+        onChunk: (chunk) => {
+          this.emitProgress("Streaming", chunk.slice(0, 120), "✨");
+        },
         messages: [
           {
             role: "system" as const,
@@ -767,20 +766,7 @@ export class AgentRuntime {
       });
       this.consumeTokens(response.tokenUsage);
 
-      await this.sessionStore.appendMessage(session.id, {
-        role: "assistant",
-        content: response.text,
-        createdAt: new Date().toISOString(),
-      });
-      await this.sessionStore.updateSessionResult(session.id, response.text);
-      await this.editManager.clearPendingProposal();
-      await this.learnFromExchange(objective, response.text, mode);
-      if (this.currentConfig.memoryMode !== "off") {
-        await this.memoryStore.addEpisode(
-          objective,
-          response.text.slice(0, 400),
-        );
-      }
+      await this.persistTaskResult(session.id, objective, response.text, mode);
 
       // Self-improvement: reflect on this task
       const taskDuration = Date.now() - taskStart;
@@ -819,10 +805,10 @@ export class AgentRuntime {
 
     if (mode === "plan") {
       this.emitProgress("Plan mode", "Preparing structured plan", "📋");
-      const plannerModel = await this.resolveModelOrFallback(
-        this.currentConfig.plannerModel,
-      );
-      const webResearch = await this.collectWebResearch(objective, mode);
+      const [plannerModel, webResearch] = await Promise.all([
+        this.resolveModelOrFallback(this.currentConfig.plannerModel),
+        this.collectWebResearch(objective, mode),
+      ]);
       if (webResearch) {
         this.emitProgress(
           "Web research",
@@ -848,20 +834,7 @@ export class AgentRuntime {
         JSON.stringify(plan, null, 2),
       ].join("\n");
 
-      await this.sessionStore.appendMessage(session.id, {
-        role: "assistant",
-        content: responseText,
-        createdAt: new Date().toISOString(),
-      });
-      await this.sessionStore.updateSessionResult(session.id, responseText);
-      await this.editManager.clearPendingProposal();
-      await this.learnFromExchange(objective, responseText, mode);
-      if (this.currentConfig.memoryMode !== "off") {
-        await this.memoryStore.addEpisode(
-          objective,
-          responseText.slice(0, 400),
-        );
-      }
+      await this.persistTaskResult(session.id, objective, responseText, mode);
 
       return {
         sessionId: session.id,
@@ -879,12 +852,11 @@ export class AgentRuntime {
         this.currentConfig.fastModel,
         "✨",
       );
-      const model = await this.resolveModelOrFallback(
-        this.currentConfig.fastModel,
-      );
-      const styleHintConvo = await this.getLearnedStyleHint(objective, mode);
-      const improvementHintsConvo =
-        await this.improvementEngine.getOptimizedBehaviorHints(objective, mode);
+      const [model, styleHintConvo, improvementHintsConvo] = await Promise.all([
+        this.resolveModelOrFallback(this.currentConfig.fastModel),
+        this.getLearnedStyleHint(objective, mode),
+        this.improvementEngine.getOptimizedBehaviorHints(objective, mode),
+      ]);
       const agentAwarenessConvo =
         this.improvementEngine.getAgentAwarenessHints();
       const taskStartConvo = Date.now();
@@ -892,6 +864,9 @@ export class AgentRuntime {
       const response = await this.provider.chat({
         model,
         signal,
+        onChunk: (chunk) => {
+          this.emitProgress("Streaming", chunk.slice(0, 120), "✨");
+        },
         messages: [
           {
             role: "system" as const,
@@ -927,20 +902,7 @@ export class AgentRuntime {
       });
       this.consumeTokens(response.tokenUsage);
 
-      await this.sessionStore.appendMessage(session.id, {
-        role: "assistant",
-        content: response.text,
-        createdAt: new Date().toISOString(),
-      });
-      await this.sessionStore.updateSessionResult(session.id, response.text);
-      await this.editManager.clearPendingProposal();
-      await this.learnFromExchange(objective, response.text, mode);
-      if (this.currentConfig.memoryMode !== "off") {
-        await this.memoryStore.addEpisode(
-          objective,
-          response.text.slice(0, 400),
-        );
-      }
+      await this.persistTaskResult(session.id, objective, response.text, mode);
 
       const taskDurConvo = Date.now() - taskStartConvo;
       this.selfReflectBackground(
@@ -984,22 +946,12 @@ export class AgentRuntime {
       signal,
     );
 
-    await this.sessionStore.appendMessage(session.id, {
-      role: "assistant",
-      content: agentResult.responseText,
-      createdAt: new Date().toISOString(),
-    });
-    await this.sessionStore.updateSessionResult(
+    await this.persistTaskResult(
       session.id,
+      objective,
       agentResult.responseText,
+      mode,
     );
-    await this.learnFromExchange(objective, agentResult.responseText, mode);
-    if (this.currentConfig.memoryMode !== "off") {
-      await this.memoryStore.addEpisode(
-        objective,
-        agentResult.responseText.slice(0, 400),
-      );
-    }
 
     const taskDurAgent = Date.now() - taskStartAgent;
     const proposedEditCount = agentResult.proposal?.edits.length ?? 0;
@@ -1085,6 +1037,8 @@ export class AgentRuntime {
       );
     }
 
+    this.packageScriptsCache.clear();
+
     return `Applied transaction ${result.id}.`;
   }
 
@@ -1100,6 +1054,8 @@ export class AgentRuntime {
         `Reverted transaction ${reverted.id}`,
       );
     }
+
+    this.packageScriptsCache.clear();
 
     return `Reverted transaction ${reverted.id}.`;
   }
@@ -1774,10 +1730,8 @@ export class AgentRuntime {
   }
 
   private async buildConversationHistory(
-    sessionId: string,
+    messages: ConversationMessage[] = [],
   ): Promise<Array<{ role: "user" | "assistant"; content: string }>> {
-    const session = await this.sessionStore.getSession(sessionId);
-    const messages = session?.messages ?? [];
     return messages.slice(-8).map((message) => ({
       role: message.role,
       content: message.content,
@@ -2017,54 +1971,69 @@ export class AgentRuntime {
     mode: ConversationMode,
   ): boolean {
     const normalized = objective.toLowerCase();
-    const timeSensitiveSignals = [
-      "latest",
-      "current",
-      "recent",
-      "today",
-      "this week",
-      "this month",
-      "web",
-      "online",
-      "internet",
-      "search",
-      "docs",
-      "documentation",
-      "release",
-      "release notes",
-      "version",
-      "news",
-      "pricing",
-      "api",
-      "what changed",
-      "up to date",
-      "up-to-date",
-      "official",
+    const explicitSearchIntent = [
+      "search the web",
+      "look it up online",
+      "find online",
+      "check the internet",
+      "browse for",
     ];
 
-    if (timeSensitiveSignals.some((token) => normalized.includes(token))) {
+    const timeSensitiveSignals = [
+      "latest version",
+      "release notes",
+      "changelog",
+      "what changed",
+      "current price",
+      "pricing",
+      "breaking change",
+      "migration guide",
+      "this week",
+      "today",
+      "just released",
+      "just announced",
+      "official docs",
+    ];
+
+    if (
+      this.matchesAny(normalized, explicitSearchIntent) ||
+      this.matchesAny(normalized, timeSensitiveSignals)
+    ) {
       return true;
     }
 
     if (mode === "ask") {
-      return [
+      return this.matchesAny(normalized, [
         "what is",
         "who is",
         "how to",
         "how do i",
         "compare",
         "recommend",
-        "best",
         "should i",
-      ].some((token) => normalized.includes(token));
+      ]);
     }
 
     return (
       mode === "agent" &&
-      ["package", "dependency", "sdk", "library", "framework", "docs"].some(
-        (token) => normalized.includes(token),
-      )
+      this.matchesAny(normalized, [
+        "package",
+        "dependency",
+        "sdk",
+        "library",
+        "framework",
+        "docs",
+        "release notes",
+        "version",
+      ])
     );
+  }
+
+  private matchesAny(text: string, tokens: string[]): boolean {
+    return tokens.some((token) => {
+      const escaped = token.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      return new RegExp(`\\b${escaped}\\b`, "i").test(text);
+    });
   }
 
   private formatWebResearchContext(result: WebSearchResponse): string {
@@ -2093,6 +2062,32 @@ export class AgentRuntime {
     return lines.join("\n");
   }
 
+  private async persistTaskResult(
+    sessionId: string,
+    objective: string,
+    responseText: string,
+    mode: ConversationMode,
+  ): Promise<void> {
+    await Promise.all([
+      this.sessionStore.appendMessage(sessionId, {
+        role: "assistant",
+        content: responseText,
+        createdAt: new Date().toISOString(),
+      }),
+      this.sessionStore.updateSessionResult(sessionId, responseText),
+    ]);
+
+    void Promise.all([
+      this.editManager.clearPendingProposal(),
+      this.learnFromExchange(objective, responseText, mode),
+      this.currentConfig.memoryMode !== "off"
+        ? this.memoryStore.addEpisode(objective, responseText.slice(0, 400))
+        : Promise.resolve(),
+    ]).catch((error) => {
+      this.logger.warn(`Post-task write failed: ${stringifyError(error)}`);
+    });
+  }
+
   private async runAgentWorkflow(
     objective: string,
     sessionId: string,
@@ -2101,6 +2096,7 @@ export class AgentRuntime {
     plan: TaskPlan;
     responseText: string;
     todos: TaskTodo[];
+    shortcuts: string[];
     proposal: EditProposal | null;
     autoApplied: boolean;
     toolTrace: TaskToolObservation[];
@@ -2113,45 +2109,45 @@ export class AgentRuntime {
 
     checkAborted();
 
-    const plannerModel = await this.resolveModelOrFallback(
-      this.currentConfig.plannerModel,
-    );
-    const editorModel = await this.resolveModelOrFallback(
-      this.currentConfig.editorModel,
-    );
-
-    this.emitProgress("Building plan", plannerModel, "📋");
-    const plan = await this.planner.createPlan(objective, plannerModel);
-    const selectedSkills = this.skillRegistry.selectForObjective(objective);
-
-    this.emitProgress("Scanning workspace", "Finding relevant files", "🔍");
-    const candidateFiles = await this.scanner.findRelevantFiles(objective, 8);
-    const contextSnippets = await this.scanner.readContextSnippets(
-      candidateFiles.slice(0, 4),
-      2400,
-    );
-    const episodes =
+    const sessionPromise = this.sessionStore.getSession(sessionId);
+    const [
+      plannerModel,
+      editorModel,
+      candidateFiles,
+      episodes,
+      webResearch,
+      styleHintAgent,
+      improvementHintsAgent,
+    ] = await Promise.all([
+      this.resolveModelOrFallback(this.currentConfig.plannerModel),
+      this.resolveModelOrFallback(this.currentConfig.editorModel),
+      this.scanner.findRelevantFiles(objective, 8),
       this.currentConfig.memoryMode === "off"
-        ? []
-        : await this.memoryStore.latestEpisodes(3);
-    const webResearch = await this.collectWebResearch(objective, "agent");
+        ? Promise.resolve([])
+        : this.memoryStore.latestEpisodes(3),
+      this.collectWebResearch(objective, "agent"),
+      this.getLearnedStyleHint(objective, "agent"),
+      this.improvementEngine.getOptimizedBehaviorHints(objective, "agent"),
+    ]);
+    const agentAwarenessAgent = this.improvementEngine.getAgentAwarenessHints();
     if (webResearch) {
       this.emitProgress("Web research", webResearch.query ?? "searching", "🌐");
     }
 
-    const styleHintAgent = await this.getLearnedStyleHint(objective, "agent");
-    const improvementHintsAgent =
-      await this.improvementEngine.getOptimizedBehaviorHints(
-        objective,
-        "agent",
-      );
-    const agentAwarenessAgent = this.improvementEngine.getAgentAwarenessHints();
-    const session = await this.sessionStore.getSession(sessionId);
-    const attachedContext = await this.loadAttachedFileContext(
-      session?.attachedFiles ?? [],
-    );
-    const conversationHistory = await this.buildConversationHistory(sessionId);
+    const session = await sessionPromise;
+    const [contextSnippets, attachedContext, conversationHistory] =
+      await Promise.all([
+        this.scanner.readContextSnippets(candidateFiles.slice(0, 4), 2400),
+        this.loadAttachedFileContext(session?.attachedFiles ?? []),
+        this.buildConversationHistory(session?.messages ?? []),
+      ]);
+    const selectedSkills = this.skillRegistry.selectForObjective(objective);
     const skillsSummary = this.skillRegistry.summarizeSelection(selectedSkills);
+    const optionalShortcuts =
+      this.skillRegistry.buildOptionalShortcuts(selectedSkills);
+    const shortcutSummary = formatShortcutHints(optionalShortcuts);
+    this.emitProgress("Building plan", plannerModel, "🧠");
+    const plan = await this.planner.createPlan(objective, plannerModel);
 
     const buildPrompt = (
       toolContext: string,
@@ -2164,11 +2160,15 @@ export class AgentRuntime {
         ...(styleHintAgent ? [styleHintAgent] : []),
         ...(improvementHintsAgent ? [improvementHintsAgent] : []),
         ...(agentAwarenessAgent ? [agentAwarenessAgent] : []),
+        shortcutSummary ? shortcutSummary : "",
         "",
         "## Operating rules",
         "- Always create a short todo list before making changes.",
+        "- Keep TODOs to 3-5 short, imperative lines.",
+        "- Use tools only when you are at least 0.90 confident they will improve accuracy.",
         "- Read the workspace context carefully before editing or running commands.",
         "- Use tool calls when you need more evidence. Do not guess if a tool can answer the question.",
+        "- Prefer one high-signal tool over multiple low-confidence calls.",
         "- Prefer small, targeted edits over broad rewrites.",
         "- Keep the current workspace as the only edit target.",
         "- Use terminal verification for builds, tests, diagnostics, or other safe checks.",
@@ -2178,7 +2178,7 @@ export class AgentRuntime {
         "",
         "## Response format",
         "Return strict JSON with these fields:",
-        '{"response":"...","todos":[{"id":"todo_1","title":"...","status":"pending","detail":"..."}],"toolCalls":[{"tool":"workspace_scan|read_files|run_terminal|run_verification|web_search|git_diff|mcp_status|diagnostics","args":{},"reason":"..."}],"edits":[...]}',
+        '{"response":"...","todos":[{"id":"todo_1","title":"...","status":"pending","detail":"..."}],"shortcuts":["read","scan","verify"],"toolCalls":[{"tool":"workspace_scan|read_files|run_terminal|run_verification|web_search|git_diff|mcp_status|diagnostics","args":{},"reason":"..."}],"edits":[...]}',
         "",
         "## Tool guidance",
         "- workspace_scan: inspect the workspace when you need more file-level context.",
@@ -2222,6 +2222,7 @@ export class AgentRuntime {
       todos: plan.todos,
       toolCalls: [],
       edits: [],
+      shortcuts: optionalShortcuts,
     };
     const toolTrace: TaskToolObservation[] = [];
     let toolContext = "";
@@ -2236,6 +2237,9 @@ export class AgentRuntime {
         model: editorModel,
         format: "json",
         signal,
+        onChunk: (chunk) => {
+          this.emitProgress("Streaming", chunk.slice(0, 120), "✨");
+        },
         messages: [
           {
             role: "system",
@@ -2255,6 +2259,9 @@ export class AgentRuntime {
       parsed = parseTaskResponse(response.text);
       if (parsed.todos.length === 0) {
         parsed.todos = plan.todos;
+      }
+      if (parsed.shortcuts.length === 0) {
+        parsed.shortcuts = optionalShortcuts;
       }
 
       requestedVerification ||= parsed.toolCalls.some(
@@ -2349,6 +2356,8 @@ export class AgentRuntime {
       },
       responseText: parsed.response || "Task completed.",
       todos: parsed.todos.length > 0 ? parsed.todos : plan.todos,
+      shortcuts:
+        parsed.shortcuts.length > 0 ? parsed.shortcuts : optionalShortcuts,
       proposal: autoApplied ? null : proposal,
       autoApplied,
       toolTrace,
@@ -2363,183 +2372,211 @@ export class AgentRuntime {
     objective: string,
     signal?: AbortSignal,
   ): Promise<TaskToolObservation[]> {
-    const observations: TaskToolObservation[] = [];
-    const workspaceRoot = this.workspaceRoot?.fsPath ?? null;
+    const limitedCalls = toolCalls.slice(0, 5);
+    const settled = await Promise.allSettled(
+      limitedCalls.map((call) =>
+        this.executeSingleToolCall(call, objective, signal),
+      ),
+    );
 
+    const observations: TaskToolObservation[] = [];
+    settled.forEach((result, index) => {
+      if (result.status === "fulfilled") {
+        observations.push(...result.value);
+        return;
+      }
+
+      observations.push({
+        tool: limitedCalls[index].tool,
+        ok: false,
+        summary: `Tool execution failed: ${stringifyError(result.reason)}`,
+        detail: limitedCalls[index].reason,
+      });
+    });
+
+    return observations;
+  }
+
+  private async executeSingleToolCall(
+    call: TaskToolCall,
+    objective: string,
+    signal?: AbortSignal,
+  ): Promise<TaskToolObservation[]> {
+    const workspaceRoot = this.workspaceRoot?.fsPath ?? null;
     const checkAborted = () => {
       if (signal?.aborted) {
         throw new Error("__TASK_CANCELLED__");
       }
     };
 
-    for (const call of toolCalls.slice(0, 5)) {
-      checkAborted();
+    checkAborted();
 
-      try {
-        if (call.tool === "workspace_scan") {
-          const inventory = await this.buildWorkspaceInventory(250);
-          observations.push({
-            tool: call.tool,
-            ok: true,
-            summary: `Found ${inventory.totalFiles} file(s) in the workspace.`,
-            detail: inventory.listedFiles.slice(0, 20).join("\n"),
-          });
-          continue;
-        }
-
-        if (call.tool === "read_files") {
-          const requestedPaths = this.extractStringList(
-            call.args.paths,
-            call.args.files,
-            call.args.filePaths,
-            call.args.path,
-          );
-          const resolvedPaths = requestedPaths
-            .map((item) => this.resolveWorkspacePath(item))
-            .filter((item): item is string => Boolean(item));
-          const snippets = await this.scanner.readContextSnippets(
-            resolvedPaths.slice(0, 8),
-            2400,
-          );
-          observations.push({
-            tool: call.tool,
-            ok: snippets.length > 0,
-            summary:
-              snippets.length > 0
-                ? `Read ${snippets.length} file(s).`
-                : "No readable files were returned.",
-            detail: snippets
-              .map(
-                (snippet) =>
-                  `File: ${this.normalizeDisplayPath(snippet.path)}\n${snippet.content}`,
-              )
-              .join("\n\n")
-              .slice(0, 5000),
-          });
-          continue;
-        }
-
-        if (call.tool === "run_terminal") {
-          const command = this.firstString(call.args.command, call.args.cmd);
-          if (!command) {
-            observations.push({
-              tool: call.tool,
-              ok: false,
-              summary: "No terminal command was provided.",
-            });
-            continue;
-          }
-
-          if (
-            !isSafeTerminalCommand(command) &&
-            !this.currentConfig.allowTerminalExecution
-          ) {
-            observations.push({
-              tool: call.tool,
-              ok: false,
-              summary: "Terminal execution is disabled for unsafe commands.",
-              detail: command,
-            });
-            continue;
-          }
-
-          this.emitProgress("Terminal", command, "🖥️");
-          const result = await this.executeTerminalCommand(command, {
-            cwd: workspaceRoot ?? undefined,
-            timeoutMs: 120_000,
-            purpose: "tool",
-          });
-          observations.push({
-            tool: call.tool,
-            ok: result !== null && result.exitCode === 0,
-            summary: result
-              ? `Exit ${result.exitCode ?? "unknown"} in ${result.durationMs}ms.`
-              : "Terminal command was blocked.",
-            detail: result ? result.output.slice(0, 5000) : command,
-          });
-          continue;
-        }
-
-        if (call.tool === "run_verification") {
-          const verificationObservations = await this.runVerificationWorkflow(
-            objective,
-            signal,
-            call.args,
-          );
-          observations.push(...verificationObservations);
-          continue;
-        }
-
-        if (call.tool === "web_search") {
-          const query = this.firstString(call.args.query) ?? objective;
-          const result = await this.researchWeb(query);
-          observations.push({
-            tool: call.tool,
-            ok: true,
-            summary: `Web search returned ${result.results.length} result(s).`,
-            detail: this.webSearch.formatResult(result).slice(0, 5000),
-          });
-          continue;
-        }
-
-        if (call.tool === "git_diff") {
-          const filePath = this.firstString(call.args.filePath, call.args.path);
-          if (filePath) {
-            const diff = await this.gitService.getFileDiff(
-              this.resolveWorkspacePath(filePath) ?? filePath,
-            );
-            observations.push({
-              tool: call.tool,
-              ok: diff !== null,
-              summary: diff
-                ? `Loaded diff for ${this.normalizeDisplayPath(diff.path)}.`
-                : "No diff available.",
-              detail: diff?.diff.slice(0, 5000),
-            });
-            continue;
-          }
-
-          const diffSummary = await this.gitService.getDiffSummary();
-          observations.push({
-            tool: call.tool,
-            ok: diffSummary.isGitRepo,
-            summary: diffSummary.summary,
-            detail: JSON.stringify(diffSummary, null, 2).slice(0, 5000),
-          });
-          continue;
-        }
-
-        if (call.tool === "mcp_status") {
-          const summary = await this.mcpSummary();
-          observations.push({
-            tool: call.tool,
-            ok: true,
-            summary: "Loaded MCP connection summary.",
-            detail: summary.slice(0, 5000),
-          });
-          continue;
-        }
-
-        if (call.tool === "diagnostics") {
-          const diagnostics = this.verifier.runDiagnostics();
-          observations.push({
-            tool: call.tool,
-            ok: !diagnostics.hasErrors,
-            summary: diagnostics.summary,
-            detail: JSON.stringify(diagnostics, null, 2),
-          });
-        }
-      } catch (error) {
-        observations.push({
+    if (call.tool === "workspace_scan") {
+      const inventory = await this.buildWorkspaceInventory(250);
+      return [
+        {
           tool: call.tool,
-          ok: false,
-          summary: `Tool execution failed: ${stringifyError(error)}`,
-          detail: call.reason,
-        });
-      }
+          ok: true,
+          summary: `Found ${inventory.totalFiles} file(s) in the workspace.`,
+          detail: inventory.listedFiles.slice(0, 20).join("\n"),
+        },
+      ];
     }
 
-    return observations;
+    if (call.tool === "read_files") {
+      const requestedPaths = this.extractStringList(
+        call.args.paths,
+        call.args.files,
+        call.args.filePaths,
+        call.args.path,
+      );
+      const resolvedPaths = requestedPaths
+        .map((item) => this.resolveWorkspacePath(item))
+        .filter((item): item is string => Boolean(item));
+      const snippets = await this.scanner.readContextSnippets(
+        resolvedPaths.slice(0, 8),
+        2400,
+      );
+      return [
+        {
+          tool: call.tool,
+          ok: snippets.length > 0,
+          summary:
+            snippets.length > 0
+              ? `Read ${snippets.length} file(s).`
+              : "No readable files were returned.",
+          detail: snippets
+            .map(
+              (snippet) =>
+                `File: ${this.normalizeDisplayPath(snippet.path)}\n${snippet.content}`,
+            )
+            .join("\n\n")
+            .slice(0, 5000),
+        },
+      ];
+    }
+
+    if (call.tool === "run_terminal") {
+      const command = this.firstString(call.args.command, call.args.cmd);
+      if (!command) {
+        return [
+          {
+            tool: call.tool,
+            ok: false,
+            summary: "No terminal command was provided.",
+          },
+        ];
+      }
+
+      if (
+        !isSafeTerminalCommand(command) &&
+        !this.currentConfig.allowTerminalExecution
+      ) {
+        return [
+          {
+            tool: call.tool,
+            ok: false,
+            summary: "Terminal execution is disabled for unsafe commands.",
+            detail: command,
+          },
+        ];
+      }
+
+      this.emitProgress("Terminal", command, "🖥️");
+      const result = await this.executeTerminalCommand(command, {
+        cwd: workspaceRoot ?? undefined,
+        timeoutMs: 120_000,
+        purpose: "tool",
+      });
+      return [
+        {
+          tool: call.tool,
+          ok: result !== null && result.exitCode === 0,
+          summary: result
+            ? `Exit ${result.exitCode ?? "unknown"} in ${result.durationMs}ms.`
+            : "Terminal command was blocked.",
+          detail: result ? result.output.slice(0, 5000) : command,
+        },
+      ];
+    }
+
+    if (call.tool === "run_verification") {
+      return this.runVerificationWorkflow(objective, signal, call.args);
+    }
+
+    if (call.tool === "web_search") {
+      const query = this.firstString(call.args.query) ?? objective;
+      const result = await this.researchWeb(query);
+      return [
+        {
+          tool: call.tool,
+          ok: true,
+          summary: `Web search returned ${result.results.length} result(s).`,
+          detail: this.webSearch.formatResult(result).slice(0, 5000),
+        },
+      ];
+    }
+
+    if (call.tool === "git_diff") {
+      const filePath = this.firstString(call.args.filePath, call.args.path);
+      if (filePath) {
+        const diff = await this.gitService.getFileDiff(
+          this.resolveWorkspacePath(filePath) ?? filePath,
+        );
+        return [
+          {
+            tool: call.tool,
+            ok: diff !== null,
+            summary: diff
+              ? `Loaded diff for ${this.normalizeDisplayPath(diff.path)}.`
+              : "No diff available.",
+            detail: diff?.diff.slice(0, 5000),
+          },
+        ];
+      }
+
+      const diffSummary = await this.gitService.getDiffSummary();
+      return [
+        {
+          tool: call.tool,
+          ok: diffSummary.isGitRepo,
+          summary: diffSummary.summary,
+          detail: JSON.stringify(diffSummary, null, 2).slice(0, 5000),
+        },
+      ];
+    }
+
+    if (call.tool === "mcp_status") {
+      const summary = await this.mcpSummary();
+      return [
+        {
+          tool: call.tool,
+          ok: true,
+          summary: "Loaded MCP connection summary.",
+          detail: summary.slice(0, 5000),
+        },
+      ];
+    }
+
+    if (call.tool === "diagnostics") {
+      const diagnostics = this.verifier.runDiagnostics();
+      return [
+        {
+          tool: call.tool,
+          ok: !diagnostics.hasErrors,
+          summary: diagnostics.summary,
+          detail: JSON.stringify(diagnostics, null, 2),
+        },
+      ];
+    }
+
+    return [
+      {
+        tool: call.tool,
+        ok: false,
+        summary: "Unsupported tool call.",
+      },
+    ];
   }
 
   private async runVerificationWorkflow(
@@ -2673,6 +2710,10 @@ export class AgentRuntime {
   private async readPackageScripts(
     packageJsonPath: string,
   ): Promise<Record<string, string> | null> {
+    if (this.packageScriptsCache.has(packageJsonPath)) {
+      return this.packageScriptsCache.get(packageJsonPath) ?? null;
+    }
+
     try {
       const bytes = await vscode.workspace.fs.readFile(
         vscode.Uri.file(packageJsonPath),
@@ -2685,12 +2726,15 @@ export class AgentRuntime {
         return null;
       }
 
-      return Object.fromEntries(
+      const scripts = Object.fromEntries(
         Object.entries(parsed.scripts).flatMap(([name, value]) =>
           typeof value === "string" ? [[name, value]] : [],
         ),
       );
+      this.packageScriptsCache.set(packageJsonPath, scripts);
+      return scripts;
     } catch {
+      this.packageScriptsCache.set(packageJsonPath, null);
       return null;
     }
   }

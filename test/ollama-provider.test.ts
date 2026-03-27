@@ -123,4 +123,56 @@ describe("OllamaProvider", () => {
       totalTokens: 3,
     });
   });
+
+  it("parses streamed chat chunks and ignores malformed lines", async () => {
+    mockRequestImpl = (options: any, callback?: (res: any) => void) => {
+      const urlPath = options.path ?? "";
+      const listeners: Record<string, Function[]> = {};
+      const req = {
+        destroy: vi.fn(),
+        write: vi.fn(),
+        on(event: string, fn: Function) {
+          if (!listeners[event]) listeners[event] = [];
+          listeners[event].push(fn);
+          return req;
+        },
+        emit(event: string, ...args: any[]) {
+          for (const fn of listeners[event] ?? []) fn(...args);
+        },
+        end() {
+          let body = "";
+          let status = 200;
+
+          if (urlPath.includes("/api/chat")) {
+            body =
+              '{"message":{"content":"hel"},"prompt_eval_count":4}\n' +
+              "not json\n" +
+              '{"message":{"content":"lo"},"eval_count":3}\n' +
+              '{"message":{"content":" world"},"done":true,"prompt_eval_count":4,"eval_count":3}\n';
+          }
+
+          const res = fakeResponse(status, body);
+          if (callback) callback(res);
+        },
+      };
+
+      return req;
+    };
+
+    const provider = new OllamaProvider("http://127.0.0.1:11434");
+    const chunks: string[] = [];
+    const chat = await provider.chat({
+      model: "qwen2.5-coder:7b",
+      messages: [{ role: "user", content: "ping" }],
+      onChunk: (chunk) => chunks.push(chunk),
+    });
+
+    expect(chat.text).toBe("hello world");
+    expect(chunks).toEqual(["hel", "lo", " world"]);
+    expect(chat.tokenUsage).toEqual({
+      promptTokens: 4,
+      completionTokens: 3,
+      totalTokens: 7,
+    });
+  });
 });
