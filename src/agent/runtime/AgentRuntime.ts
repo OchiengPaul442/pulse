@@ -2327,26 +2327,14 @@ export class AgentRuntime {
     let requestedVerification = false;
     let finalAssessment: TaskQualityAssessment | null = null;
 
-    for (let iteration = 0; iteration < 3; iteration += 1) {
+    // Keep the refinement loop short so edit tasks stay responsive.
+    for (let iteration = 0; iteration < 2; iteration += 1) {
       this.emitProgress("Generating response", editorModel, "✨");
       checkAborted();
-      let agentChunkCount = 0;
       const response = await this.provider.chat({
         model: editorModel,
         format: "json",
         signal,
-        onChunk: () => {
-          // Agent mode streams JSON — individual fragments are not useful as
-          // reasoning text. Emit a generic progress update periodically.
-          agentChunkCount++;
-          if (agentChunkCount % 20 === 1) {
-            this.emitProgress(
-              "Generating response",
-              `${agentChunkCount} tokens`,
-              "✨",
-            );
-          }
-        },
         messages: [
           {
             role: "system",
@@ -2359,7 +2347,7 @@ export class AgentRuntime {
             content: buildPrompt(toolContext, critiqueContext),
           },
         ],
-        maxTokens: 4096,
+        maxTokens: 3072,
       });
       this.consumeTokens(response.tokenUsage);
 

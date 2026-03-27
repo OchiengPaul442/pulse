@@ -127,14 +127,6 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
       });
     });
 
-    // Forward real-time token usage to the webview
-    this.runtime.setTokenCallback((snapshot) => {
-      void webviewView.webview.postMessage({
-        type: "tokenUpdate",
-        payload: snapshot,
-      });
-    });
-
     // Re-push state every time the sidebar panel becomes visible
     webviewView.onDidChangeVisibility(() => {
       if (webviewView.visible) {
@@ -937,7 +929,7 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
     .perm-opt.active .perm-opt-title::after { content: ' \\2713'; font-size: 10px; opacity: .6; }
 
     /* ── Token ring ─── */
-    .token-ring { position: relative; width: 32px; height: 32px; flex-shrink: 0; }
+    .token-ring { display: none; }
     .token-ring-svg { width: 100%; height: 100%; }
     .token-ring-bg { stroke: rgba(128,128,128,.12); }
     .token-ring-fg { stroke: var(--orange); transition: stroke-dasharray 400ms ease; }
@@ -1708,7 +1700,6 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
       var eCount = s && typeof s.pendingEditCount === 'number' ? s.pendingEditCount : 0;
       bannerTxt.textContent = eCount > 0 ? eCount + ' file' + (eCount === 1 ? '' : 's') + ' changed \u2014 review before applying' : 'Pending file edits \u2014 review before applying';
     }
-    if (s) updateTokenRing(s.tokenUsagePercent || 0);
     if (learningBadge) {
       var learningPct = s && typeof s.learningProgressPercent === 'number' ? s.learningProgressPercent : 0;
       learningBadge.textContent = 'Learning ' + Math.max(0, Math.min(100, Math.round(learningPct))) + '%';
@@ -1863,7 +1854,6 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
     if (type === 'sessionDeleted') { handleSessionDeleted(payload); return; }
     if (type === 'sessionAttachments') { renderAttachments(payload); return; }
     if (type === 'thinkingStep') { addThinkingStep(payload); return; }
-    if (type === 'tokenUpdate') { updateTokenRing((payload && payload.percent) || 0); return; }
     if (type === 'taskResult') {
       var isCancelled = payload && payload.cancelled;
       finishThinking(isCancelled);
