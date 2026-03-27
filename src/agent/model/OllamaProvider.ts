@@ -40,6 +40,7 @@ interface OllamaPsResponse {
 interface SimpleResponse {
   ok: boolean;
   status: number;
+  text(): Promise<string>;
   json(): Promise<any>;
 }
 
@@ -122,7 +123,13 @@ export class OllamaProvider implements ModelProvider {
     }).finally(cleanup);
 
     if (!response.ok) {
-      throw new Error(`Ollama chat failed (HTTP ${response.status})`);
+      const body = await response.text().catch(() => "");
+      const detail = extractOllamaError(body);
+      throw new Error(
+        detail
+          ? `Ollama chat failed (HTTP ${response.status}): ${detail}`
+          : `Ollama chat failed (HTTP ${response.status})`,
+      );
     }
 
     const data = (await response.json()) as OllamaChatResponse;
@@ -271,6 +278,7 @@ export class OllamaProvider implements ModelProvider {
           const response: SimpleResponse = {
             ok: statusCode >= 200 && statusCode < 300,
             status: statusCode,
+            text: async () => data,
             json: async () => {
               try {
                 return JSON.parse(data);
@@ -408,4 +416,30 @@ function dedupeAndSortModels(models: ModelSummary[]): ModelSummary[] {
   }
 
   return [...byName.values()].sort((a, b) => a.name.localeCompare(b.name));
+}
+
+export function extractOllamaError(body: string): string {
+  const trimmed = body.trim();
+  if (!trimmed) {
+    return "";
+  }
+
+  try {
+    const parsed = JSON.parse(trimmed) as {
+      error?: unknown;
+      message?: unknown;
+      detail?: unknown;
+    };
+    const details = [parsed.error, parsed.message, parsed.detail]
+      .filter((value): value is string => typeof value === "string")
+      .map((value) => value.trim())
+      .filter(Boolean);
+    if (details.length > 0) {
+      return details[0];
+    }
+  } catch {
+    // fall back to plain text below
+  }
+
+  return trimmed.slice(0, 240);
 }

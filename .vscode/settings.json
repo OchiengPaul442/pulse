@@ -1,8 +1,10 @@
 {
   "pulse.behavior.approvalMode": "balanced",
   "pulse.ollama.baseUrl": "http://127.0.0.1:11434",
-  "pulse.models.planner": "qwen3:4b",
-  "pulse.behavior.conversationMode": "ask",
-  "pulse.models.editor": "qwen3:4b",
-  "pulse.models.fast": "qwen3:4b"
+  "pulse.models.planner": "qwen2.5-coder:3b",
+  "pulse.behavior.conversationMode": "agent",
+  "pulse.models.editor": "qwen2.5-coder:3b",
+  "pulse.models.fast": "qwen2.5-coder:3b",
+  "pulse.behavior.selfLearn": true,
+  "pulse.mcp.servers": []
 }

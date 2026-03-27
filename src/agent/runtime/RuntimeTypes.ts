@@ -4,9 +4,16 @@ import type { TaskTodo } from "./TaskProtocols";
 import type { TaskToolObservation } from "./TaskProtocols";
 
 export interface ConversationMessage {
+  id?: string;
   role: "user" | "assistant";
   content: string;
   createdAt: string;
+}
+
+export interface RunTaskRequest {
+  objective: string;
+  action?: "new" | "edit" | "retry";
+  messageId?: string;
 }
 
 export type ConversationMode = "agent" | "ask" | "plan";

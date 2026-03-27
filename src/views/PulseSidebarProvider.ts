@@ -56,6 +56,7 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
       tokenBudget: 32000,
       tokensConsumed: 0,
       tokenUsagePercent: 0,
+      learningProgressPercent: 0,
       mcpConfigured: 0,
       mcpHealthy: 0,
       selfLearnEnabled: false,
@@ -166,12 +167,53 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
             return;
           }
 
-          if (
-            message.type === "runTask" &&
-            typeof message.payload === "string"
-          ) {
+          if (message.type === "runTask") {
+            const request =
+              typeof message.payload === "string"
+                ? { objective: message.payload, action: "new" as const }
+                : message.payload !== null &&
+                    typeof message.payload === "object"
+                  ? (() => {
+                      const payload = message.payload as {
+                        objective?: unknown;
+                        action?: unknown;
+                        messageId?: unknown;
+                      };
+                      const objective =
+                        typeof payload.objective === "string"
+                          ? payload.objective
+                          : "";
+                      if (!objective) return null;
+                      const action =
+                        payload.action === "edit" ||
+                        payload.action === "retry" ||
+                        payload.action === "new"
+                          ? payload.action
+                          : undefined;
+                      const messageId =
+                        typeof payload.messageId === "string" &&
+                        payload.messageId.length > 0
+                          ? payload.messageId
+                          : undefined;
+                      return { objective, action, messageId };
+                    })()
+                  : null;
+
+            if (!request) {
+              await webviewView.webview.postMessage({
+                type: "taskResult",
+                payload: {
+                  responseText: "Error: Invalid task payload.",
+                  sessionId: "",
+                  proposedEdits: 0,
+                  cancelled: false,
+                },
+              });
+              return;
+            }
+
             try {
-              const result = await this.runtime.runTask(message.payload);
+              const result = await this.runtime.runTask(request);
               const taskText = [
                 result.responseText,
                 result.todos.length > 0
@@ -728,8 +770,8 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
     :root {
-      --accent: #6366f1; --accent-bg: rgba(99,102,241,0.10); --accent-bdr: rgba(99,102,241,0.28);
-      --accent-glow: rgba(99,102,241,0.14); --accent-hover: #4f46e5;
+      --accent: #2563eb; --accent-bg: rgba(37,99,235,0.10); --accent-bdr: rgba(37,99,235,0.24);
+      --accent-glow: rgba(37,99,235,0.14); --accent-hover: #1d4ed8;
       --orange: #d97706; --orange-hover: #b45309; --orange-glow: rgba(217,119,6,0.16);
       --green: #22c55e; --green-bg: rgba(34,197,94,0.08); --green-bdr: rgba(34,197,94,0.24);
       --red: var(--vscode-errorForeground, #f87171); --red-bg: rgba(248,113,113,0.06); --red-bdr: rgba(248,113,113,0.24);
@@ -749,6 +791,7 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
     .badge-dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
     .badge.on { color: var(--green); border-color: var(--green-bdr); background: var(--green-bg); }
     .badge.off { color: var(--red); border-color: var(--red-bdr); background: var(--red-bg); }
+    .badge.progress { color: var(--accent); border-color: var(--accent-bdr); background: var(--accent-bg); }
     .icon-btn { width: 24px; height: 24px; border: none; background: transparent; color: var(--fg); opacity: .45; cursor: pointer; border-radius: 6px; display: flex; align-items: center; justify-content: center; font-size: 14px; transition: opacity var(--spd), background var(--spd); }
     .icon-btn:hover { opacity: 1; background: var(--vscode-toolbar-hoverBackground, rgba(128,128,128,.12)); }
 
@@ -815,25 +858,21 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
     .msg-footer { display: flex; align-items: center; justify-content: space-between; gap: 4px; margin-top: 2px; padding: 0 2px; }
     .msg.user .msg-footer { justify-content: flex-end; }
     .msg-time { font-size: 10px; color: var(--fg2); }
-    .copy-btn { border: none; background: transparent; color: var(--fg2); cursor: pointer; font-size: 11px; opacity: 0; transition: opacity var(--spd); padding: 1px 4px; border-radius: 4px; }
+    .copy-btn { border: none; background: transparent; color: var(--fg2); cursor: pointer; font-size: 11px; opacity: .75; transition: opacity var(--spd), color var(--spd), background var(--spd); padding: 1px 4px; border-radius: 4px; }
     .copy-btn:hover { opacity: 1 !important; background: rgba(128,128,128,.12); }
-    .msg:hover .copy-btn { opacity: .6; }
-    .retry-btn { border: none; background: transparent; color: var(--fg2); cursor: pointer; font-size: 12px; opacity: 0; transition: opacity var(--spd); padding: 1px 4px; border-radius: 4px; }
+    .retry-btn { border: none; background: transparent; color: var(--fg2); cursor: pointer; font-size: 12px; opacity: .8; transition: opacity var(--spd), color var(--spd), background var(--spd); padding: 1px 4px; border-radius: 4px; }
     .retry-btn:hover { opacity: 1 !important; color: var(--accent); background: rgba(128,128,128,.12); }
-    .msg:hover .retry-btn { opacity: .5; }
+    .edit-btn { font-size: 11px; }
 
     /* ── Thinking panel (dynamic single-thought, ChatGPT-style) ─── */
     .thinking-panel { align-self: flex-start; width: 100%; overflow: hidden; font-size: 12px; }
     .thinking-panel.hidden { display: none; }
     .thinking-header { display: flex; align-items: center; gap: 6px; padding: 6px 2px; }
-    .thinking-dots { display: flex; align-items: center; gap: 3px; flex-shrink: 0; }
-    .thinking-dots span { display: block; width: 5px; height: 5px; border-radius: 50%; background: var(--accent); animation: bounce-dot 1.3s ease-in-out infinite; }
-    .thinking-dots span:nth-child(2) { animation-delay: .2s; }
-    .thinking-dots span:nth-child(3) { animation-delay: .4s; }
-    .thinking-panel.done .thinking-dots { display: none; }
+    .thinking-shimmer { display: block; width: 42px; height: 8px; flex-shrink: 0; border-radius: 999px; background: linear-gradient(90deg, rgba(37,99,235,0.12) 0%, rgba(37,99,235,0.66) 50%, rgba(37,99,235,0.12) 100%); background-size: 200% 100%; animation: shimmer 1.2s linear infinite; }
+    .thinking-panel.done .thinking-shimmer { display: none; }
     .thinking-done-icon { flex-shrink: 0; font-size: 11px; font-weight: 700; color: var(--green); display: none; }
     .thinking-panel.done .thinking-done-icon { display: block; }
-    @keyframes bounce-dot { 0%, 60%, 100% { transform: translateY(0); opacity: .35; } 30% { transform: translateY(-5px); opacity: 1; } }
+    @keyframes shimmer { 0% { background-position: 200% 0; opacity: .55; } 100% { background-position: -200% 0; opacity: 1; } }
     #thinkingTitle { flex: 1; font-size: 11px; font-weight: 600; color: var(--fg2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     .thinking-panel:not(.done) #thinkingTitle { color: var(--fg); }
     .thinking-elapsed { font-size: 10px; color: var(--fg2); opacity: .5; flex-shrink: 0; }
@@ -974,6 +1013,7 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
     <span id="statusBadge" class="badge ${initialStatusClass}">
       <span class="badge-dot"></span><span id="statusTxt">${initialStatusText}</span>
     </span>
+    <span id="learningBadge" class="badge progress">Learning 0%</span>
     <div class="hdr-right">
       <button id="btnNewChat" class="icon-btn" title="New conversation">&#43;</button>
       <button id="btnSettings" class="icon-btn" title="Settings">&#9881;</button>
@@ -1025,7 +1065,7 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
       <div id="messages"></div>
       <div id="thinkingPanel" class="thinking-panel hidden">
         <div class="thinking-header" id="thinkingToggle">
-          <span class="thinking-dots"><span></span><span></span><span></span></span>
+          <span class="thinking-shimmer"></span>
           <span class="thinking-done-icon">&#10003;</span>
           <span id="thinkingTitle">Thinking\u2026</span>
           <span id="thinkingElapsed" class="thinking-elapsed"></span>
@@ -1135,6 +1175,7 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
   var taskInput = D('taskInput'), btnSend = D('btnSend'), btnAttach = D('btnAttach');
   var permBtn = D('permBtn'), permBtnIcon = D('permBtnIcon'), permBtnLabel = D('permBtnLabel');
   var scrollBtn = D('scrollBtn'), selfLearnToggle = D('selfLearnToggle');
+  var learningBadge = D('learningBadge');
 
   // State
   var summary = null, models = [], mcpServers = [];
@@ -1144,6 +1185,8 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
   var thinkingSteps = [], thinkingStartTime = null;
   var modePopupOpen = false, modelPopupOpen = false, permPopupOpen = false;
   var isBusy = false;
+  var composeState = { mode: 'new', messageId: '', messageIndex: -1 };
+  var pendingRequest = null;
 
   // Helpers
   function esc(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
@@ -1157,6 +1200,46 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
   function autoGrow(el) { if (!el) return; el.style.height = 'auto'; el.style.height = Math.min(el.scrollHeight, 160) + 'px'; }
   function scrollBottom() { requestAnimationFrame(function() { var el = D('main'); if (el) el.scrollTop = 999999; }); }
   function on(el, evt, fn) { if (el) el.addEventListener(evt, fn); }
+  function makeMessageId() { return 'msg_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 8); }
+  function resetComposeState() { composeState = { mode: 'new', messageId: '', messageIndex: -1 }; if (taskInput) taskInput.placeholder = conversationMode === 'ask' ? 'Ask Pulse a question…' : conversationMode === 'plan' ? 'Describe the change you want planned…' : 'Ask Pulse anything about your code…'; if (btnSend) btnSend.title = 'Send (Enter)'; }
+  function beginEditMessage(messageId, messageIndex) {
+    var item = chatHistory[messageIndex];
+    if (!item || item.role !== 'user') return;
+    composeState = { mode: 'edit', messageId: messageId, messageIndex: messageIndex };
+    if (taskInput) {
+      taskInput.value = item.text || item.content || '';
+      autoGrow(taskInput);
+      taskInput.focus();
+      taskInput.setSelectionRange(taskInput.value.length, taskInput.value.length);
+      taskInput.placeholder = 'Edit message and resend…';
+    }
+    if (btnSend) {
+      btnSend.title = 'Save & Send';
+    }
+  }
+  function beginRetryMessage(messageId, messageIndex) {
+    var responseItem = chatHistory[messageIndex];
+    if (!responseItem) return;
+    var sourceText = '';
+    for (var i = messageIndex - 1; i >= 0; i--) {
+      if (chatHistory[i].role === 'user') {
+        sourceText = chatHistory[i].text || chatHistory[i].content || '';
+        break;
+      }
+    }
+    composeState = { mode: 'retry', messageId: messageId, messageIndex: messageIndex };
+    if (taskInput) {
+      taskInput.value = sourceText;
+      autoGrow(taskInput);
+      taskInput.focus();
+      taskInput.setSelectionRange(taskInput.value.length, taskInput.value.length);
+      taskInput.placeholder = 'Retrying the last request…';
+    }
+    if (btnSend) {
+      btnSend.title = 'Retry';
+    }
+    sendTask();
+  }
 
   // Markdown rendering
   function renderMarkdown(raw) {
@@ -1210,7 +1293,7 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
     if (chipMode) chipMode.textContent = conversationMode.toUpperCase();
     var popup = D('modePopup');
     if (popup) popup.querySelectorAll('.popup-opt').forEach(function(btn) { btn.classList.toggle('active', btn.dataset.mode === conversationMode); });
-    if (taskInput) {
+    if (taskInput && composeState.mode === 'new') {
       taskInput.placeholder = conversationMode === 'ask' ? 'Ask Pulse a question\u2026'
         : conversationMode === 'plan' ? 'Describe the change you want planned\u2026'
         : 'Ask Pulse anything about your code\u2026';
@@ -1353,16 +1436,22 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
     messages.innerHTML = '';
     for (var i = 0; i < chatHistory.length; i++) {
       var m = chatHistory[i];
+      if (!m.id) m.id = makeMessageId();
       var div = document.createElement('div');
       var role = m.role === 'assistant' ? 'agent' : m.role;
       div.className = 'msg ' + role + ' fadein';
+      div.dataset.messageId = String(m.id || '');
+      div.dataset.messageIndex = String(i);
+      if (composeState.mode === 'edit' && String(m.id || '') === String(composeState.messageId || '')) {
+        div.classList.add('editing');
+      }
       var text = m.text || m.content || '';
       var html = renderMarkdown(text);
       var rawTs = m.ts || m.createdAt || null;
       var ts = rawTs ? relTime(new Date(rawTs).toISOString()) : '';
       var footerActions = role === 'agent'
         ? '<button class="retry-btn" title="Retry">\u21ba</button><button class="copy-btn" title="Copy message">\uD83D\uDCCB</button>'
-        : '<button class="copy-btn" title="Copy message">\uD83D\uDCCB</button>';
+        : '<button class="retry-btn edit-btn" title="Edit message">\u270F</button><button class="copy-btn" title="Copy message">\uD83D\uDCCB</button>';
       div.innerHTML = '<div class="bubble">' + html + '</div>' +
         '<div class="msg-footer">' +
         '<span class="msg-time">' + esc(ts) + '</span>' +
@@ -1377,20 +1466,23 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
             setTimeout(function() { target.textContent = '\uD83D\uDCCB'; }, 1200);
           });
         });
+        if (msgRole === 'user') {
+          var editBtn = el.querySelector('.edit-btn');
+          if (editBtn) editBtn.addEventListener('click', function(e) {
+            e.stopPropagation();
+            beginEditMessage(String(el.dataset.messageId || ''), Number(el.dataset.messageIndex || -1));
+          });
+          el.addEventListener('dblclick', function(e) {
+            e.stopPropagation();
+            beginEditMessage(String(el.dataset.messageId || ''), Number(el.dataset.messageIndex || -1));
+          });
+        }
         if (msgRole === 'agent') {
           var retryBtn = el.querySelector('.retry-btn');
           if (retryBtn) retryBtn.addEventListener('click', function(e) {
             e.stopPropagation();
             if (isBusy) return;
-            var lastUserText = '';
-            for (var j = chatHistory.length - 1; j >= 0; j--) {
-              if (chatHistory[j].role === 'user') { lastUserText = chatHistory[j].text || chatHistory[j].content || ''; break; }
-            }
-            if (lastUserText && taskInput) {
-              taskInput.value = lastUserText;
-              autoGrow(taskInput);
-              sendTask();
-            }
+            beginRetryMessage(String(el.dataset.messageId || ''), Number(el.dataset.messageIndex || -1));
           });
         }
       })(text, div, role);
@@ -1423,19 +1515,21 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
 
   function renderLoadedSession(session) {
     if (!session) return;
+    pendingRequest = null;
+    resetComposeState();
     attachedFiles = session.attachedFiles || [];
     renderAttachments(attachedFiles);
     if (Array.isArray(session.messages) && session.messages.length > 0) {
-      chatHistory = session.messages.map(function(m) { return { role: m.role, content: m.content, ts: m.createdAt }; });
+      chatHistory = session.messages.map(function(m) { return { id: m.id || makeMessageId(), role: m.role, text: m.content, ts: m.createdAt }; });
     } else {
-      chatHistory = [{ role: 'user', text: session.objective || session.title || 'Session', ts: session.updatedAt || Date.now() }];
-      if (session.lastResult) chatHistory.push({ role: 'assistant', text: session.lastResult, ts: session.updatedAt || Date.now() });
+      chatHistory = [{ id: makeMessageId(), role: 'user', text: session.objective || session.title || 'Session', ts: session.updatedAt || Date.now() }];
+      if (session.lastResult) chatHistory.push({ id: makeMessageId(), role: 'assistant', text: session.lastResult, ts: session.updatedAt || Date.now() });
     }
     renderMessages(); showChat();
   }
 
   function handleSessionDeleted(payload) {
-    if (payload && payload.wasActive) { chatHistory = []; attachedFiles = []; renderAttachments(attachedFiles); renderMessages(); showHome(); }
+    if (payload && payload.wasActive) { chatHistory = []; attachedFiles = []; resetComposeState(); renderAttachments(attachedFiles); renderMessages(); showHome(); }
   }
 
   // Render summary
@@ -1456,6 +1550,11 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
     editsBanner.classList.toggle('on', Boolean(hasPending));
     if (hasPending) bannerTxt.textContent = 'Pending file edits \u2014 review before applying';
     if (s) updateTokenRing(s.tokenUsagePercent || 0);
+    if (learningBadge) {
+      var learningPct = s && typeof s.learningProgressPercent === 'number' ? s.learningProgressPercent : 0;
+      learningBadge.textContent = 'Learning ' + Math.max(0, Math.min(100, Math.round(learningPct))) + '%';
+      learningBadge.title = 'Self-improvement progress from recent tasks';
+    }
   }
 
   // Token ring
@@ -1485,7 +1584,7 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
       btnSend.innerHTML = '&#9632;';
     } else {
       btnSend.classList.remove('stop');
-      btnSend.title = 'Send (Enter)';
+      btnSend.title = composeState.mode === 'edit' ? 'Save & Send' : composeState.mode === 'retry' ? 'Retry' : 'Send (Enter)';
       btnSend.innerHTML = '&#8593;';
       btnSend.disabled = taskInput ? taskInput.value.trim().length === 0 : true;
     }
@@ -1500,11 +1599,35 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
     }
     var text = taskInput.value.trim();
     if (!text) return;
+    var action = composeState.mode || 'new';
+    var messageId = composeState.messageId || '';
+    var messageIndex = composeState.messageIndex;
+
+    if (action === 'edit' && messageId) {
+      if (messageIndex < 0 || !chatHistory[messageIndex] || String(chatHistory[messageIndex].id || '') !== messageId) {
+        messageIndex = -1;
+        for (var j = chatHistory.length - 1; j >= 0; j--) {
+          if (String(chatHistory[j].id || '') === messageId) { messageIndex = j; break; }
+        }
+      }
+      if (messageIndex >= 0) {
+        chatHistory[messageIndex].text = text;
+        chatHistory[messageIndex].content = text;
+        chatHistory = chatHistory.slice(0, messageIndex + 1);
+      }
+      renderMessages();
+    }
+
     taskInput.value = ''; taskInput.style.height = 'auto';
     setBusyMode(true);
-    chatHistory.push({ role: 'user', text: text, ts: Date.now() });
-    renderMessages(); showChat(); startThinking(); scrollBottom();
-    vscode.postMessage({ type: 'runTask', payload: text });
+    pendingRequest = { action: action, messageId: messageId };
+    if (action === 'new') {
+      chatHistory.push({ id: makeMessageId(), role: 'user', text: text, ts: Date.now() });
+      renderMessages();
+    }
+    showChat(); startThinking(); scrollBottom();
+    vscode.postMessage({ type: 'runTask', payload: { objective: text, action: action, messageId: messageId } });
+    resetComposeState();
   }
 
   // Event listeners
@@ -1541,7 +1664,7 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
   // Self-learn toggle
   on(selfLearnToggle, 'change', function() { vscode.postMessage({ type: 'setSelfLearn', payload: selfLearnToggle.checked }); });
 
-  on(btnNewChat, 'click', function() { chatHistory = []; attachedFiles = []; renderAttachments(attachedFiles); renderMessages(); showChat(); vscode.postMessage({ type: 'newConversation' }); taskInput.focus(); });
+  on(btnNewChat, 'click', function() { chatHistory = []; attachedFiles = []; pendingRequest = null; resetComposeState(); renderAttachments(attachedFiles); renderMessages(); showChat(); vscode.postMessage({ type: 'newConversation' }); taskInput.focus(); });
   on(btnBack, 'click', showHome);
   on(btnAttach, 'click', function() { vscode.postMessage({ type: 'attachContext' }); });
   on(btnSettings, 'click', function() { settingsDrawer.classList.toggle('open'); });
@@ -1590,9 +1713,28 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
         if (payload && payload.autoApplied && payload.proposedEdits > 0) {
           text += '\\n\\n\\u2705 **' + payload.proposedEdits + ' edit(s) auto-applied** (bypass mode active)';
         }
-        chatHistory.push({ role: 'agent', text: text, ts: Date.now() });
+        var shouldReplaceAgent = pendingRequest && pendingRequest.action === 'retry' && pendingRequest.messageId;
+        if (shouldReplaceAgent) {
+          var replaced = false;
+          for (var k = chatHistory.length - 1; k >= 0; k--) {
+            if (String(chatHistory[k].id || '') === String(pendingRequest.messageId)) {
+              chatHistory[k].text = text;
+              chatHistory[k].content = text;
+              chatHistory[k].ts = Date.now();
+              chatHistory[k].role = 'assistant';
+              replaced = true;
+              break;
+            }
+          }
+          if (!replaced) {
+            chatHistory.push({ id: makeMessageId(), role: 'agent', text: text, ts: Date.now() });
+          }
+        } else {
+          chatHistory.push({ id: makeMessageId(), role: 'agent', text: text, ts: Date.now() });
+        }
         renderMessages(); scrollBottom();
       }
+      pendingRequest = null;
       vscode.postMessage({ type: 'ping' });
       return;
     }
@@ -1600,9 +1742,10 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
       finishThinking(false);
       var txt = String(payload || '');
       if (txt && txt.indexOf('Approval mode set') !== 0 && txt.indexOf('Permission mode set') !== 0 && txt.indexOf('Updated ') !== 0 && txt.indexOf('Mode set to') !== 0 && txt.indexOf('MCP servers updated') !== 0) {
-        chatHistory.push({ role: 'agent', text: txt, ts: Date.now() });
+        chatHistory.push({ id: makeMessageId(), role: 'agent', text: txt, ts: Date.now() });
         renderMessages(); scrollBottom();
       }
+      pendingRequest = null;
       vscode.postMessage({ type: 'ping' });
       return;
     }

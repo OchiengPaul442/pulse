@@ -1,3 +1,4 @@
+import * as crypto from "crypto";
 import * as vscode from "vscode";
 
 import type { ConversationMessage } from "../runtime/RuntimeTypes";
@@ -104,11 +105,61 @@ export class SessionStore {
       return;
     }
 
-    found.messages = [...(found.messages ?? []), message];
-    found.lastResult =
-      message.role === "assistant" ? message.content : found.lastResult;
-    found.updatedAt = new Date().toISOString();
+    const nextMessage: ConversationMessage = {
+      ...message,
+      id: message.id ?? crypto.randomUUID(),
+    };
+
+    found.messages = [...(found.messages ?? []), nextMessage];
+    this.refreshDerivedFields(found);
     await this.save(state);
+  }
+
+  public async updateMessage(
+    sessionId: string,
+    messageId: string,
+    content: string,
+  ): Promise<boolean> {
+    const state = await this.load();
+    const found = state.sessions.find((session) => session.id === sessionId);
+    if (!found?.messages?.length) {
+      return false;
+    }
+
+    const message = found.messages.find((entry) => entry.id === messageId);
+    if (!message) {
+      return false;
+    }
+
+    message.content = content;
+    this.refreshDerivedFields(found);
+    await this.save(state);
+    return true;
+  }
+
+  public async truncateAfterMessage(
+    sessionId: string,
+    messageId: string,
+    includeMessage = false,
+  ): Promise<boolean> {
+    const state = await this.load();
+    const found = state.sessions.find((session) => session.id === sessionId);
+    if (!found?.messages?.length) {
+      return false;
+    }
+
+    const index = found.messages.findIndex((entry) => entry.id === messageId);
+    if (index < 0) {
+      return false;
+    }
+
+    found.messages = found.messages.slice(
+      0,
+      includeMessage ? index : index + 1,
+    );
+    this.refreshDerivedFields(found);
+    await this.save(state);
+    return true;
   }
 
   public async setAttachedFiles(
@@ -191,7 +242,9 @@ export class SessionStore {
 
   private async readStateFile(filePath: string): Promise<SessionsFile | null> {
     try {
-      const bytes = await vscode.workspace.fs.readFile(vscode.Uri.file(filePath));
+      const bytes = await vscode.workspace.fs.readFile(
+        vscode.Uri.file(filePath),
+      );
       const raw = Buffer.from(bytes).toString("utf8");
       const parsed = JSON.parse(raw) as SessionsFile;
       return this.normalizeState(parsed);
@@ -206,8 +259,26 @@ export class SessionStore {
         typeof parsed.activeSessionId === "string"
           ? parsed.activeSessionId
           : null,
-      sessions: Array.isArray(parsed.sessions) ? parsed.sessions : [],
+      sessions: Array.isArray(parsed.sessions)
+        ? parsed.sessions.map((session) => ({
+            ...session,
+            messages: Array.isArray(session.messages)
+              ? session.messages.map((message) => ({
+                  ...message,
+                  id: message.id ?? crypto.randomUUID(),
+                }))
+              : [],
+          }))
+        : [],
     };
+  }
+
+  private refreshDerivedFields(session: SessionRecord): void {
+    session.updatedAt = new Date().toISOString();
+    const lastAssistant = [...(session.messages ?? [])]
+      .reverse()
+      .find((message) => message.role === "assistant");
+    session.lastResult = lastAssistant?.content;
   }
 
   private getBackupPath(): string {

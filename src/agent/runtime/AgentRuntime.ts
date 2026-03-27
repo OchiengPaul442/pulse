@@ -1,3 +1,4 @@
+import * as crypto from "crypto";
 import * as path from "path";
 import { existsSync } from "fs";
 import * as vscode from "vscode";
@@ -42,11 +43,11 @@ import {
 import type { TaskPlan } from "../planner/Planner";
 import type {
   ConversationMessage,
-  ExplainResult,
   ConversationMode,
   RuntimeTaskResult,
   AgentProgressStep,
   TokenSnapshot,
+  RunTaskRequest,
 } from "./RuntimeTypes";
 import { SessionStore } from "../sessions/SessionStore";
 import type { SessionRecord } from "../sessions/SessionStore";
@@ -84,6 +85,7 @@ export interface RuntimeSummary {
   tokenBudget: number;
   tokensConsumed: number;
   tokenUsagePercent: number;
+  learningProgressPercent: number;
   mcpConfigured: number;
   mcpHealthy: number;
   selfLearnEnabled: boolean;
@@ -141,6 +143,8 @@ export class AgentRuntime {
   private availableModels: ModelSummary[] = [];
 
   private tokensConsumed = 0;
+
+  private activeTokenSessionId: string | null = null;
 
   private progressCallback: ((step: AgentProgressStep) => void) | null = null;
 
@@ -553,18 +557,20 @@ export class AgentRuntime {
     }
   }
 
-  public runTask(objective: string): Promise<RuntimeTaskResult> {
+  public runTask(request: string | RunTaskRequest): Promise<RuntimeTaskResult> {
     // Enqueue — ensures only one task runs at a time.
     // Earlier tasks must finish (or fail) before the next one starts.
+    const normalizedRequest =
+      typeof request === "string" ? { objective: request } : request;
     const controller = new AbortController();
     this.abortController = controller;
     this.taskQueue = this.taskQueue
       .catch(() => {})
       .then(() => {
         if (controller.signal.aborted) {
-          return this.makeCancelledResult(objective);
+          return this.makeCancelledResult(normalizedRequest.objective);
         }
-        return this.executeTask(objective, controller.signal);
+        return this.executeTask(normalizedRequest, controller.signal);
       })
       .finally(() => {
         if (this.abortController === controller) this.abortController = null;
@@ -592,13 +598,13 @@ export class AgentRuntime {
   }
 
   private async executeTask(
-    objective: string,
+    request: RunTaskRequest,
     signal?: AbortSignal,
   ): Promise<RuntimeTaskResult> {
+    const objective = request.objective;
     const checkAborted = () => {
       if (signal?.aborted) throw new Error("__TASK_CANCELLED__");
     };
-    this.resetTokenUsage();
     checkAborted();
     this.emitProgress("Starting", "Initializing session context", "🚀");
     let session = await this.sessionStore.getActiveSession();
@@ -610,12 +616,43 @@ export class AgentRuntime {
       });
     }
 
-    const userTurn: ConversationMessage = {
-      role: "user",
-      content: objective,
-      createdAt: new Date().toISOString(),
-    };
-    await this.sessionStore.appendMessage(session.id, userTurn);
+    if (this.activeTokenSessionId !== session.id) {
+      this.activeTokenSessionId = session.id;
+      this.resetTokenUsage();
+    }
+
+    if (request.messageId) {
+      if (request.action === "edit") {
+        await this.sessionStore.updateMessage(
+          session.id,
+          request.messageId,
+          objective,
+        );
+        await this.sessionStore.truncateAfterMessage(
+          session.id,
+          request.messageId,
+          false,
+        );
+      } else if (request.action === "retry") {
+        await this.sessionStore.truncateAfterMessage(
+          session.id,
+          request.messageId,
+          true,
+        );
+      }
+
+      session = (await this.sessionStore.getSession(session.id)) ?? session;
+    }
+
+    if (request.action !== "edit" && request.action !== "retry") {
+      const userTurn: ConversationMessage = {
+        id: crypto.randomUUID(),
+        role: "user",
+        content: objective,
+        createdAt: new Date().toISOString(),
+      };
+      await this.sessionStore.appendMessage(session.id, userTurn);
+    }
 
     const mode = this.currentConfig.conversationMode;
     const allowEdits = mode === "agent" && this.shouldAllowEdits(objective);
@@ -1283,6 +1320,7 @@ export class AgentRuntime {
     if (deleted && wasActive) {
       await this.sessionStore.clearActiveSession();
       await this.editManager.clearPendingProposal();
+      this.activeTokenSessionId = null;
       this.resetTokenUsage();
     }
 
@@ -1292,6 +1330,7 @@ export class AgentRuntime {
   public async startNewConversation(): Promise<void> {
     await this.sessionStore.clearActiveSession();
     await this.editManager.clearPendingProposal();
+    this.activeTokenSessionId = null;
     this.resetTokenUsage();
   }
 
@@ -1473,10 +1512,15 @@ export class AgentRuntime {
     const mcpHealthy = mcpStatuses.filter(
       (s) => s.state === "configured",
     ).length;
+    const learningStats = await this.improvementEngine.getStats();
     const tokenBudget = Math.max(this.currentConfig.maxContextTokens, 1);
     const tokenUsagePercent = Math.min(
       100,
       Math.round((this.tokensConsumed / tokenBudget) * 100),
+    );
+    const learningProgressPercent = Math.min(
+      100,
+      Math.round(learningStats.performanceScore * 100),
     );
 
     return {
@@ -1498,6 +1542,7 @@ export class AgentRuntime {
       tokenBudget,
       tokensConsumed: this.tokensConsumed,
       tokenUsagePercent,
+      learningProgressPercent,
       mcpConfigured,
       mcpHealthy,
       selfLearnEnabled: this.currentConfig.selfLearnEnabled ?? false,

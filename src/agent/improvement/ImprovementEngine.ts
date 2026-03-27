@@ -381,8 +381,33 @@ export class ImprovementEngine {
     }
 
     const activeStrategies = state.strategies.filter((s) => s.enabled).length;
-    const performanceScore =
-      Math.round((successes / total) * 60 + avgQuality * 40) / 100;
+    const recentOutcomes = outcomes.slice(-Math.min(20, total));
+    const recentSuccessRate =
+      recentOutcomes.filter((o) => o.success).length / recentOutcomes.length;
+    const recentScored = recentOutcomes.filter(
+      (o) => typeof o.qualityScore === "number",
+    );
+    const recentQuality =
+      recentScored.length > 0
+        ? recentScored.reduce((sum, o) => sum + (o.qualityScore ?? 0), 0) /
+          recentScored.length
+        : avgQuality;
+    const recentFeedback = recentOutcomes.filter((o) => o.feedback);
+    const recentPositiveRate =
+      recentFeedback.length > 0
+        ? recentFeedback.filter((o) => o.feedback === "positive").length /
+          recentFeedback.length
+        : withFeedback.length > 0
+          ? positives / withFeedback.length
+          : 0;
+    const blendedScore =
+      recentSuccessRate * 0.45 +
+      recentQuality * 0.45 +
+      recentPositiveRate * 0.1;
+    const performanceScore = Math.max(
+      0,
+      Math.min(1, Math.round(blendedScore * 100) / 100),
+    );
 
     return {
       totalTasks: total,
