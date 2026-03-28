@@ -1,0 +1,54 @@
+# Publish to VS Code Marketplace when a version tag is pushed.
+# Prerequisites:
+#   1. Create a publisher account at https://marketplace.visualstudio.com/manage
+#   2. Update "publisher" in package.json from "local" to your publisher ID
+#   3. Create a Personal Access Token (PAT) at https://dev.azure.com with the
+#      "Marketplace (Publish)" scope
+#   4. Add the PAT as a repository secret named VSCE_PAT
+#      (Settings → Secrets and variables → Actions → New repository secret)
+#
+# To trigger a release:
+#   git tag v0.1.0
+#   git push origin v0.1.0
+
+name: Publish
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Type check
+        run: npx tsc --noEmit
+
+      - name: Build
+        run: npm run compile
+
+      - name: Validate webview JS
+        run: node scripts/validate-webview-js.mjs
+
+      - name: Test
+        run: npx vitest run
+
+      - name: Publish to VS Code Marketplace
+        run: npx vsce publish --no-dependencies -p ${{ secrets.VSCE_PAT }}
+        env:
+          VSCE_PAT: ${{ secrets.VSCE_PAT }}

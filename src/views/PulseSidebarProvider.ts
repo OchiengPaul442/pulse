@@ -224,6 +224,7 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
                   autoApplied: result.autoApplied === true,
                   todos: result.todos,
                   toolSummary: result.toolSummary,
+                  fileDiffs: result.fileDiffs ?? [],
                 },
               });
             } catch (err) {
@@ -822,6 +823,8 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
     .session-delete { width: 20px; height: 20px; border: none; border-radius: 4px; background: transparent; color: var(--fg2); cursor: pointer; opacity: 0; transition: all var(--spd); font-size: 11px; display: flex; align-items: center; justify-content: center; }
     .sitem:hover .session-delete { opacity: .5; }
     .session-delete:hover { opacity: 1 !important; color: var(--red); background: var(--red-bg); }
+    .load-more-btn { display: block; width: 100%; padding: 7px 8px; margin-top: 2px; border: 1px dashed var(--border); border-radius: var(--r); background: transparent; color: var(--fg2); font: 500 11px var(--vscode-font-family); cursor: pointer; text-align: center; transition: all var(--spd); }
+    .load-more-btn:hover { border-color: var(--accent); color: var(--accent); background: var(--accent-bg); }
 
     /* ── Chat view ─── */
     #chatView { padding: 6px 10px 4px; display: flex; flex-direction: column; gap: 6px; }
@@ -964,6 +967,37 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
     #editsBanner.on { display: flex; }
     .banner-txt { font-size: 11px; font-weight: 600; color: var(--accent); flex: 1; }
     .banner-acts { display: flex; gap: 4px; }
+
+    /* ── Diff cards ─── */
+    .diff-section { margin-top: 10px; }
+    .diff-card { border: 1px solid var(--border); border-radius: 6px; margin-bottom: 6px; overflow: hidden; background: var(--bg); }
+    .diff-card-header { display: flex; align-items: center; gap: 6px; padding: 6px 10px; cursor: pointer; user-select: none; background: var(--bg2); border-bottom: 1px solid transparent; transition: background var(--spd); }
+    .diff-card-header:hover { background: var(--hover); }
+    .diff-card.open .diff-card-header { border-bottom-color: var(--border); }
+    .diff-card-arrow { font-size: 10px; color: var(--fg3); transition: transform 0.15s ease; flex-shrink: 0; }
+    .diff-card.open .diff-card-arrow { transform: rotate(90deg); }
+    .diff-card-file { font-family: var(--vscode-editor-font-family, 'Cascadia Code', 'Fira Code', Consolas, monospace); font-size: 11px; color: var(--fg); font-weight: 600; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .diff-card-badge { display: inline-flex; gap: 4px; font-size: 10px; font-weight: 700; flex-shrink: 0; }
+    .diff-card-new { font-size: 9px; padding: 1px 5px; border-radius: 3px; background: rgba(88,166,92,.15); color: var(--green); font-weight: 600; }
+    .diff-card-del { font-size: 9px; padding: 1px 5px; border-radius: 3px; background: rgba(220,80,68,.12); color: var(--red); font-weight: 600; }
+    .diff-stat-add { color: var(--green); }
+    .diff-stat-del { color: var(--red); }
+    .diff-content { display: none; overflow-x: auto; }
+    .diff-card.open .diff-content { display: block; }
+    .diff-table { width: 100%; border-collapse: collapse; font-family: var(--vscode-editor-font-family, 'Cascadia Code', 'Fira Code', Consolas, monospace); font-size: 11px; line-height: 1.45; }
+    .diff-table td { padding: 0 6px; white-space: pre; vertical-align: top; }
+    .diff-ln { width: 1%; min-width: 30px; color: var(--fg3); text-align: right; opacity: .5; user-select: none; border-right: 1px solid var(--border); }
+    .diff-code { padding-left: 8px !important; }
+    .diff-tr-ctx { background: transparent; }
+    .diff-tr-add { background: rgba(88,166,92,.10); }
+    .diff-tr-add .diff-code { color: var(--green); }
+    .diff-tr-add .diff-code::before { content: '+'; margin-right: 4px; font-weight: 700; }
+    .diff-tr-del { background: rgba(220,80,68,.08); }
+    .diff-tr-del .diff-code { color: var(--red); }
+    .diff-tr-del .diff-code::before { content: '\u2212'; margin-right: 4px; font-weight: 700; }
+    .diff-tr-ctx .diff-code::before { content: ' '; margin-right: 4px; }
+    .diff-actions { display: flex; gap: 6px; padding: 8px 10px; justify-content: flex-end; border-top: 1px solid var(--border); }
+    .diff-truncated { padding: 6px 10px; font-size: 10px; color: var(--fg3); font-style: italic; text-align: center; }
 
     /* ── Composer ─── */
     .composer { padding: 4px 10px 6px; border-top: 1px solid var(--border); flex-shrink: 0; }
@@ -1293,9 +1327,9 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
   function renderMarkdown(raw) {
     if (!raw) return '';
     // Strip <break> tags, thinking artifacts, and clean up model output noise
-    raw = raw.replace(/<break\s*\/?>/gi, '\n').replace(/<\/break>/gi, '\n');
+    raw = raw.replace(/<break\\s*\\/?>/gi, '\\n').replace(/<\\/break>/gi, '\\n');
     // Strip raw JSON blocks that models sometimes emit as response text
-    raw = raw.replace(/^\s*\{[\s\S]*?"response"\s*:\s*"[\s\S]*?"[\s\S]*?\}\s*$/gm, function(match) {
+    raw = raw.replace(/^\\s*\\{[\\s\\S]*?"response"\\s*:\\s*"[\\s\\S]*?"[\\s\\S]*?\\}\\s*$/gm, function(match) {
       try { var obj = JSON.parse(match); return obj.response || match; } catch(e) { return match; }
     });
     // Extract fenced code blocks first, replace with placeholders
@@ -1607,6 +1641,71 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
   var SVG_COPY_OK = '<svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M13.854 3.646a.5.5 0 0 1 0 .708l-7 7a.5.5 0 0 1-.708 0l-3.5-3.5a.5.5 0 1 1 .708-.708L6.5 10.293l6.646-6.647a.5.5 0 0 1 .708 0z"/></svg>';
   var SVG_EDIT = '<svg width="13" height="13" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M12.146.146a.5.5 0 0 1 .708 0l3 3a.5.5 0 0 1 0 .708l-10 10a.5.5 0 0 1-.168.11l-5 2a.5.5 0 0 1-.65-.65l2-5a.5.5 0 0 1 .11-.168l10-10zM11.207 2.5 13.5 4.793 14.793 3.5 12.5 1.207zm1.586 3L10.5 3.207 4 9.707V10h.5a.5.5 0 0 1 .5.5v.5h.5a.5.5 0 0 1 .5.5v.5h.293zm-9.761 5.175-.106.106-1.528 3.821 3.821-1.528.106-.106A.5.5 0 0 1 5 12.5V12h-.5a.5.5 0 0 1-.5-.5V11h-.5a.5.5 0 0 1-.468-.325z"/></svg>';
 
+  /** Maximum diff lines to render per file to avoid DOM bloat */
+  var DIFF_MAX_LINES = 200;
+
+  /** Build HTML for an array of file diffs, rendered inline in chat */
+  function renderDiffCards(diffs, isAutoApplied) {
+    if (!diffs || !diffs.length) return '';
+    var statusLabel = isAutoApplied ? 'Applied' : 'Pending';
+    var h = '<div class="diff-section">';
+    h += '<div style="font-size:11px;font-weight:600;color:var(--fg2);margin-bottom:4px">' + esc(diffs.length + ' file' + (diffs.length === 1 ? '' : 's') + ' changed') + ' \u2014 <span style="color:var(--accent)">' + esc(statusLabel) + '</span></div>';
+    for (var i = 0; i < diffs.length; i++) {
+      var d = diffs[i];
+      var fname = d.fileName || d.filePath || 'unknown';
+      var badge = '';
+      if (d.isNew) badge = '<span class="diff-card-new">NEW</span>';
+      else if (d.isDelete) badge = '<span class="diff-card-del">DEL</span>';
+      h += '<div class="diff-card" data-diff-idx="' + i + '">';
+      h += '<div class="diff-card-header">';
+      h += '<span class="diff-card-arrow">\u25B6</span>';
+      h += '<span class="diff-card-file">' + esc(fname) + '</span>';
+      h += badge;
+      h += '<span class="diff-card-badge">';
+      if (d.additions > 0) h += '<span class="diff-stat-add">+' + d.additions + '</span>';
+      if (d.deletions > 0) h += '<span class="diff-stat-del">\u2212' + d.deletions + '</span>';
+      h += '</span>';
+      h += '</div>';
+      h += '<div class="diff-content">';
+      if (d.hunks && d.hunks.length) {
+        h += '<table class="diff-table">';
+        var linesRendered = 0;
+        for (var hi = 0; hi < d.hunks.length && linesRendered < DIFF_MAX_LINES; hi++) {
+          var hunk = d.hunks[hi];
+          if (hi > 0) {
+            h += '<tr class="diff-tr-sep"><td class="diff-ln" colspan="2"></td><td class="diff-code" style="color:var(--fg3);font-style:italic;padding:2px 6px">\u22EE</td></tr>';
+          }
+          for (var li = 0; li < hunk.lines.length && linesRendered < DIFF_MAX_LINES; li++) {
+            var ln = hunk.lines[li];
+            var cls = ln.type === 'add' ? 'diff-tr-add' : ln.type === 'remove' ? 'diff-tr-del' : 'diff-tr-ctx';
+            var olNum = ln.oldLine != null ? String(ln.oldLine) : '';
+            var nlNum = ln.newLine != null ? String(ln.newLine) : '';
+            h += '<tr class="' + cls + '">';
+            h += '<td class="diff-ln">' + esc(olNum) + '</td>';
+            h += '<td class="diff-ln">' + esc(nlNum) + '</td>';
+            h += '<td class="diff-code">' + esc(ln.content) + '</td>';
+            h += '</tr>';
+            linesRendered++;
+          }
+        }
+        h += '</table>';
+        if (linesRendered >= DIFF_MAX_LINES) {
+          h += '<div class="diff-truncated">Diff truncated \u2014 showing first ' + DIFF_MAX_LINES + ' lines</div>';
+        }
+      }
+      h += '</div>';
+      h += '</div>';
+    }
+    if (!isAutoApplied) {
+      h += '<div class="diff-actions">';
+      h += '<button class="btn primary sm diff-keep-btn">Keep All</button>';
+      h += '<button class="btn danger sm diff-undo-btn">Discard All</button>';
+      h += '</div>';
+    }
+    h += '</div>';
+    return h;
+  }
+
   // Render messages
   function renderMessages() {
     if (!chatHistory.length) {
@@ -1627,6 +1726,10 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
       }
       var text = m.text || m.content || '';
       var html = renderMarkdown(text);
+      // Append inline diff cards when available
+      if (m.fileDiffs && m.fileDiffs.length > 0) {
+        html += renderDiffCards(m.fileDiffs, m.autoApplied);
+      }
       var rawTs = m.ts || m.createdAt || null;
       var ts = rawTs ? relTime(new Date(rawTs).toISOString()) : '';
       var footerActions = role === 'agent'
@@ -1664,6 +1767,30 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
             if (isBusy) return;
             beginRetryMessage(String(el.dataset.messageId || ''), Number(el.dataset.messageIndex || -1));
           });
+          // Diff card toggle handlers
+          var diffHeaders = el.querySelectorAll('.diff-card-header');
+          for (var dh = 0; dh < diffHeaders.length; dh++) {
+            diffHeaders[dh].addEventListener('click', function(e) {
+              e.stopPropagation();
+              var card = this.parentElement;
+              if (card) card.classList.toggle('open');
+            });
+          }
+          // Diff Keep / Discard buttons
+          var keepBtn = el.querySelector('.diff-keep-btn');
+          if (keepBtn) keepBtn.addEventListener('click', function(e) {
+            e.stopPropagation();
+            vscode.postMessage({ type: 'applyPending', payload: true });
+            var sec = el.querySelector('.diff-actions');
+            if (sec) sec.innerHTML = '<span style="font-size:11px;color:var(--green);font-weight:600">\u2713 Applied</span>';
+          });
+          var discardBtn = el.querySelector('.diff-undo-btn');
+          if (discardBtn) discardBtn.addEventListener('click', function(e) {
+            e.stopPropagation();
+            vscode.postMessage({ type: 'revertLast', payload: true });
+            var sec = el.querySelector('.diff-actions');
+            if (sec) sec.innerHTML = '<span style="font-size:11px;color:var(--red);font-weight:600">\u2717 Discarded</span>';
+          });
         }
       })(text, div, role);
       messages.appendChild(div);
@@ -1682,7 +1809,9 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
     list = list || [];
     if (!list.length) { sessionList.innerHTML = '<div class="empty"><div class="empty-icon">&#128172;</div><div class="empty-h">No conversations yet</div><div class="empty-p">Start typing below to begin your first session</div></div>'; return; }
     sessionList.innerHTML = '';
-    for (var i = 0; i < list.length; i++) {
+    var VISIBLE_LIMIT = 4;
+    var visibleCount = Math.min(list.length, VISIBLE_LIMIT);
+    for (var i = 0; i < visibleCount; i++) {
       (function(s) {
         var d = document.createElement('div'); d.className = 'sitem'; d.dataset.sessionId = String(s.id || '');
         d.innerHTML = '<span class="sitem-title">' + esc(s.title || s.id) + '</span><div class="session-actions"><div class="session-meta"><span class="sitem-time">' + esc(relTime(s.updatedAt)) + '</span><span class="session-count">' + esc(String(s.messageCount || 0)) + ' msgs</span></div><button type="button" class="session-delete" title="Delete">&#128465;</button></div>';
@@ -1690,6 +1819,25 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
         d.querySelector('.session-delete').addEventListener('click', function(e) { e.preventDefault(); e.stopPropagation(); vscode.postMessage({ type: 'deleteSessionRequest', payload: s.id }); });
         sessionList.appendChild(d);
       })(list[i]);
+    }
+    if (list.length > VISIBLE_LIMIT) {
+      var remaining = list.length - VISIBLE_LIMIT;
+      var loadMore = document.createElement('button');
+      loadMore.className = 'load-more-btn';
+      loadMore.textContent = 'Load more (' + remaining + ')';
+      loadMore.addEventListener('click', function() {
+        loadMore.remove();
+        for (var j = VISIBLE_LIMIT; j < list.length; j++) {
+          (function(s) {
+            var d = document.createElement('div'); d.className = 'sitem fadein'; d.dataset.sessionId = String(s.id || '');
+            d.innerHTML = '<span class="sitem-title">' + esc(s.title || s.id) + '</span><div class="session-actions"><div class="session-meta"><span class="sitem-time">' + esc(relTime(s.updatedAt)) + '</span><span class="session-count">' + esc(String(s.messageCount || 0)) + ' msgs</span></div><button type="button" class="session-delete" title="Delete">&#128465;</button></div>';
+            d.addEventListener('click', function() { if (s.id) vscode.postMessage({ type: 'openSession', payload: s.id }); });
+            d.querySelector('.session-delete').addEventListener('click', function(e) { e.preventDefault(); e.stopPropagation(); vscode.postMessage({ type: 'deleteSessionRequest', payload: s.id }); });
+            sessionList.appendChild(d);
+          })(list[j]);
+        }
+      });
+      sessionList.appendChild(loadMore);
     }
   }
 
@@ -1899,7 +2047,7 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
           try { var parsed = JSON.parse(text); if (parsed && typeof parsed.response === 'string' && parsed.response.length > 0) { text = parsed.response; } } catch(e) {}
         }
         // Strip <break> tags
-        text = text.replace(/<break\s*\/?>/gi, '\n').replace(/<\/break>/gi, '\n');
+        text = text.replace(/<break\\s*\\/?>/gi, '\\n').replace(/<\\/break>/gi, '\\n');
         // Remove leading/trailing whitespace artifacts
         text = text.trim();
         if (payload && payload.autoApplied && payload.proposedEdits > 0) {
@@ -1910,6 +2058,8 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
           var fc = payload.proposedEdits;
           bannerTxt.textContent = fc + ' file' + (fc === 1 ? '' : 's') + ' changed \u2014 review before applying';
         }
+        var diffData = (payload && payload.fileDiffs && payload.fileDiffs.length > 0) ? payload.fileDiffs : null;
+        var wasAutoApplied = Boolean(payload && payload.autoApplied);
         var shouldReplaceAgent = pendingRequest && pendingRequest.action === 'retry' && pendingRequest.messageId;
         if (shouldReplaceAgent) {
           var replaced = false;
@@ -1919,15 +2069,17 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
               chatHistory[k].content = text;
               chatHistory[k].ts = Date.now();
               chatHistory[k].role = 'assistant';
+              chatHistory[k].fileDiffs = diffData;
+              chatHistory[k].autoApplied = wasAutoApplied;
               replaced = true;
               break;
             }
           }
           if (!replaced) {
-            chatHistory.push({ id: makeMessageId(), role: 'agent', text: text, ts: Date.now() });
+            chatHistory.push({ id: makeMessageId(), role: 'agent', text: text, ts: Date.now(), fileDiffs: diffData, autoApplied: wasAutoApplied });
           }
         } else {
-          chatHistory.push({ id: makeMessageId(), role: 'agent', text: text, ts: Date.now() });
+          chatHistory.push({ id: makeMessageId(), role: 'agent', text: text, ts: Date.now(), fileDiffs: diffData, autoApplied: wasAutoApplied });
         }
         renderMessages(); scrollBottom();
       }

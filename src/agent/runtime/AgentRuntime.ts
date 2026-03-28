@@ -16,6 +16,7 @@ import {
   type EditProposal,
   type ProposedEdit,
 } from "../edits/EditManager";
+import { computeFileDiff, type FileDiffResult } from "../edits/DiffEngine";
 import { WorkspaceScanner } from "../indexing/WorkspaceScanner";
 import { McpManager, type McpServerStatus } from "../mcp/McpManager";
 import { OllamaProvider } from "../model/OllamaProvider";
@@ -1048,6 +1049,7 @@ export class AgentRuntime {
       todos: agentResult.todos,
       proposal: agentResult.autoApplied ? null : agentResult.proposal,
       autoApplied: agentResult.autoApplied,
+      fileDiffs: agentResult.fileDiffs,
       toolSummary: formatToolObservations(agentResult.toolTrace),
       toolTrace: agentResult.toolTrace,
     };
@@ -1237,7 +1239,12 @@ export class AgentRuntime {
         timedOut: false,
       };
     }
-    return this.terminalExecutor.execute(command, options);
+    // Show agent commands in a visible terminal for user awareness
+    const showInTerminal = options?.purpose === "tool";
+    return this.terminalExecutor.execute(command, {
+      ...options,
+      showInTerminal,
+    });
   }
 
   // ── Git Service ─────────────────────────────────────────────────
@@ -2244,6 +2251,7 @@ export class AgentRuntime {
     shortcuts: string[];
     proposal: EditProposal | null;
     autoApplied: boolean;
+    fileDiffs?: FileDiffResult[];
     toolTrace: TaskToolObservation[];
     qualityScore?: number;
     qualityTarget?: number;
@@ -2318,7 +2326,10 @@ export class AgentRuntime {
         "- Use tools to gather evidence. Do NOT guess when a tool can answer.",
         "- When asked to run a command, use run_terminal immediately.",
         "- Prefer small, targeted edits over rewrites.",
-        "- Run verification after edits when possible.",
+        "- After making edits, ALWAYS run verification (build/test/lint) to validate your changes.",
+        "- If verification fails, analyze the error output and fix the issues before responding.",
+        "- Proactively use run_terminal to inspect project state: check types (tsc --noEmit), run tests, lint, format code.",
+        "- Use diagnostics to check for VS Code errors after editing files.",
         "- If refinement feedback is present, address it.",
         "",
         "## Response format",
@@ -2454,11 +2465,28 @@ export class AgentRuntime {
       )
       .filter((edit): edit is ProposedEdit => edit !== null);
 
+    // ── Compute file diffs before applying ────────────────────
+    const fileDiffs: FileDiffResult[] = [];
     if (normalizedEdits.length > 0) {
       for (const edit of normalizedEdits) {
         const basename = path.basename(edit.filePath);
         const lineCount = (edit.content ?? "").split("\n").length;
         this.emitFilePatch(basename, lineCount);
+
+        // Read old content for diff computation
+        let oldContent: string | null = null;
+        try {
+          const uri = vscode.Uri.file(edit.filePath);
+          const raw = await vscode.workspace.fs.readFile(uri);
+          oldContent = Buffer.from(raw).toString("utf8");
+        } catch {
+          // File doesn't exist yet → new file
+        }
+        const newContent =
+          (edit.operation ?? "write") === "delete"
+            ? null
+            : (edit.content ?? "");
+        fileDiffs.push(computeFileDiff(edit.filePath, oldContent, newContent));
       }
     }
 
@@ -2514,6 +2542,7 @@ export class AgentRuntime {
         parsed.shortcuts.length > 0 ? parsed.shortcuts : optionalShortcuts,
       proposal: autoApplied ? null : proposal,
       autoApplied,
+      fileDiffs: fileDiffs.length > 0 ? fileDiffs : undefined,
       toolTrace,
       qualityScore: finalAssessment?.score,
       qualityTarget: finalAssessment?.target,

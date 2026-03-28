@@ -1,6 +1,7 @@
 /**
  * Terminal command executor for Pulse agent.
  * Executes commands in a real shell process so output can be captured reliably.
+ * Supports a persistent visible "Pulse Agent" terminal for user visibility.
  */
 import { spawn } from "child_process";
 import type * as vscode from "vscode";
@@ -14,18 +15,28 @@ export interface TerminalExecResult {
 }
 
 export class TerminalExecutor {
+  private agentTerminal: vscode.Terminal | null = null;
+
   /**
    * Execute a command in the workspace shell and capture output.
+   * If `showInTerminal` is true, also mirrors the command in a visible
+   * "Pulse Agent" terminal for user visibility (Copilot-style).
    */
   public async execute(
     command: string,
     options?: {
       cwd?: string;
       timeoutMs?: number;
+      showInTerminal?: boolean;
     },
   ): Promise<TerminalExecResult> {
     const timeout = options?.timeoutMs ?? 30_000;
     const cwd = options?.cwd ?? this.getWorkspaceRoot() ?? undefined;
+
+    // Mirror to visible terminal if requested
+    if (options?.showInTerminal) {
+      this.sendToAgentTerminal(command);
+    }
 
     const start = Date.now();
 
@@ -102,6 +113,37 @@ export class TerminalExecutor {
     terminal.show(false);
     terminal.sendText(command);
     return terminal;
+  }
+
+  /**
+   * Send a command to the persistent "Pulse Agent" terminal.
+   * Creates the terminal on first use and reuses it.
+   */
+  private sendToAgentTerminal(command: string): void {
+    try {
+      const vscodeApi = this.getVscodeApi();
+      // Reuse existing terminal if it's still alive
+      if (this.agentTerminal) {
+        const alive = vscodeApi.window.terminals.some(
+          (t) => t === this.agentTerminal,
+        );
+        if (!alive) {
+          this.agentTerminal = null;
+        }
+      }
+      if (!this.agentTerminal) {
+        const cwd = this.getWorkspaceRoot();
+        this.agentTerminal = vscodeApi.window.createTerminal({
+          name: "Pulse Agent",
+          cwd,
+          isTransient: true,
+        });
+      }
+      this.agentTerminal.show(true); // true = preserveFocus
+      this.agentTerminal.sendText(command);
+    } catch {
+      // Silently ignore — visible terminal is a convenience, not critical
+    }
   }
 
   private getWorkspaceRoot(): string | undefined {

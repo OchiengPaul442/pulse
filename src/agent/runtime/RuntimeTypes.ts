@@ -1,3 +1,4 @@
+import type { FileDiffResult } from "../edits/DiffEngine";
 import type { EditProposal } from "../edits/EditManager";
 import type { TaskPlan } from "../planner/Planner";
 import type { TaskTodo } from "./TaskProtocols";
@@ -59,6 +60,7 @@ export interface RuntimeTaskResult {
   autoApplied?: boolean;
   toolSummary?: string;
   toolTrace?: TaskToolObservation[];
+  fileDiffs?: FileDiffResult[];
   qualityScore?: number;
   qualityTarget?: number;
   meetsQualityTarget?: boolean;
