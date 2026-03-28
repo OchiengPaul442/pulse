@@ -181,6 +181,9 @@ export class AgentRuntime {
     Record<string, string> | null
   >();
 
+  /** Tool enable/disable map set from the UI. All tools enabled by default. */
+  private enabledToolsMap: Record<string, boolean> = {};
+
   public constructor(
     config: AgentConfig,
     private readonly storage: StorageState,
@@ -1339,6 +1342,22 @@ export class AgentRuntime {
     return this.currentConfig.conversationMode;
   }
 
+  /** Alias for sidebar drag-and-drop. */
+  public async attachFiles(paths: string[]): Promise<void> {
+    await this.attachFilesToActiveSession(paths);
+  }
+
+  /** Update the set of enabled tools from the UI tool config panel. */
+  public setEnabledTools(map: Record<string, boolean>): void {
+    this.enabledToolsMap = { ...map };
+  }
+
+  /** Check if a specific tool is enabled by the user. */
+  public isToolEnabled(toolId: string): boolean {
+    if (Object.keys(this.enabledToolsMap).length === 0) return true;
+    return this.enabledToolsMap[toolId] !== false;
+  }
+
   public async setConversationMode(mode: ConversationMode): Promise<void> {
     await this.updateSetting("behavior.conversationMode", mode);
     this.currentConfig.conversationMode = mode;
@@ -2316,48 +2335,51 @@ export class AgentRuntime {
     ): string =>
       [
         this.getPersonaPrompt(),
-        "You are an autonomous coding agent inside VS Code. You can read/write files, run commands, search code, and make edits.",
+        "You are an autonomous coding agent inside VS Code. You MUST return valid JSON only, no markdown.",
         ...(styleHintAgent ? [styleHintAgent] : []),
         ...(improvementHintsAgent ? [improvementHintsAgent] : []),
         ...(agentAwarenessAgent ? [agentAwarenessAgent] : []),
         shortcutSummary ? shortcutSummary : "",
         "",
-        "## Rules",
-        "- Create a short TODO list (3-5 items) before making changes.",
-        "- Use tools to gather evidence. Do NOT guess when a tool can answer.",
-        "- When asked to run a command, use run_terminal IMMEDIATELY. Do not just describe the command — execute it.",
-        "- Prefer small, targeted edits over rewrites.",
-        "- After making edits, ALWAYS run verification (build/test/lint) to validate your changes.",
-        "- If verification fails, analyze the error output and fix the issues before responding.",
-        "- Proactively use run_terminal to inspect project state: check types (tsc --noEmit), run tests, lint, format code.",
-        "- Use diagnostics to check for VS Code errors after editing files.",
-        "- If refinement feedback is present, address it.",
-        "- You can chain commands with && (e.g. cd my-app && npm run dev).",
+        "## CRITICAL RULES",
+        "1. ALWAYS return valid JSON. No markdown fences, no text before/after the JSON.",
+        "2. You MUST use tools to gather evidence. Do NOT guess file contents — read them first.",
+        "3. When the user asks to run a command, use run_terminal IMMEDIATELY. Do not just describe it.",
+        "4. After making edits, ALWAYS run run_verification to validate your changes.",
+        "5. If verification fails, fix the issues and verify again.",
+        '6. Create file edits using the "edits" array — these are applied to the workspace.',
+        '7. For new files, use edits with operation "write". For deleting, use operation "delete".',
+        "8. Include a short TODO list (3-5 items) before making changes.",
         "",
-        "## Tool execution flow",
-        "When you include toolCalls, they are executed AUTOMATICALLY and you will see the results on your next turn.",
-        "- If you include toolCalls: set response to a brief note about what you are doing. You will get another turn with tool results.",
-        "- If tool results are already present below and you have NO more toolCalls: write your FINAL detailed response summarizing what was done and the outcome.",
-        "- NEVER tell the user to run a command themselves — use run_terminal to run it for them.",
+        "## RESPONSE FORMAT (STRICT JSON)",
+        "You MUST respond with this exact JSON structure:",
+        "{",
+        '  "response": "<your explanation of what you did or plan to do>",',
+        '  "todos": [{"id": "todo_1", "title": "Step description", "status": "pending"}],',
+        '  "toolCalls": [{"tool": "<tool_name>", "args": {<arguments>}}],',
+        '  "edits": [{"filePath": "<absolute_path>", "content": "<full_file_content>", "operation": "write"}],',
+        '  "shortcuts": []',
+        "}",
         "",
-        "## Response format",
-        "Return JSON only with fields: response, todos, shortcuts, toolCalls, edits.",
-        `Example: {"response":"Summary","todos":[{"id":"todo_1","title":"Step","status":"pending"}],"shortcuts":[],"toolCalls":[{"tool":"run_terminal","args":{"command":"npm test"}}],"edits":[]}`,
+        "## HOW TOOL CALLS WORK",
+        "- If you include toolCalls: set response to a brief note. You will get another turn with results.",
+        "- If tool results are shown below and you have NO more toolCalls: write your FINAL response.",
+        "- CHAIN: read files → make edits → run verification → report results.",
         "",
-        "## Available tools (one per toolCall)",
-        "- workspace_scan: list workspace files for context",
-        "- read_files: read specific files {args: {paths: [...]}}",
-        "- create_file: create/overwrite a file {args: {filePath, content}}",
-        "- delete_file: delete a file {args: {filePath}}",
-        "- search_files: search file contents for a pattern {args: {query}}",
-        "- list_dir: list directory contents {args: {path}}",
-        "- run_terminal: execute a shell command {args: {command}}",
-        "- run_verification: run tests/build/lint after edits",
-        "- web_search: search the web {args: {query}}",
-        "- git_diff: view git changes {args: {filePath} or no args for summary}",
-        "- diagnostics: check VS Code diagnostic errors",
+        "## AVAILABLE TOOLS",
+        "workspace_scan — List all workspace files",
+        'read_files — Read file contents {args: {paths: ["path1", "path2"]}}',
+        'create_file — Create or overwrite a file {args: {filePath: "...", content: "..."}}',
+        'delete_file — Delete a file {args: {filePath: "..."}}',
+        'search_files — Search code for a pattern {args: {query: "..."}}',
+        'list_dir — List directory contents {args: {path: "..."}}',
+        'run_terminal — Execute a shell command {args: {command: "..."}}',
+        "run_verification — Run tests/build/lint after edits",
+        'web_search — Search the web {args: {query: "..."}}',
+        'git_diff — View git changes {args: {filePath: "..."} or no args}',
+        "diagnostics — Check VS Code errors",
         "",
-        "## Context",
+        "## CONTEXT",
         `Objective: ${objective}`,
         `Skills: ${skillsSummary}`,
         `Plan: ${JSON.stringify(plan, null, 2)}`,
@@ -2414,7 +2436,7 @@ export class AgentRuntime {
           {
             role: "system",
             content:
-              "You are a coding agent. Return valid JSON only. No markdown fences.",
+              "You are a coding agent. You MUST return ONLY valid JSON with these fields: response, todos, toolCalls, edits, shortcuts. No markdown fences. No text outside the JSON object. Start your response with { and end with }.",
           },
           ...conversationHistory,
           {
@@ -2611,6 +2633,18 @@ export class AgentRuntime {
     objective: string,
     signal?: AbortSignal,
   ): Promise<TaskToolObservation[]> {
+    // Check if this tool has been disabled by the user in the tool config panel
+    if (!this.isToolEnabled(call.tool)) {
+      return [
+        {
+          tool: call.tool,
+          ok: false,
+          summary: `Tool "${call.tool}" is disabled in tool settings.`,
+          detail: "The user has disabled this tool. Use a different approach.",
+        },
+      ];
+    }
+
     const workspaceRoot = this.workspaceRoot?.fsPath ?? null;
     const checkAborted = () => {
       if (signal?.aborted) {

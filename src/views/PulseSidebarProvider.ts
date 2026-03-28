@@ -700,6 +700,49 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
             await vscode.commands.executeCommand("pulse.configureMcpServers");
             return;
           }
+
+          if (message.type === "dropFiles") {
+            const paths = Array.isArray(message.payload) ? message.payload : [];
+            if (paths.length === 0) return;
+
+            const workspaceFolder =
+              vscode.workspace.workspaceFolders?.[0]?.uri ?? null;
+            const resolvedUris: vscode.Uri[] = [];
+            for (const p of paths) {
+              if (typeof p !== "string" || !p.trim()) continue;
+              const sanitized = p.trim();
+              if (workspaceFolder) {
+                resolvedUris.push(
+                  vscode.Uri.joinPath(workspaceFolder, sanitized),
+                );
+              }
+            }
+
+            if (resolvedUris.length > 0) {
+              const filePaths = resolvedUris.map((u) => u.fsPath);
+              await this.runtime.attachFiles(filePaths);
+              await webviewView.webview.postMessage({
+                type: "sessionAttachments",
+                payload: filePaths,
+              });
+              await webviewView.webview.postMessage({
+                type: "actionResult",
+                payload: `Attached ${filePaths.length} file(s) via drop.`,
+              });
+            }
+            return;
+          }
+
+          if (
+            message.type === "setEnabledTools" &&
+            message.payload &&
+            typeof message.payload === "object"
+          ) {
+            this.runtime.setEnabledTools(
+              message.payload as Record<string, boolean>,
+            );
+            return;
+          }
         } catch (error) {
           this.logger.error("Sidebar message handling failed", error);
           await webviewView.webview.postMessage({
@@ -1018,11 +1061,31 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
     .attach-plus { width: 26px; height: 26px; min-width: 26px; border: 1px solid var(--border); border-radius: 50%; background: transparent; color: var(--fg2); cursor: pointer; font-size: 15px; font-weight: 300; display: flex; align-items: center; justify-content: center; transition: all var(--spd); flex-shrink: 0; }
     .attach-plus:hover { border-color: var(--accent); color: var(--accent); background: var(--accent-bg); }
 
-    .send-btn { width: 26px; height: 26px; min-width: 26px; border: none; border-radius: 7px; background: var(--accent); color: #fff; font-size: 13px; line-height: 1; cursor: default; display: flex; align-items: center; justify-content: center; transition: opacity var(--spd), transform var(--spd), background var(--spd); opacity: .2; }
-    .send-btn:not([disabled]) { opacity: 1; cursor: pointer; }
-    .send-btn:not([disabled]):hover { background: var(--accent-hover); transform: scale(1.04); }
-    .send-btn.stop { background: #ef4444; opacity: 1; cursor: pointer; }
-    .send-btn.stop:hover { background: #dc2626; transform: scale(1.04); }
+    .send-btn { width: 30px; height: 30px; min-width: 30px; border: none; border-radius: 50%; background: linear-gradient(135deg, var(--accent) 0%, var(--accent-hover) 100%); color: #fff; font-size: 14px; line-height: 1; cursor: default; display: flex; align-items: center; justify-content: center; transition: opacity .15s ease, transform .15s ease, background .15s ease, box-shadow .15s ease; opacity: .25; box-shadow: none; }
+    .send-btn:not([disabled]) { opacity: 1; cursor: pointer; box-shadow: 0 2px 8px rgba(0,120,212,.35); }
+    .send-btn:not([disabled]):hover { background: linear-gradient(135deg, var(--accent-hover) 0%, var(--accent) 100%); transform: scale(1.1) translateY(-1px); box-shadow: 0 4px 14px rgba(0,120,212,.45); }
+    .send-btn:not([disabled]):active { transform: scale(.95); box-shadow: 0 1px 4px rgba(0,120,212,.3); }
+    .send-btn .send-arrow { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 2.2; stroke-linecap: round; stroke-linejoin: round; }
+    .send-btn.stop { background: linear-gradient(135deg, #ef4444, #dc2626); opacity: 1; cursor: pointer; box-shadow: 0 2px 8px rgba(239,68,68,.35); }
+    .send-btn.stop:hover { background: linear-gradient(135deg, #dc2626, #b91c1c); transform: scale(1.1) translateY(-1px); box-shadow: 0 4px 14px rgba(239,68,68,.45); }
+
+    /* ── Drag-and-drop overlay ─── */
+    .drop-overlay { display: none; position: absolute; inset: 0; z-index: 100; border-radius: 12px; border: 2px dashed var(--accent); background: var(--accent-bg); align-items: center; justify-content: center; pointer-events: none; }
+    .drop-overlay.active { display: flex; }
+    .drop-overlay-label { font: 600 12px var(--vscode-font-family); color: var(--accent); letter-spacing: .3px; }
+
+    /* ── Tool config panel ─── */
+    .tool-config-section { display: flex; flex-direction: column; gap: 6px; padding-top: 8px; border-top: 1px solid var(--border); }
+    .tool-config-header { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+    .tool-config-list { display: flex; flex-direction: column; gap: 2px; }
+    .tool-config-item { display: flex; align-items: center; gap: 8px; padding: 4px 6px; border-radius: 5px; transition: background var(--spd); }
+    .tool-config-item:hover { background: rgba(128,128,128,.06); }
+    .tool-config-item label { flex: 1; font-size: 11px; color: var(--fg); cursor: pointer; display: flex; align-items: center; gap: 6px; }
+    .tool-config-item input[type="checkbox"] { accent-color: var(--accent); cursor: pointer; width: 14px; height: 14px; margin: 0; flex-shrink: 0; }
+    .tool-config-desc { font-size: 9px; color: var(--fg3); margin-left: 28px; margin-top: -2px; }
+    .tool-config-actions { display: flex; gap: 6px; justify-content: flex-end; }
+    .tool-config-actions button { font: 500 9px var(--vscode-font-family); padding: 2px 8px; border-radius: 4px; border: 1px solid var(--border); background: transparent; color: var(--fg2); cursor: pointer; transition: all var(--spd); }
+    .tool-config-actions button:hover { border-color: var(--accent); color: var(--accent); }
 
     /* --- Scroll-to-bottom button --- */
     #scrollBtn { position: fixed; right: 14px; bottom: 120px; z-index: 500; width: 24px; height: 24px; border-radius: 50%; background: var(--vscode-editorWidget-background, var(--bg2)); border: 1px solid var(--border); color: var(--fg2); cursor: pointer; opacity: 0; pointer-events: none; transition: opacity var(--spd), transform var(--spd); box-shadow: 0 2px 8px rgba(0,0,0,.2); display: flex; align-items: center; justify-content: center; font-size: 12px; }
@@ -1131,6 +1194,17 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
         <span class="toggle-track"></span>
       </label>
     </div>
+    <div class="tool-config-section">
+      <div class="tool-config-header">
+        <span class="slabel">Agent Tools</span>
+        <div class="tool-config-actions">
+          <button id="btnToolsAll" type="button">Select All</button>
+          <button id="btnToolsNone" type="button">Deselect All</button>
+        </div>
+      </div>
+      <div class="section-copy">Choose which tools the agent can use during tasks.</div>
+      <div id="toolConfigList" class="tool-config-list"></div>
+    </div>
   </div>
 
   <div id="main">
@@ -1168,7 +1242,8 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
   </div>
 
   <div class="composer">
-    <div class="composer-box">
+    <div class="composer-box" id="composerBox">
+      <div class="drop-overlay" id="dropOverlay"><span class="drop-overlay-label">Drop files to attach</span></div>
       <textarea id="taskInput" placeholder="Ask Pulse anything about your code\u2026" rows="2" aria-label="Message"></textarea>
       <div class="composer-inner-row">
         <div class="chips">
@@ -1185,7 +1260,7 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
             <div id="modelPopupList" class="model-popup-list"></div>
           </div>
         </div>
-        <button id="btnSend" type="button" class="send-btn" title="Send (Enter)" disabled>&#8593;</button>
+        <button id="btnSend" type="button" class="send-btn" title="Send (Enter)" disabled><svg class="send-arrow" viewBox="0 0 24 24"><path d="M12 19V5M5 12l7-7 7 7"/></svg></button>
       </div>
     </div>
     <!-- Permission bar — GitHub Copilot style -->
@@ -1908,6 +1983,8 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
   }
 
   // Send task
+  var sendArrowSvg = '<svg class="send-arrow" viewBox="0 0 24 24"><path d="M12 19V5M5 12l7-7 7 7"/></svg>';
+
   function setBusyMode(busy) {
     isBusy = busy;
     if (busy) {
@@ -1918,7 +1995,7 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
     } else {
       btnSend.classList.remove('stop');
       btnSend.title = composeState.mode === 'edit' ? 'Save & Send' : composeState.mode === 'retry' ? 'Retry' : 'Send (Enter)';
-      btnSend.innerHTML = '&#8593;';
+      btnSend.innerHTML = sendArrowSvg;
       btnSend.disabled = taskInput ? taskInput.value.trim().length === 0 : true;
     }
   }
@@ -1996,6 +2073,81 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
 
   // Self-learn toggle
   on(selfLearnToggle, 'change', function() { vscode.postMessage({ type: 'setSelfLearn', payload: selfLearnToggle.checked }); });
+
+  // ── Drag-and-drop file attach ─────────────────────────────────
+  (function() {
+    var composerBox = D('composerBox');
+    var dropOverlay = D('dropOverlay');
+    if (!composerBox || !dropOverlay) return;
+    var dragCounter = 0;
+    document.addEventListener('dragenter', function(e) {
+      e.preventDefault();
+      dragCounter++;
+      if (dragCounter === 1) dropOverlay.classList.add('active');
+    });
+    document.addEventListener('dragleave', function(e) {
+      e.preventDefault();
+      dragCounter--;
+      if (dragCounter <= 0) { dragCounter = 0; dropOverlay.classList.remove('active'); }
+    });
+    document.addEventListener('dragover', function(e) { e.preventDefault(); });
+    document.addEventListener('drop', function(e) {
+      e.preventDefault();
+      dragCounter = 0;
+      dropOverlay.classList.remove('active');
+      var items = e.dataTransfer && e.dataTransfer.items;
+      if (!items || !items.length) return;
+      var paths = [];
+      for (var i = 0; i < items.length; i++) {
+        var item = items[i];
+        if (item.kind === 'file') {
+          var file = item.getAsFile();
+          if (file && file.name) paths.push(file.name);
+        } else if (item.kind === 'string' && item.type === 'text/plain') {
+          item.getAsString(function(s) {
+            if (s && s.trim()) vscode.postMessage({ type: 'dropFiles', payload: [s.trim()] });
+          });
+        }
+      }
+      if (paths.length > 0) vscode.postMessage({ type: 'dropFiles', payload: paths });
+    });
+  }());
+
+  // ── Tool configuration panel ──────────────────────────────────
+  var TOOL_DEFS = [
+    { id: 'workspace_scan', name: 'Workspace Scan', desc: 'Discover project files and structure' },
+    { id: 'read_files', name: 'Read Files', desc: 'Read source file contents for context' },
+    { id: 'create_file', name: 'Create File', desc: 'Create new files in the workspace' },
+    { id: 'delete_file', name: 'Delete File', desc: 'Remove files from the workspace' },
+    { id: 'search_files', name: 'Search Files', desc: 'Regex search across workspace files' },
+    { id: 'list_dir', name: 'List Directory', desc: 'List contents of a directory' },
+    { id: 'run_terminal', name: 'Terminal', desc: 'Run shell commands (build, test, install)' },
+    { id: 'run_verification', name: 'Verification', desc: 'Run diagnostics and linting checks' },
+    { id: 'web_search', name: 'Web Search', desc: 'Search the internet for documentation' },
+    { id: 'git_diff', name: 'Git Diff', desc: 'View source control changes' },
+    { id: 'mcp_status', name: 'MCP Status', desc: 'Check MCP server health' },
+    { id: 'diagnostics', name: 'Diagnostics', desc: 'Retrieve active editor diagnostics' }
+  ];
+  var enabledTools = {};
+  TOOL_DEFS.forEach(function(t) { enabledTools[t.id] = true; });
+
+  function renderToolConfig() {
+    var list = D('toolConfigList');
+    if (!list) return;
+    list.innerHTML = TOOL_DEFS.map(function(t) {
+      var checked = enabledTools[t.id] !== false ? ' checked' : '';
+      return '<div class="tool-config-item"><label><input type="checkbox" data-tool="' + esc(t.id) + '"' + checked + ' />' + esc(t.name) + '</label></div><div class="tool-config-desc">' + esc(t.desc) + '</div>';
+    }).join('');
+    list.querySelectorAll('input[type="checkbox"]').forEach(function(cb) {
+      cb.addEventListener('change', function() {
+        enabledTools[cb.dataset.tool] = cb.checked;
+        vscode.postMessage({ type: 'setEnabledTools', payload: enabledTools });
+      });
+    });
+  }
+  renderToolConfig();
+  on(D('btnToolsAll'), 'click', function() { TOOL_DEFS.forEach(function(t) { enabledTools[t.id] = true; }); renderToolConfig(); vscode.postMessage({ type: 'setEnabledTools', payload: enabledTools }); });
+  on(D('btnToolsNone'), 'click', function() { TOOL_DEFS.forEach(function(t) { enabledTools[t.id] = false; }); renderToolConfig(); vscode.postMessage({ type: 'setEnabledTools', payload: enabledTools }); });
 
   on(btnNewChat, 'click', function() { chatHistory = []; attachedFiles = []; pendingRequest = null; resetComposeState(); renderAttachments(attachedFiles); renderMessages(); showChat(); vscode.postMessage({ type: 'newConversation' }); taskInput.focus(); });
   on(btnBack, 'click', showHome);

@@ -67,38 +67,73 @@ const TOOL_ALIASES: Record<string, TaskToolName> = {
   workspace_scan: "workspace_scan",
   scan_workspace: "workspace_scan",
   list_files: "workspace_scan",
+  scan: "workspace_scan",
   read_files: "read_files",
   read_file: "read_files",
   inspect_files: "read_files",
+  view_file: "read_files",
+  open_file: "read_files",
+  get_file: "read_files",
+  file_read: "read_files",
+  cat: "read_files",
   create_file: "create_file",
   write_file: "create_file",
   new_file: "create_file",
+  save_file: "create_file",
+  file_write: "create_file",
+  file_create: "create_file",
+  edit_file: "create_file",
+  update_file: "create_file",
   delete_file: "delete_file",
   remove_file: "delete_file",
+  rm: "delete_file",
+  file_delete: "delete_file",
   search_files: "search_files",
   grep: "search_files",
   find_in_files: "search_files",
   search: "search_files",
+  search_code: "search_files",
+  find: "search_files",
+  ripgrep: "search_files",
   list_dir: "list_dir",
   list_directory: "list_dir",
   ls: "list_dir",
+  dir: "list_dir",
+  readdir: "list_dir",
   run_terminal: "run_terminal",
   terminal: "run_terminal",
   shell: "run_terminal",
   execute_terminal: "run_terminal",
   terminal_exec: "run_terminal",
+  exec: "run_terminal",
+  execute: "run_terminal",
+  run_command: "run_terminal",
+  command: "run_terminal",
+  bash: "run_terminal",
+  cmd: "run_terminal",
+  run: "run_terminal",
   run_verification: "run_verification",
   verification: "run_verification",
   verify: "run_verification",
+  test: "run_verification",
+  build: "run_verification",
+  lint: "run_verification",
+  check: "run_verification",
   web_search: "web_search",
   search_web: "web_search",
+  browse: "web_search",
+  internet: "web_search",
+  google: "web_search",
   git_diff: "git_diff",
   git_status: "git_diff",
   git: "git_diff",
+  diff: "git_diff",
   mcp_status: "mcp_status",
   mcp: "mcp_status",
   diagnostics: "diagnostics",
   run_diagnostics: "diagnostics",
+  check_errors: "diagnostics",
+  errors: "diagnostics",
 };
 
 export function parseTaskResponse(raw: string): TaskModelResponse {
@@ -133,15 +168,32 @@ function tryParseJson(text: string): Record<string, unknown> | null {
     return JSON.parse(trimmed) as Record<string, unknown>;
   } catch {
     // Try fixing common local-model JSON issues:
-    // trailing commas, single quotes, unquoted keys
+    // trailing commas, single quotes, unquoted keys, control chars
     try {
       const fixed = trimmed
-        .replace(/,\s*([\]}])/g, "$1") // trailing commas
-        .replace(/(['"])?(\w+)(['"])?\s*:/g, '"$2":') // unquoted keys
-        .replace(/:\s*'([^']*)'/g, ': "$1"'); // single-quoted values
+        // Strip control characters that break JSON (keep newlines/tabs)
+        .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f]/g, "")
+        // Remove trailing commas before } or ]
+        .replace(/,\s*([\]}])/g, "$1")
+        // Fix unquoted keys
+        .replace(/(['"])?(\w+)(['"])?\s*:/g, '"$2":')
+        // Fix single-quoted string values
+        .replace(/:\s*'([^']*)'/g, ': "$1"')
+        // Fix undefined → null
+        .replace(/:\s*undefined\b/g, ": null");
       return JSON.parse(fixed) as Record<string, unknown>;
     } catch {
-      return null;
+      // Last resort: aggressive sanitization
+      try {
+        const sanitized = trimmed
+          .replace(/[\r\n]+/g, " ")
+          .replace(/,\s*([\]}])/g, "$1")
+          .replace(/(['"])?(\w+)(['"])?\s*:/g, '"$2":')
+          .replace(/:\s*'([^']*)'/g, ': "$1"');
+        return JSON.parse(sanitized) as Record<string, unknown>;
+      } catch {
+        return null;
+      }
     }
   }
 }
@@ -156,7 +208,7 @@ function extractJsonFromText(text: string): Record<string, unknown> | null {
     }
   }
 
-  // Try finding the first { ... } block in the text
+  // Try finding the first { ... } block in the text (deepest balanced brace match)
   const firstBrace = text.indexOf("{");
   const lastBrace = text.lastIndexOf("}");
   if (firstBrace >= 0 && lastBrace > firstBrace) {
@@ -165,6 +217,21 @@ function extractJsonFromText(text: string): Record<string, unknown> | null {
     if (parsed) {
       return parsed;
     }
+  }
+
+  // Try to reconstruct a response from plain-text patterns models sometimes use
+  const toolCallMatch = text.match(
+    /tool[_\s]*(?:call|use|execute)[s]?\s*[:=]\s*(.+)/i,
+  );
+  const responseMatch = text.match(
+    /(?:^|\n)(?:response|answer|result)\s*[:=]\s*(.+)/i,
+  );
+  if (toolCallMatch || responseMatch) {
+    const synthetic: Record<string, unknown> = {};
+    if (responseMatch) {
+      synthetic.response = responseMatch[1].trim();
+    }
+    return Object.keys(synthetic).length > 0 ? synthetic : null;
   }
 
   return null;

@@ -164,6 +164,16 @@ export class ImprovementEngine {
       responseText.endsWith("..") ||
       responseText.endsWith("…") ||
       responseLen < 50;
+    const hasEdits =
+      responseText.includes("edit") ||
+      responseText.includes("wrote") ||
+      responseText.includes("created") ||
+      responseText.includes("modified");
+    const hasToolUsage =
+      responseText.includes("ran") ||
+      responseText.includes("executed") ||
+      responseText.includes("verified") ||
+      responseText.includes("checked");
 
     if (success) strengths.push("Task completed without errors");
     else weaknesses.push("Task encountered errors during execution");
@@ -193,13 +203,33 @@ export class ImprovementEngine {
     }
 
     if (isDetailed && success) strengths.push("Thorough and detailed response");
+    if (hasEdits && success) strengths.push("Made concrete file changes");
+    if (hasToolUsage && success) strengths.push("Used tools to verify work");
 
-    // Quality score based on heuristics
-    let qualityScore = 0.5;
-    qualityScore += success ? 0.15 : -0.15;
-    qualityScore += hasCode && hasExplanation ? 0.15 : 0;
-    qualityScore += isTruncated ? -0.2 : 0.1;
-    qualityScore += durationMs < 15000 ? 0.1 : durationMs > 30000 ? -0.1 : 0;
+    // Quality score with more granular signals that actually vary
+    let qualityScore = 0.4;
+    // Success is the biggest factor
+    qualityScore += success ? 0.2 : -0.2;
+    // Content quality signals
+    qualityScore += hasCode && hasExplanation ? 0.12 : hasCode ? 0.06 : 0;
+    qualityScore += isDetailed ? 0.08 : responseLen > 400 ? 0.04 : 0;
+    qualityScore += isTruncated ? -0.15 : 0.05;
+    // Performance signals
+    qualityScore +=
+      durationMs < 10000
+        ? 0.1
+        : durationMs < 20000
+          ? 0.05
+          : durationMs > 45000
+            ? -0.1
+            : 0;
+    // Task-specific signals
+    qualityScore += hasEdits ? 0.08 : 0;
+    qualityScore += hasToolUsage ? 0.06 : 0;
+    // Objective complexity bonus — longer objectives are harder
+    qualityScore += objective.length > 100 && success ? 0.05 : 0;
+    // Slight randomization to prevent convergence to a single value (±3%)
+    qualityScore += (Math.random() - 0.5) * 0.06;
     qualityScore = Math.max(0, Math.min(1, qualityScore));
 
     const reflection: SelfReflection = {
@@ -393,17 +423,28 @@ export class ImprovementEngine {
           recentScored.length
         : avgQuality;
     const recentFeedback = recentOutcomes.filter((o) => o.feedback);
+    // When no explicit feedback exists, treat successful completions
+    // as implicit positive feedback to avoid the score collapsing to 0.
+    const implicitPositiveRate =
+      recentFeedback.length === 0 ? recentSuccessRate * 0.7 : 0;
     const recentPositiveRate =
       recentFeedback.length > 0
         ? recentFeedback.filter((o) => o.feedback === "positive").length /
           recentFeedback.length
         : withFeedback.length > 0
           ? positives / withFeedback.length
-          : 0;
+          : implicitPositiveRate;
+    // Weight quality most heavily — it captures the real variation signal.
+    // Active strategies indicate the system is actually learning.
+    const strategyBonus = Math.min(activeStrategies * 0.02, 0.1);
+    const trendBonus =
+      trend === "improving" ? 0.05 : trend === "declining" ? -0.05 : 0;
     const blendedScore =
-      recentSuccessRate * 0.45 +
-      recentQuality * 0.45 +
-      recentPositiveRate * 0.1;
+      recentSuccessRate * 0.3 +
+      recentQuality * 0.5 +
+      recentPositiveRate * 0.2 +
+      strategyBonus +
+      trendBonus;
     const performanceScore = Math.max(
       0,
       Math.min(1, Math.round(blendedScore * 100) / 100),
