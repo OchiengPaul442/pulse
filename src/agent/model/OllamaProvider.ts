@@ -50,7 +50,7 @@ interface RequestOptions extends RequestInit {
 }
 
 const DEFAULT_TIMEOUT_MS = 5_000;
-const CHAT_TIMEOUT_MS = 120_000;
+const CHAT_TIMEOUT_MS = 300_000;
 
 export class OllamaProvider implements ModelProvider {
   public constructor(private readonly baseUrl: string) {}

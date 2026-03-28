@@ -2,7 +2,7 @@
   "pulse.behavior.approvalMode": "balanced",
   "pulse.ollama.baseUrl": "http://127.0.0.1:11434",
   "pulse.models.planner": "qwen2.5-coder:7b",
-  "pulse.behavior.conversationMode": "agent",
+  "pulse.behavior.conversationMode": "ask",
   "pulse.models.editor": "qwen2.5-coder:7b",
   "pulse.models.fast": "nemotron-mini:latest",
   "pulse.models.embedding": "nomic-embed-text:latest",

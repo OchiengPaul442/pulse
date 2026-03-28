@@ -1,5 +1,5 @@
 import type { ModelProvider } from "../model/ModelProvider";
-import type { TaskTodo } from "../runtime/TaskProtocols";
+import type { TaskTodo, TaskTodoStatus } from "../runtime/TaskProtocols";
 
 export interface PlanStep {
   id: string;
@@ -188,7 +188,7 @@ function fallbackPlan(objective: string): TaskPlan {
 
 function normalizeTodos(
   todos: Partial<TaskTodo>[] | undefined,
-  objective: string,
+  _objective: string,
 ): TaskTodo[] {
   if (!todos || todos.length === 0) {
     return [
@@ -211,16 +211,20 @@ function normalizeTodos(
   }
 
   return todos
-    .map((todo, index) => ({
-      id: todo.id ?? `todo_${index + 1}`,
-      title: todo.title ?? `Task item ${index + 1}`,
-      status:
-        todo.status === "in-progress" ||
-        todo.status === "blocked" ||
-        todo.status === "done"
-          ? todo.status
-          : "pending",
-      detail: todo.detail,
-    }))
+    .map((todo, index): TaskTodo => {
+      const statusRaw = todo.status;
+      const status: TaskTodoStatus =
+        statusRaw === "in-progress" ||
+        statusRaw === "blocked" ||
+        statusRaw === "done"
+          ? statusRaw
+          : "pending";
+      return {
+        id: todo.id ?? `todo_${index + 1}`,
+        title: todo.title ?? `Task item ${index + 1}`,
+        status,
+        detail: todo.detail,
+      };
+    })
     .filter((todo) => todo.title.trim().length > 0);
 }

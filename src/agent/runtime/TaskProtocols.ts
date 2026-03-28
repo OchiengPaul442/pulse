@@ -14,6 +14,10 @@ export interface TaskTodo {
 export type TaskToolName =
   | "workspace_scan"
   | "read_files"
+  | "create_file"
+  | "delete_file"
+  | "search_files"
+  | "list_dir"
   | "run_terminal"
   | "run_verification"
   | "web_search"
@@ -66,6 +70,18 @@ const TOOL_ALIASES: Record<string, TaskToolName> = {
   read_files: "read_files",
   read_file: "read_files",
   inspect_files: "read_files",
+  create_file: "create_file",
+  write_file: "create_file",
+  new_file: "create_file",
+  delete_file: "delete_file",
+  remove_file: "delete_file",
+  search_files: "search_files",
+  grep: "search_files",
+  find_in_files: "search_files",
+  search: "search_files",
+  list_dir: "list_dir",
+  list_directory: "list_dir",
+  ls: "list_dir",
   run_terminal: "run_terminal",
   terminal: "run_terminal",
   shell: "run_terminal",
@@ -86,31 +102,92 @@ const TOOL_ALIASES: Record<string, TaskToolName> = {
 };
 
 export function parseTaskResponse(raw: string): TaskModelResponse {
-  try {
-    const parsed = JSON.parse(raw) as Record<string, unknown>;
-    const response =
-      typeof parsed.response === "string" && parsed.response.trim().length > 0
-        ? parsed.response.trim()
-        : raw.trim().length > 0
-          ? raw.trim()
-          : "Task completed.";
-
-    return {
-      response,
-      todos: normalizeTodos(parsed.todos),
-      toolCalls: normalizeToolCalls(parsed.toolCalls),
-      edits: normalizeEdits(parsed.edits),
-      shortcuts: normalizeShortcuts(parsed.shortcuts),
-    };
-  } catch {
-    return {
-      response: raw.trim().length > 0 ? raw.trim() : "Task completed.",
-      todos: [],
-      toolCalls: [],
-      edits: [],
-      shortcuts: [],
-    };
+  // Try direct JSON parse first
+  const directParsed = tryParseJson(raw);
+  if (directParsed) {
+    return buildModelResponse(directParsed, raw);
   }
+
+  // Try extracting JSON from markdown code fences or surrounding text
+  const extracted = extractJsonFromText(raw);
+  if (extracted) {
+    return buildModelResponse(extracted, raw);
+  }
+
+  // Final fallback: treat the entire raw text as a plain response
+  return {
+    response: raw.trim().length > 0 ? raw.trim() : "Task completed.",
+    todos: [],
+    toolCalls: [],
+    edits: [],
+    shortcuts: [],
+  };
+}
+
+function tryParseJson(text: string): Record<string, unknown> | null {
+  const trimmed = text.trim();
+  if (!trimmed.startsWith("{")) {
+    return null;
+  }
+  try {
+    return JSON.parse(trimmed) as Record<string, unknown>;
+  } catch {
+    // Try fixing common local-model JSON issues:
+    // trailing commas, single quotes, unquoted keys
+    try {
+      const fixed = trimmed
+        .replace(/,\s*([\]}])/g, "$1") // trailing commas
+        .replace(/(['"])?(\w+)(['"])?\s*:/g, '"$2":') // unquoted keys
+        .replace(/:\s*'([^']*)'/g, ': "$1"'); // single-quoted values
+      return JSON.parse(fixed) as Record<string, unknown>;
+    } catch {
+      return null;
+    }
+  }
+}
+
+function extractJsonFromText(text: string): Record<string, unknown> | null {
+  // Try markdown code fences: ```json ... ``` or ``` ... ```
+  const fenceMatch = text.match(/```(?:json)?\s*\n?([\s\S]*?)\n?\s*```/);
+  if (fenceMatch) {
+    const parsed = tryParseJson(fenceMatch[1]);
+    if (parsed) {
+      return parsed;
+    }
+  }
+
+  // Try finding the first { ... } block in the text
+  const firstBrace = text.indexOf("{");
+  const lastBrace = text.lastIndexOf("}");
+  if (firstBrace >= 0 && lastBrace > firstBrace) {
+    const candidate = text.slice(firstBrace, lastBrace + 1);
+    const parsed = tryParseJson(candidate);
+    if (parsed) {
+      return parsed;
+    }
+  }
+
+  return null;
+}
+
+function buildModelResponse(
+  parsed: Record<string, unknown>,
+  raw: string,
+): TaskModelResponse {
+  const response =
+    typeof parsed.response === "string" && parsed.response.trim().length > 0
+      ? parsed.response.trim()
+      : raw.trim().length > 0
+        ? raw.trim()
+        : "Task completed.";
+
+  return {
+    response,
+    todos: normalizeTodos(parsed.todos),
+    toolCalls: normalizeToolCalls(parsed.toolCalls ?? parsed.tool_calls),
+    edits: normalizeEdits(parsed.edits),
+    shortcuts: normalizeShortcuts(parsed.shortcuts),
+  };
 }
 
 export function normalizeTodos(value: unknown): TaskTodo[] {
@@ -185,31 +262,26 @@ export function isSafeTerminalCommand(command: string): boolean {
     return false;
   }
 
+  // Block shell control operators (chaining, redirection, subshells)
   const shellControlPattern = /(?:&&|\|\||;|`|\$\(|\r|\n|>|<|\|)/;
   if (shellControlPattern.test(normalized) || /(^|\s)&(?!&)/.test(normalized)) {
     return false;
   }
 
+  // Block truly destructive commands
   const unsafePatterns = [
-    /\brm\s+-rf\b/,
-    /\bdel\s+\/f?\b/,
+    /\brm\s+-rf\s+[/~]/, // rm -rf on root/home paths only
+    /\bdel\s+\/f?\s+[/\\]/, // Windows force-delete root paths
     /\bremove-item\b.*\b-recurse\b.*\b-force\b/,
     /\bgit\s+reset\s+--hard\b/,
     /\bgit\s+clean\s+-fdx\b/,
+    /\bgit\s+push\s+.*--force\b/,
     /\bformat\s+[a-z]:/,
     /\bshutdown\b/,
     /\breboot\b/,
     /\bpoweroff\b/,
     /\bmkfs\b/,
     /\bdd\s+if=/,
-    /\bnpm\s+install\b/,
-    /\byarn\s+add\b/,
-    /\bpnpm\s+add\b/,
-    /\bpip\s+install\b/,
-    /\bgo\s+get\b/,
-    /\bcargo\s+add\b/,
-    /\bcurl\s+https?:\/\//,
-    /\bwget\s+https?:\/\//,
     /\binvoke-webrequest\b/,
     /\bremove-item\b.*\b-recurse\b/,
   ];
@@ -219,28 +291,70 @@ export function isSafeTerminalCommand(command: string): boolean {
   }
 
   const safePatterns = [
-    /\bgit\s+(status|diff|log|show|blame)\b/,
-    /\bnpm\s+(test|run\s+(test|build|compile|lint|typecheck|check))\b/,
-    /\bnpm\s+exec\s+tsc\b/,
-    /\bnpx\s+tsc\b/,
-    /\bpnpm\s+(test|run\s+(test|build|compile|lint|typecheck|check))\b/,
-    /\byarn\s+(test|run\s+(test|build|compile|lint|typecheck|check))\b/,
+    // Git read-only operations
+    /\bgit\s+(status|diff|log|show|blame|branch|stash\s+list)\b/,
+    // Git write operations that are safe within a project
+    /\bgit\s+(add|commit|checkout|switch|stash|pull|fetch)\b/,
+    // Node.js ecosystem — build, test, run, install
+    /\bnpm\s+(test|run|exec|install|ci|ls|outdated|audit)\b/,
+    /\bnpx\s+\S/,
+    /\bpnpm\s+(test|run|install|add|exec|ls|audit|dlx)\b/,
+    /\byarn\s+(test|run|install|add|dlx|audit)\b/,
+    // TypeScript / JavaScript tooling
     /\btsc(\s|$)/,
     /\bvitest(\s|$)/,
+    /\bjest(\s|$)/,
+    /\beslint(\s|$)/,
+    /\bprettier(\s|$)/,
+    /\bbiome(\s|$)/,
+    // Python ecosystem
+    /\bpython\b/,
+    /\bpython3\b/,
+    /\bpip\s+(install|list|show|freeze)\b/,
+    /\bpip3\s+(install|list|show|freeze)\b/,
     /\bpytest(\s|$)/,
-    /\bpython\s+-m\s+pytest\b/,
-    /\bdotnet\s+test\b/,
-    /\bgo\s+test\b/,
-    /\bcargo\s+test\b/,
+    /\buvicorn(\s|$)/,
+    /\bflask(\s|$)/,
+    /\bmypy(\s|$)/,
+    /\bruff(\s|$)/,
+    /\bblack(\s|$)/,
+    // .NET
+    /\bdotnet\s+(test|build|run|restore|new|add)\b/,
+    // Go
+    /\bgo\s+(test|build|run|vet|mod|get|fmt)\b/,
+    // Rust
+    /\bcargo\s+(test|build|run|check|clippy|add|fmt)\b/,
+    // File inspection commands
+    /\bcat\s/,
+    /\bhead\s/,
+    /\btail\s/,
+    /\bwc\s/,
+    /\bgrep\s/,
     /\brg\b/,
+    /\bfind\s/,
     /\bls\b/,
     /\bdir\b/,
-    /\bfind\b/,
+    /\btree\b/,
+    /\bpwd\b/,
+    /\becho\s/,
+    /\bwhich\s/,
+    /\bwhere\s/,
+    // File manipulation (within project)
+    /\bmkdir\s/,
+    /\btouch\s/,
+    /\bcp\s/,
+    /\bmv\s/,
+    // Docker read commands
+    /\bdocker\s+(ps|images|logs|inspect)\b/,
     // Scaffolding / project-creation commands
     /\b(pnpm|npm|yarn)\s+create\b/,
     /\bnpx\s+create-/,
     /\bpnpm\s+dlx\s+create-/,
-    /\bnpx\s+@[a-z0-9@/-]+\b/,
+    // Make
+    /\bmake(\s|$)/,
+    // Curl/wget for fetching (non-destructive read)
+    /\bcurl\s/,
+    /\bwget\s/,
   ];
 
   return safePatterns.some((pattern) => pattern.test(normalized));
@@ -447,7 +561,7 @@ export function buildTaskRefinementPrompt(
     "Improve the JSON so it is more complete, more accurate, and more actionable.",
     "Preserve any valid edits, todos, and tool calls that still make sense.",
     "Address the weaknesses and recommendations exactly.",
-    "Return valid JSON only with fields: response, todos, toolCalls, edits.",
+    "Return valid JSON only with fields: response, todos, toolCalls, edits, shortcuts.",
     `Objective: ${objective}`,
     `Previous response: ${JSON.stringify(previous, null, 2)}`,
     `Assessment:\n${formatTaskQualityAssessment(assessment)}`,
@@ -517,6 +631,15 @@ function normalizeShortcuts(value: unknown): string[] {
 }
 
 function normalizeToolCall(entry: unknown): TaskToolCall | null {
+  // Handle string-only tool calls (e.g. "create_file" instead of {tool:"create_file",args:{}})
+  if (typeof entry === "string") {
+    const tool = TOOL_ALIASES[entry.trim().toLowerCase()];
+    if (!tool) {
+      return null;
+    }
+    return { tool, args: {} };
+  }
+
   if (!entry || typeof entry !== "object") {
     return null;
   }

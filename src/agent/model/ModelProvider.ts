@@ -11,6 +11,8 @@ export interface ChatRequest {
   maxTokens?: number;
   format?: "json";
   signal?: AbortSignal;
+  /** Streaming callback: called with each text delta as it arrives. */
+  onChunk?: (text: string) => void;
 }
 
 export interface ChatResponse {

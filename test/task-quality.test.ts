@@ -14,6 +14,7 @@ describe("Task quality assessment", () => {
         { id: "todo_1", title: "Inspect files", status: "done" },
         { id: "todo_2", title: "Run tests", status: "done" },
       ],
+      shortcuts: [],
       toolCalls: [
         { tool: "workspace_scan", args: {}, reason: "Need context" },
         { tool: "run_verification", args: { commands: ["npm test"] } },
@@ -49,6 +50,7 @@ describe("Task quality assessment", () => {
     const response: TaskModelResponse = {
       response: "Done.",
       todos: [],
+      shortcuts: [],
       toolCalls: [],
       edits: [],
     };

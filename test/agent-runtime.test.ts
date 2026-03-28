@@ -188,7 +188,8 @@ describe("AgentRuntime", () => {
     const sessionMethods = SessionStore.prototype as any;
     vi.spyOn(sessionMethods, "getActiveSession").mockResolvedValue(null);
     vi.spyOn(sessionMethods, "createSession").mockImplementation(
-      async (objective: string) => {
+      async (...args: unknown[]) => {
+        const objective = args[0] as string;
         currentSession.objective = objective;
         currentSession.title = objective;
         currentSession.messages = [];
@@ -198,13 +199,15 @@ describe("AgentRuntime", () => {
       },
     );
     vi.spyOn(sessionMethods, "appendMessage").mockImplementation(
-      async (_sessionId: string, message: any) => {
+      async (...args: unknown[]) => {
+        const message = args[1] as any;
         currentSession.messages.push(message);
         currentSession.updatedAt = new Date().toISOString();
       },
     );
     vi.spyOn(sessionMethods, "updateSessionResult").mockImplementation(
-      async (_sessionId: string, resultText: string) => {
+      async (...args: unknown[]) => {
+        const resultText = args[1] as string;
         currentSession.lastResult = resultText;
         currentSession.updatedAt = new Date().toISOString();
       },

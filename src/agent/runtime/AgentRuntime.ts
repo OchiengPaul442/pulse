@@ -48,6 +48,7 @@ import type {
   AgentProgressStep,
   TokenSnapshot,
   RunTaskRequest,
+  ExplainResult,
 } from "./RuntimeTypes";
 import { SessionStore } from "../sessions/SessionStore";
 import type { SessionRecord } from "../sessions/SessionStore";
@@ -882,6 +883,7 @@ export class AgentRuntime {
         sessionId: session.id,
         objective,
         plan,
+        todos: plan.todos,
         responseText,
         proposal: null,
         artifactPath: artifactPath ?? undefined,
@@ -971,10 +973,12 @@ export class AgentRuntime {
             "The response directly answers the request.",
             "No file edits are proposed unless explicitly requested.",
           ],
+          todos: [],
           steps: [],
           taskSlices: [],
           verification: [],
         },
+        todos: [],
         responseText: response.text,
         proposal: null,
       };
@@ -1778,7 +1782,7 @@ export class AgentRuntime {
   private async buildConversationHistory(
     messages: ConversationMessage[] = [],
   ): Promise<Array<{ role: "user" | "assistant"; content: string }>> {
-    return messages.slice(-8).map((message) => ({
+    return messages.slice(-16).map((message) => ({
       role: message.role,
       content: message.content,
     }));
@@ -1792,7 +1796,7 @@ export class AgentRuntime {
     }
 
     const expandedPaths = await this.expandAttachmentPaths(paths.slice(0, 8));
-    return this.scanner.readContextSnippets(expandedPaths.slice(0, 8), 2400);
+    return this.scanner.readContextSnippets(expandedPaths.slice(0, 8), 4000);
   }
 
   private async expandAttachmentPaths(paths: string[]): Promise<string[]> {
@@ -2195,6 +2199,9 @@ export class AgentRuntime {
     proposal: EditProposal | null;
     autoApplied: boolean;
     toolTrace: TaskToolObservation[];
+    qualityScore?: number;
+    qualityTarget?: number;
+    meetsQualityTarget?: boolean;
   }> {
     const checkAborted = () => {
       if (signal?.aborted) {
@@ -2232,7 +2239,7 @@ export class AgentRuntime {
     const session = await sessionPromise;
     const [contextSnippets, attachedContext, conversationHistory] =
       await Promise.all([
-        this.scanner.readContextSnippets(candidateFiles.slice(0, 4), 2400),
+        this.scanner.readContextSnippets(candidateFiles.slice(0, 6), 4000),
         this.loadAttachedFileContext(session?.attachedFiles ?? []),
         this.buildConversationHistory(session?.messages ?? []),
       ]);
@@ -2250,66 +2257,56 @@ export class AgentRuntime {
     ): string =>
       [
         this.getPersonaPrompt(),
-        "You are running in autonomous agent mode inside VS Code.",
-        "You have access to workspace context, terminal verification, web research, and file edits.",
+        "You are an autonomous coding agent inside VS Code. You can read/write files, run commands, search code, and make edits.",
         ...(styleHintAgent ? [styleHintAgent] : []),
         ...(improvementHintsAgent ? [improvementHintsAgent] : []),
         ...(agentAwarenessAgent ? [agentAwarenessAgent] : []),
         shortcutSummary ? shortcutSummary : "",
         "",
-        "## Operating rules",
-        "- Always create a short todo list before making changes.",
-        "- Keep TODOs to 3-5 short, imperative lines.",
-        "- CRITICAL: When the user asks you to run, execute, or create something with a command, call run_terminal IMMEDIATELY with that exact command. Never write a numbered list of instructions when you can use a tool to do the work.",
-        "- Use tools only when you are at least 0.90 confident they will improve accuracy.",
-        "- Read the workspace context carefully before editing or running commands.",
-        "- Use tool calls when you need more evidence. Do not guess if a tool can answer the question.",
-        "- Prefer one high-signal tool over multiple low-confidence calls.",
-        "- Prefer small, targeted edits over broad rewrites.",
-        "- Keep the current workspace as the only edit target.",
-        "- Use terminal verification for builds, tests, diagnostics, or other safe checks.",
-        "- If you need to explain a decision, keep the explanation brief and concrete.",
-        "- If refinement feedback is present, revise the previous answer to address it.",
-        `- Aim for a quality score of at least ${TARGET_TASK_QUALITY_SCORE.toFixed(2)} before finalizing.`,
+        "## Rules",
+        "- Create a short TODO list (3-5 items) before making changes.",
+        "- Use tools to gather evidence. Do NOT guess when a tool can answer.",
+        "- When asked to run a command, use run_terminal immediately.",
+        "- Prefer small, targeted edits over rewrites.",
+        "- Run verification after edits when possible.",
+        "- If refinement feedback is present, address it.",
         "",
         "## Response format",
-        "Return strict JSON with these fields. Use ONE tool per toolCall entry — never join tool names with |.",
-        '{"response":"Brief summary of what was done","todos":[{"id":"todo_1","title":"Run scaffold command","status":"pending","detail":"Use run_terminal to execute pnpm create next-app"}],"shortcuts":["read","scan","verify"],"toolCalls":[{"tool":"run_terminal","args":{"command":"pnpm test"},"reason":"Verify current state before making changes"}],"edits":[]}',
-        "Each toolCall must have a single tool name from: workspace_scan, read_files, run_terminal, run_verification, web_search, git_diff, mcp_status, diagnostics.",
+        "Return JSON only with fields: response, todos, shortcuts, toolCalls, edits.",
+        `Example: {"response":"Summary","todos":[{"id":"todo_1","title":"Step","status":"pending"}],"shortcuts":[],"toolCalls":[{"tool":"run_terminal","args":{"command":"npm test"}}],"edits":[]}`,
         "",
-        "## Tool guidance",
-        "- workspace_scan: inspect the workspace when you need more file-level context.",
-        "- read_files: request specific file paths you want summarized or inspected.",
-        "- run_terminal: execute terminal commands directly. Use this when the user asks to run, execute, build, create, or scaffold anything.",
-        "- run_verification: use for tests, lint, build, and diagnostics after edits.",
-        "- web_search: use when the answer depends on current external docs or releases.",
-        "- git_diff: inspect the repository changes or file diffs.",
-        "- mcp_status: inspect MCP connectivity and configuration health.",
-        "- diagnostics: inspect active VS Code diagnostics.",
+        "## Available tools (one per toolCall)",
+        "- workspace_scan: list workspace files for context",
+        "- read_files: read specific files {args: {paths: [...]}}",
+        "- create_file: create/overwrite a file {args: {filePath, content}}",
+        "- delete_file: delete a file {args: {filePath}}",
+        "- search_files: search file contents for a pattern {args: {query}}",
+        "- list_dir: list directory contents {args: {path}}",
+        "- run_terminal: execute a shell command {args: {command}}",
+        "- run_verification: run tests/build/lint after edits",
+        "- web_search: search the web {args: {query}}",
+        "- git_diff: view git changes {args: {filePath} or no args for summary}",
+        "- diagnostics: check VS Code diagnostic errors",
         "",
         "## Context",
         `Objective: ${objective}`,
         `Skills: ${skillsSummary}`,
         `Plan: ${JSON.stringify(plan, null, 2)}`,
         plan.todos.length > 0
-          ? `Current todo draft: ${JSON.stringify(plan.todos, null, 2)}`
+          ? `Current todos: ${JSON.stringify(plan.todos, null, 2)}`
           : "",
         episodes.length > 0
-          ? `Recent memory: ${JSON.stringify(episodes, null, 2)}`
+          ? `Memory: ${JSON.stringify(episodes, null, 2)}`
           : "",
-        `Workspace files: ${JSON.stringify(contextSnippets, null, 2)}`,
+        `Workspace files:\n${contextSnippets.map((s) => `File: ${s.path}\n${s.content}`).join("\n\n")}`,
         attachedContext.length > 0
-          ? `Attached files: ${JSON.stringify(attachedContext, null, 2)}`
+          ? `Attached:\n${attachedContext.map((s) => `File: ${s.path}\n${s.content}`).join("\n\n")}`
           : "",
         webResearch
           ? `Web research: ${JSON.stringify(webResearch, null, 2)}`
           : "",
-        toolContext
-          ? `Tool observations from the last round:\n${toolContext}`
-          : "",
-        critiqueContext
-          ? `Refinement feedback from the evaluator:\n${critiqueContext}`
-          : "",
+        toolContext ? `Tool results:\n${toolContext}` : "",
+        critiqueContext ? `Refinement feedback:\n${critiqueContext}` : "",
       ]
         .filter((value) => value.length > 0)
         .join("\n");
@@ -2328,7 +2325,7 @@ export class AgentRuntime {
     let finalAssessment: TaskQualityAssessment | null = null;
 
     // Keep the refinement loop short so edit tasks stay responsive.
-    for (let iteration = 0; iteration < 2; iteration += 1) {
+    for (let iteration = 0; iteration < 3; iteration += 1) {
       this.emitProgress("Generating response", editorModel, "✨");
       checkAborted();
       const response = await this.provider.chat({
@@ -2339,7 +2336,7 @@ export class AgentRuntime {
           {
             role: "system",
             content:
-              "Follow instructions exactly and produce valid JSON only. Do not include markdown fences.",
+              "You are a coding agent. Return valid JSON only. No markdown fences.",
           },
           ...conversationHistory,
           {
@@ -2347,7 +2344,7 @@ export class AgentRuntime {
             content: buildPrompt(toolContext, critiqueContext),
           },
         ],
-        maxTokens: 3072,
+        maxTokens: 4096,
       });
       this.consumeTokens(response.tokenUsage);
 
@@ -2538,7 +2535,7 @@ export class AgentRuntime {
         .filter((item): item is string => Boolean(item));
       const snippets = await this.scanner.readContextSnippets(
         resolvedPaths.slice(0, 8),
-        2400,
+        6000,
       );
       return [
         {
@@ -2554,9 +2551,172 @@ export class AgentRuntime {
                 `File: ${this.normalizeDisplayPath(snippet.path)}\n${snippet.content}`,
             )
             .join("\n\n")
+            .slice(0, 8000),
+        },
+      ];
+    }
+
+    if (call.tool === "create_file") {
+      const filePath = this.firstString(call.args.filePath, call.args.path);
+      const content = this.firstString(call.args.content) ?? "";
+      if (!filePath) {
+        return [
+          {
+            tool: call.tool,
+            ok: false,
+            summary: "No file path was provided for create_file.",
+          },
+        ];
+      }
+      const resolved = this.resolveWorkspacePath(filePath);
+      if (!resolved) {
+        return [
+          {
+            tool: call.tool,
+            ok: false,
+            summary: `Path "${filePath}" is outside the workspace.`,
+          },
+        ];
+      }
+      try {
+        const uri = vscode.Uri.file(resolved);
+        await vscode.workspace.fs.writeFile(uri, Buffer.from(content, "utf8"));
+        return [
+          {
+            tool: call.tool,
+            ok: true,
+            summary: `Created file: ${this.normalizeDisplayPath(resolved)}`,
+          },
+        ];
+      } catch (err) {
+        return [
+          {
+            tool: call.tool,
+            ok: false,
+            summary: `Failed to create file: ${stringifyError(err)}`,
+          },
+        ];
+      }
+    }
+
+    if (call.tool === "delete_file") {
+      const filePath = this.firstString(call.args.filePath, call.args.path);
+      if (!filePath) {
+        return [
+          {
+            tool: call.tool,
+            ok: false,
+            summary: "No file path was provided for delete_file.",
+          },
+        ];
+      }
+      const resolved = this.resolveWorkspacePath(filePath);
+      if (!resolved) {
+        return [
+          {
+            tool: call.tool,
+            ok: false,
+            summary: `Path "${filePath}" is outside the workspace.`,
+          },
+        ];
+      }
+      try {
+        const uri = vscode.Uri.file(resolved);
+        await vscode.workspace.fs.delete(uri);
+        return [
+          {
+            tool: call.tool,
+            ok: true,
+            summary: `Deleted file: ${this.normalizeDisplayPath(resolved)}`,
+          },
+        ];
+      } catch (err) {
+        return [
+          {
+            tool: call.tool,
+            ok: false,
+            summary: `Failed to delete file: ${stringifyError(err)}`,
+          },
+        ];
+      }
+    }
+
+    if (call.tool === "search_files") {
+      const query =
+        this.firstString(
+          call.args.query,
+          call.args.pattern,
+          call.args.search,
+        ) ?? "";
+      if (!query) {
+        return [
+          {
+            tool: call.tool,
+            ok: false,
+            summary: "No search query was provided.",
+          },
+        ];
+      }
+      const results = await this.scanner.searchFileContents(query, 8);
+      return [
+        {
+          tool: call.tool,
+          ok: results.length > 0,
+          summary:
+            results.length > 0
+              ? `Found matches in ${results.length} file(s).`
+              : "No matches found.",
+          detail: results
+            .map(
+              (r) =>
+                `File: ${this.normalizeDisplayPath(r.path)}\n${r.matches.join("\n---\n")}`,
+            )
+            .join("\n\n")
             .slice(0, 5000),
         },
       ];
+    }
+
+    if (call.tool === "list_dir") {
+      const dirPath =
+        this.firstString(call.args.path, call.args.directory, call.args.dir) ??
+        ".";
+      const resolved = this.resolveWorkspacePath(dirPath);
+      if (!resolved) {
+        return [
+          {
+            tool: call.tool,
+            ok: false,
+            summary: `Path "${dirPath}" is outside the workspace.`,
+          },
+        ];
+      }
+      try {
+        const uri = vscode.Uri.file(resolved);
+        const entries = await vscode.workspace.fs.readDirectory(uri);
+        const listing = entries
+          .slice(0, 50)
+          .map(([name, type]) =>
+            type === vscode.FileType.Directory ? `${name}/` : name,
+          )
+          .join("\n");
+        return [
+          {
+            tool: call.tool,
+            ok: true,
+            summary: `Listed ${entries.length} entries in ${this.normalizeDisplayPath(resolved)}.`,
+            detail: listing,
+          },
+        ];
+      } catch (err) {
+        return [
+          {
+            tool: call.tool,
+            ok: false,
+            summary: `Failed to list directory: ${stringifyError(err)}`,
+          },
+        ];
+      }
     }
 
     if (call.tool === "run_terminal") {
