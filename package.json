@@ -1,16 +1,27 @@
 {
   "name": "pulse-agent",
   "displayName": "Pulse Agent",
-  "description": "Personal Agentic AI coding assistant for VS Code using local models.",
-  "version": "0.0.59",
+  "description": "Local offline AI coding agent for VS Code powered by Ollama.",
+  "version": "0.0.60",
   "publisher": "local",
   "license": "MIT",
+  "keywords": [
+    "ai",
+    "agent",
+    "ollama",
+    "local",
+    "offline",
+    "coding",
+    "assistant",
+    "workspace",
+    "refactoring"
+  ],
   "icon": "media/pulse-icon.png",
   "engines": {
     "vscode": "^1.90.0"
   },
   "categories": [
-    "Other"
+    "AI"
   ],
   "activationEvents": [
     "onStartupFinished"
@@ -124,18 +135,18 @@
         },
         "pulse.models.planner": {
           "type": "string",
-          "default": "qwen2.5-coder:7b",
-          "description": "Default planning model."
+          "default": "deepseek-r1:7b",
+          "description": "Planning and reasoning model."
         },
         "pulse.models.editor": {
           "type": "string",
           "default": "qwen2.5-coder:7b",
-          "description": "Default editing model."
+          "description": "Code editing and rewrite model."
         },
         "pulse.models.fast": {
           "type": "string",
-          "default": "nemotron-mini:latest",
-          "description": "Fast model for quick interactions."
+          "default": "qwen2.5-coder:7b",
+          "description": "Fast model for quick interactions and lightweight tasks."
         },
         "pulse.models.embedding": {
           "type": "string",
@@ -145,7 +156,7 @@
         "pulse.models.fallbacks": {
           "type": "array",
           "default": [
-            "deepseek-r1:7b",
+            "qwen2.5-coder:7b",
             "nemotron-mini:latest"
           ],
           "description": "Fallback model list when the primary model fails.",
@@ -208,7 +219,7 @@
         },
         "pulse.behavior.maxContextTokens": {
           "type": "number",
-          "default": 16384,
+          "default": 32768,
           "minimum": 2048,
           "description": "Maximum context budget for model requests."
         },
@@ -224,7 +235,7 @@
         },
         "pulse.behavior.selfLearn": {
           "type": "boolean",
-          "default": false,
+          "default": true,
           "description": "Enable background self-learning loop: Pulse will periodically reflect on past sessions and evolve its improvement strategies while idle."
         },
         "pulse.indexing.enabled": {
