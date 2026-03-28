@@ -35,13 +35,13 @@ describe("PermissionPolicy", () => {
     expect(result.allowed).toBe(true);
   });
 
-  it("default mode requires approval for writes", () => {
+  it("default mode auto-approves writes", () => {
     const policy = new PermissionPolicy("default");
     const result = policy.evaluate({
       action: "file_write",
       description: "Write a file",
     });
-    expect(result.allowed).toBe(false);
+    expect(result.allowed).toBe(true);
   });
 
   it("default mode requires approval for destructive actions", () => {
@@ -62,23 +62,23 @@ describe("PermissionPolicy", () => {
     expect(result.allowed).toBe(false);
   });
 
-  it("session trust overrides default prompts", () => {
+  it("session trust overrides default prompts for sensitive actions", () => {
     const policy = new PermissionPolicy("default");
-    policy.trustActionForSession("file_write");
+    policy.trustActionForSession("file_delete");
     const result = policy.evaluate({
-      action: "file_write",
-      description: "Write a file",
+      action: "file_delete",
+      description: "Delete a file",
     });
     expect(result.allowed).toBe(true);
   });
 
   it("setMode clears session trust", () => {
     const policy = new PermissionPolicy("default");
-    policy.trustActionForSession("file_write");
+    policy.trustActionForSession("file_delete");
     policy.setMode("default");
     const result = policy.evaluate({
-      action: "file_write",
-      description: "Write a file",
+      action: "file_delete",
+      description: "Delete a file",
     });
     expect(result.allowed).toBe(false);
   });
@@ -91,11 +91,11 @@ describe("PermissionPolicy", () => {
     expect(policy.getAuditLog().length).toBeLessThanOrEqual(500);
   });
 
-  it("recordDecision with trustForSession enables future auto-approve", () => {
+  it("recordDecision with trustForSession enables future auto-approve for sensitive actions", () => {
     const policy = new PermissionPolicy("default");
     const req = {
-      action: "terminal_exec" as const,
-      description: "Run npm test",
+      action: "package_install" as const,
+      description: "Install lodash",
     };
     expect(policy.evaluate(req).allowed).toBe(false);
     policy.recordDecision(req, true, true);

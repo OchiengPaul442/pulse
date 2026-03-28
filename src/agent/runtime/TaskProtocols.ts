@@ -23,7 +23,13 @@ export type TaskToolName =
   | "web_search"
   | "git_diff"
   | "mcp_status"
-  | "diagnostics";
+  | "diagnostics"
+  | "batch_edit"
+  | "rename_file"
+  | "find_references"
+  | "file_search"
+  | "get_problems"
+  | "get_terminal_output";
 
 export interface TaskToolCall {
   tool: TaskToolName;
@@ -134,6 +140,29 @@ const TOOL_ALIASES: Record<string, TaskToolName> = {
   run_diagnostics: "diagnostics",
   check_errors: "diagnostics",
   errors: "diagnostics",
+  batch_edit: "batch_edit",
+  multi_edit: "batch_edit",
+  multi_file_edit: "batch_edit",
+  edit_files: "batch_edit",
+  rename_file: "rename_file",
+  rename: "rename_file",
+  move_file: "rename_file",
+  mv: "rename_file",
+  find_references: "find_references",
+  references: "find_references",
+  usages: "find_references",
+  find_usages: "find_references",
+  file_search: "file_search",
+  find_file: "file_search",
+  locate_file: "file_search",
+  glob: "file_search",
+  get_problems: "get_problems",
+  problems: "get_problems",
+  get_errors: "get_problems",
+  lsp_errors: "get_problems",
+  get_terminal_output: "get_terminal_output",
+  terminal_output: "get_terminal_output",
+  terminal_last: "get_terminal_output",
 };
 
 export function parseTaskResponse(raw: string): TaskModelResponse {

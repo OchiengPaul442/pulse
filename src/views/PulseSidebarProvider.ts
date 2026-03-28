@@ -871,8 +871,8 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
     :root {
-      --accent: #0078d4; --accent-bg: rgba(0,120,212,0.08); --accent-bdr: rgba(0,120,212,0.22);
-      --accent-glow: rgba(0,120,212,0.12); --accent-hover: #106ebe;
+      --accent: #3fb950; --accent-bg: rgba(63,185,80,0.08); --accent-bdr: rgba(63,185,80,0.22);
+      --accent-glow: rgba(63,185,80,0.12); --accent-hover: #2ea043;
       --orange: #c27803; --orange-hover: #a36702; --orange-glow: rgba(194,120,3,0.14);
       --green: #16a34a; --green-bg: rgba(22,163,74,0.08); --green-bdr: rgba(22,163,74,0.22);
       --red: var(--vscode-errorForeground, #f87171); --red-bg: rgba(248,113,113,0.06); --red-bdr: rgba(248,113,113,0.22);
@@ -1174,17 +1174,20 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
     .attach-plus:hover { border-color: var(--accent); color: var(--accent); background: var(--accent-bg); }
 
     .send-btn { width: 30px; height: 30px; min-width: 30px; border: none; border-radius: 50%; background: linear-gradient(135deg, var(--accent) 0%, var(--accent-hover) 100%); color: #fff; font-size: 14px; line-height: 1; cursor: default; display: flex; align-items: center; justify-content: center; transition: opacity .15s ease, transform .15s ease, background .15s ease, box-shadow .15s ease; opacity: .25; box-shadow: none; }
-    .send-btn:not([disabled]) { opacity: 1; cursor: pointer; box-shadow: 0 2px 8px rgba(0,120,212,.35); }
-    .send-btn:not([disabled]):hover { background: linear-gradient(135deg, var(--accent-hover) 0%, var(--accent) 100%); transform: scale(1.1) translateY(-1px); box-shadow: 0 4px 14px rgba(0,120,212,.45); }
-    .send-btn:not([disabled]):active { transform: scale(.95); box-shadow: 0 1px 4px rgba(0,120,212,.3); }
+    .send-btn:not([disabled]) { opacity: 1; cursor: pointer; box-shadow: 0 2px 8px rgba(63,185,80,.35); }
+    .send-btn:not([disabled]):hover { background: linear-gradient(135deg, var(--accent-hover) 0%, var(--accent) 100%); transform: scale(1.1) translateY(-1px); box-shadow: 0 4px 14px rgba(63,185,80,.45); }
+    .send-btn:not([disabled]):active { transform: scale(.95); box-shadow: 0 1px 4px rgba(63,185,80,.3); }
     .send-btn .send-arrow { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 2.2; stroke-linecap: round; stroke-linejoin: round; }
     .send-btn.stop { background: linear-gradient(135deg, #ef4444, #dc2626); opacity: 1; cursor: pointer; box-shadow: 0 2px 8px rgba(239,68,68,.35); }
     .send-btn.stop:hover { background: linear-gradient(135deg, #dc2626, #b91c1c); transform: scale(1.1) translateY(-1px); box-shadow: 0 4px 14px rgba(239,68,68,.45); }
 
     /* ── Drag-and-drop overlay ─── */
-    .drop-overlay { display: none; position: absolute; inset: 0; z-index: 100; border-radius: 12px; border: 2px dashed var(--accent); background: var(--accent-bg); align-items: center; justify-content: center; pointer-events: none; }
-    .drop-overlay.active { display: flex; }
-    .drop-overlay-label { font: 600 12px var(--vscode-font-family); color: var(--accent); letter-spacing: .3px; }
+    .drop-overlay { display: none; position: fixed; inset: 0; z-index: 1000; border: 2px dashed var(--accent); background: rgba(63,185,80,0.06); backdrop-filter: blur(2px); align-items: center; justify-content: center; flex-direction: column; gap: 8px; pointer-events: none; transition: opacity 0.2s ease; }
+    .drop-overlay.active { display: flex; animation: drop-fadein 0.15s ease forwards; }
+    @keyframes drop-fadein { from { opacity: 0; } to { opacity: 1; } }
+    .drop-overlay-icon { font-size: 32px; opacity: 0.7; }
+    .drop-overlay-label { font: 600 13px var(--vscode-font-family); color: var(--accent); letter-spacing: .3px; }
+    .drop-overlay-hint { font: 400 11px var(--vscode-font-family); color: var(--fg2); opacity: 0.7; }
 
     /* ── Tool config panel ─── */
     .tool-config-section { display: flex; flex-direction: column; gap: 6px; padding-top: 8px; border-top: 1px solid var(--border); }
@@ -1267,6 +1270,7 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
 </head>
 <body>
 <div id="root">
+  <div class="drop-overlay" id="dropOverlay"><span class="drop-overlay-icon">&#128206;</span><span class="drop-overlay-label">Drop files to attach</span><span class="drop-overlay-hint">Images &amp; source files supported</span></div>
 
   <header class="hdr">
     <div class="hdr-left">
@@ -1360,7 +1364,6 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
 
   <div class="composer">
     <div class="composer-box" id="composerBox">
-      <div class="drop-overlay" id="dropOverlay"><span class="drop-overlay-label">Drop files to attach</span></div>
       <textarea id="taskInput" placeholder="Ask Pulse anything about your code\u2026" rows="2" aria-label="Message"></textarea>
       <div class="composer-inner-row">
         <div class="chips">
@@ -1391,7 +1394,7 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
         <div id="permPopup" class="perm-popup hidden">
           <button type="button" class="perm-opt" data-perm="default">
             <span class="perm-opt-icon">&#9741;</span>
-            <span class="perm-opt-text"><span class="perm-opt-title">Default Approvals</span><span class="perm-opt-desc">Pulse uses your configured settings</span></span>
+            <span class="perm-opt-text"><span class="perm-opt-title">Default Approvals</span><span class="perm-opt-desc">Auto-approve file edits &amp; terminal. Prompt for deletes &amp; installs.</span></span>
           </button>
           <button type="button" class="perm-opt" data-perm="full">
             <span class="perm-opt-icon">&#9888;</span>
@@ -2283,9 +2286,8 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
 
   // ── Drag-and-drop file attach ─────────────────────────────────
   (function() {
-    var composerBox = D('composerBox');
     var dropOverlay = D('dropOverlay');
-    if (!composerBox || !dropOverlay) return;
+    if (!dropOverlay) return;
     var dragCounter = 0;
     document.addEventListener('dragenter', function(e) {
       e.preventDefault();
@@ -2357,7 +2359,13 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
     { id: 'web_search', name: 'Web Search', desc: 'Search the internet for documentation' },
     { id: 'git_diff', name: 'Git Diff', desc: 'View source control changes' },
     { id: 'mcp_status', name: 'MCP Status', desc: 'Check MCP server health' },
-    { id: 'diagnostics', name: 'Diagnostics', desc: 'Retrieve active editor diagnostics' }
+    { id: 'diagnostics', name: 'Diagnostics', desc: 'Retrieve active editor diagnostics' },
+    { id: 'batch_edit', name: 'Batch Edit', desc: 'Apply targeted changes to multiple files at once' },
+    { id: 'rename_file', name: 'Rename/Move', desc: 'Rename or move files in the workspace' },
+    { id: 'find_references', name: 'Find References', desc: 'Find all usages of a symbol across the workspace' },
+    { id: 'file_search', name: 'File Search', desc: 'Find files by name or glob pattern' },
+    { id: 'get_problems', name: 'Problems', desc: 'Get VS Code diagnostics and errors' },
+    { id: 'get_terminal_output', name: 'Terminal Output', desc: 'Get the last terminal command output' }
   ];
   var enabledTools = {};
   TOOL_DEFS.forEach(function(t) { enabledTools[t.id] = true; });

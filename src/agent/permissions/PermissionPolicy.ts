@@ -48,21 +48,26 @@ export interface PermissionAuditEntry {
 
 /** Actions considered sensitive that need approval in "default" mode. */
 const SENSITIVE_ACTIONS: ReadonlySet<ActionCategory> = new Set([
-  "file_write",
   "file_delete",
-  "file_move",
-  "terminal_exec",
   "git_write",
   "network_request",
   "package_install",
-  "multi_file_edit",
   "destructive",
-  "mcp_tool_call",
 ]);
 
-/** Actions that are always safe (auto-approved even in "default" mode). */
+/**
+ * Actions that are always safe (auto-approved even in "default" mode).
+ * In default mode, the agent auto-approves reads, writes, edits, terminal
+ * commands, file moves, and MCP calls — matching GitHub Copilot behavior.
+ * Only destructive/external operations still require explicit approval.
+ */
 const SAFE_ACTIONS: ReadonlySet<ActionCategory> = new Set([
   "file_read",
+  "file_write",
+  "file_move",
+  "terminal_exec",
+  "multi_file_edit",
+  "mcp_tool_call",
   "git_read",
 ]);
 

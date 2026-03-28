@@ -190,6 +190,9 @@ export class AgentRuntime {
   /** Tool enable/disable map set from the UI. All tools enabled by default. */
   private enabledToolsMap: Record<string, boolean> = {};
 
+  /** Last terminal execution result for get_terminal_output tool. */
+  private lastTerminalResult: TerminalExecResult | null = null;
+
   public constructor(
     config: AgentConfig,
     private readonly storage: StorageState,
@@ -1907,10 +1910,41 @@ export class AgentRuntime {
   private async buildConversationHistory(
     messages: ConversationMessage[] = [],
   ): Promise<Array<{ role: "user" | "assistant"; content: string }>> {
-    return messages.slice(-16).map((message) => ({
-      role: message.role,
-      content: message.content,
-    }));
+    const MAX_RECENT = 40;
+    const SUMMARY_THRESHOLD = 50;
+
+    if (messages.length <= MAX_RECENT) {
+      return messages.map((m) => ({ role: m.role, content: m.content }));
+    }
+
+    const older = messages.slice(0, messages.length - MAX_RECENT);
+    const recent = messages.slice(-MAX_RECENT);
+
+    const keyPoints: string[] = [];
+    for (const m of older) {
+      if (m.role === "user") {
+        const trimmed = m.content.slice(0, 200).replace(/\n+/g, " ").trim();
+        if (trimmed) {
+          keyPoints.push(`- User: ${trimmed}`);
+        }
+      }
+    }
+
+    const summaryText =
+      keyPoints.length > 0
+        ? `[Conversation context — ${older.length} earlier messages summarised]\n` +
+          keyPoints.slice(-SUMMARY_THRESHOLD).join("\n")
+        : `[Conversation context — ${older.length} earlier messages omitted for brevity]`;
+
+    const history: Array<{ role: "user" | "assistant"; content: string }> = [
+      { role: "user", content: summaryText },
+    ];
+
+    for (const m of recent) {
+      history.push({ role: m.role, content: m.content });
+    }
+
+    return history;
   }
 
   private async loadAttachedFileContext(
@@ -2433,6 +2467,15 @@ export class AgentRuntime {
         ...(agentAwarenessAgent ? [agentAwarenessAgent] : []),
         shortcutSummary ? shortcutSummary : "",
         "",
+        "## PROBLEM-SOLVING METHODOLOGY (CRITICAL)",
+        "You are a CRITICAL PROBLEM SOLVER. Follow this methodology for EVERY task:",
+        "1. UNDERSTAND FIRST: Before making ANY changes, gather evidence. Read files, run diagnostics, search for patterns.",
+        "2. DIAGNOSE ROOT CAUSE: Don't fix symptoms — find the underlying cause. Ask 'why' repeatedly until you reach the root.",
+        "3. FORM HYPOTHESES: List 2-3 potential causes before acting. Verify each with evidence from tools.",
+        "4. FIX INCREMENTALLY: Apply fixes one logical step at a time. Verify after each step.",
+        "5. VALIDATE THOROUGHLY: After fixing, run verification to confirm the fix works and hasn't broken anything else.",
+        "6. NEVER say 'Task completed' unless the problem is actually solved and verified.",
+        "",
         "## CRITICAL RULES",
         "1. ALWAYS return valid JSON. No markdown fences, no text before/after the JSON.",
         "2. You MUST use tools to gather evidence. Do NOT guess file contents — read them first.",
@@ -2442,6 +2485,8 @@ export class AgentRuntime {
         '6. Create file edits using the "edits" array — these are applied to the workspace.',
         '7. For new files, use edits with operation "write". For deleting, use operation "delete".',
         "8. Include a short TODO list (3-5 items) before making changes.",
+        "9. Use batch_edit to apply targeted changes to multiple files at once — this is more efficient than full file rewrites.",
+        "10. ALWAYS read a file before editing it. Never guess file contents.",
         "",
         "## RESPONSE FORMAT (STRICT JSON)",
         "You MUST respond with this exact JSON structure:",
@@ -2456,7 +2501,8 @@ export class AgentRuntime {
         "## HOW TOOL CALLS WORK",
         "- If you include toolCalls: set response to a brief note. You will get another turn with results.",
         "- If tool results are shown below and you have NO more toolCalls: write your FINAL response.",
-        "- CHAIN: read files → make edits → run verification → report results.",
+        "- CHAIN: read files → diagnose → make edits → run verification → report results.",
+        "- Use batch_edit for surgical multi-file changes. Use edits[] for full file writes/creates.",
         "",
         "## ERROR RECOVERY (CRITICAL)",
         "- NEVER give up on first failure. Analyze the error message carefully.",
@@ -2466,6 +2512,8 @@ export class AgentRuntime {
         "- Always investigate the ACTUAL cause — don't guess. Use tools to read files, search for context.",
         "- Try at least 2-3 different approaches before reporting failure to the user.",
         "- Common recovery patterns: check file exists → read it → understand structure → make targeted fix.",
+        "- If you encounter dependency issues: check package.json, lock file, and node_modules integrity.",
+        "- If types/imports fail: search for the correct export names and paths in the codebase.",
         "",
         "## AVAILABLE TOOLS",
         "workspace_scan — List all workspace files",
@@ -2479,6 +2527,12 @@ export class AgentRuntime {
         'web_search — Search the web {args: {query: "..."}}',
         'git_diff — View git changes {args: {filePath: "..."} or no args}',
         "diagnostics — Check VS Code errors",
+        'batch_edit — Apply targeted edits to multiple files at once {args: {edits: [{filePath: "...", search: "exact text to find", replace: "replacement text"}]}}',
+        'rename_file — Rename or move a file {args: {oldPath: "...", newPath: "..."}}',
+        'find_references — Find all usages of a symbol across workspace {args: {symbol: "functionName"}}',
+        'file_search — Find files by glob pattern {args: {pattern: "**/*.ts"}}',
+        'get_problems — Get VS Code diagnostics/errors {args: {filePath: "..."} or no args for all}',
+        "get_terminal_output — Get the output of the last terminal command",
         "",
         "## CONTEXT",
         `Objective: ${objective}`,
@@ -3061,6 +3115,10 @@ export class AgentRuntime {
         timeoutMs: terminalTimeout,
         purpose: "tool",
       });
+      // Store for get_terminal_output tool
+      if (result) {
+        this.lastTerminalResult = result;
+      }
       // Emit terminal output for chat display
       this.terminalOutputCallback?.({
         command,
@@ -3145,6 +3203,345 @@ export class AgentRuntime {
           ok: !diagnostics.hasErrors,
           summary: diagnostics.summary,
           detail: JSON.stringify(diagnostics, null, 2),
+        },
+      ];
+    }
+
+    if (call.tool === "batch_edit") {
+      const editList = Array.isArray(call.args.edits) ? call.args.edits : [];
+      if (editList.length === 0) {
+        return [
+          {
+            tool: call.tool,
+            ok: false,
+            summary: "No edits provided for batch_edit.",
+          },
+        ];
+      }
+
+      const results: string[] = [];
+      let successCount = 0;
+      let failCount = 0;
+
+      for (const edit of editList.slice(0, 20)) {
+        const filePath = this.firstString(edit.filePath, edit.path);
+        const search = this.firstString(edit.search, edit.oldText, edit.find);
+        const replace = this.firstString(
+          edit.replace,
+          edit.newText,
+          edit.replacement,
+        );
+
+        if (!filePath || search === null || search === undefined) {
+          results.push(`SKIP: Missing filePath or search text`);
+          failCount++;
+          continue;
+        }
+
+        const resolved = this.resolveWorkspacePath(filePath);
+        if (!resolved) {
+          results.push(`FAIL: ${filePath} — outside workspace`);
+          failCount++;
+          continue;
+        }
+
+        try {
+          const uri = vscode.Uri.file(resolved);
+          const raw = await vscode.workspace.fs.readFile(uri);
+          const content = Buffer.from(raw).toString("utf8");
+
+          if (!content.includes(search)) {
+            results.push(
+              `FAIL: ${this.normalizeDisplayPath(resolved)} — search text not found`,
+            );
+            failCount++;
+            continue;
+          }
+
+          const newContent = content.replace(search, replace ?? "");
+          await vscode.workspace.fs.writeFile(
+            uri,
+            Buffer.from(newContent, "utf8"),
+          );
+          results.push(`OK: ${this.normalizeDisplayPath(resolved)}`);
+          successCount++;
+
+          this.emitFilePatched(
+            path.basename(resolved),
+            newContent.split("\n").length,
+          );
+        } catch (err) {
+          results.push(
+            `FAIL: ${this.normalizeDisplayPath(resolved)} — ${stringifyError(err)}`,
+          );
+          failCount++;
+        }
+      }
+
+      return [
+        {
+          tool: call.tool,
+          ok: successCount > 0,
+          summary: `Batch edit: ${successCount} succeeded, ${failCount} failed out of ${editList.length} edit(s).`,
+          detail: results.join("\n"),
+        },
+      ];
+    }
+
+    // ── rename_file: Rename or move a file ──────────────────────────
+    if (call.tool === "rename_file") {
+      const oldPath = this.firstString(
+        call.args.oldPath,
+        call.args.filePath,
+        call.args.from,
+        call.args.path,
+      );
+      const newPath = this.firstString(
+        call.args.newPath,
+        call.args.to,
+        call.args.destination,
+        call.args.target,
+      );
+
+      if (!oldPath || !newPath) {
+        return [
+          {
+            tool: call.tool,
+            ok: false,
+            summary: "rename_file requires both oldPath and newPath.",
+          },
+        ];
+      }
+
+      const resolvedOld = this.resolveWorkspacePath(oldPath);
+      const resolvedNew = this.resolveWorkspacePath(newPath);
+      if (!resolvedOld || !resolvedNew) {
+        return [
+          {
+            tool: call.tool,
+            ok: false,
+            summary: "Path resolves outside workspace.",
+          },
+        ];
+      }
+
+      try {
+        const oldUri = vscode.Uri.file(resolvedOld);
+        const newUri = vscode.Uri.file(resolvedNew);
+
+        // Ensure parent directory exists
+        const parentDir = path.dirname(resolvedNew);
+        await vscode.workspace.fs.createDirectory(vscode.Uri.file(parentDir));
+
+        await vscode.workspace.fs.rename(oldUri, newUri, {
+          overwrite: false,
+        });
+        return [
+          {
+            tool: call.tool,
+            ok: true,
+            summary: `Renamed ${this.normalizeDisplayPath(resolvedOld)} → ${this.normalizeDisplayPath(resolvedNew)}`,
+          },
+        ];
+      } catch (err) {
+        return [
+          {
+            tool: call.tool,
+            ok: false,
+            summary: `Failed to rename: ${stringifyError(err)}`,
+          },
+        ];
+      }
+    }
+
+    // ── find_references: Find symbol usages across workspace ────────
+    if (call.tool === "find_references") {
+      const symbol = this.firstString(
+        call.args.symbol,
+        call.args.query,
+        call.args.name,
+        call.args.pattern,
+      );
+      if (!symbol) {
+        return [
+          {
+            tool: call.tool,
+            ok: false,
+            summary: "find_references requires a symbol name.",
+          },
+        ];
+      }
+
+      // Use workspace text search to find references
+      const searchResults = await this.scanner.searchFileContents(symbol, 30);
+      if (!searchResults || searchResults.length === 0) {
+        return [
+          {
+            tool: call.tool,
+            ok: true,
+            summary: `No references found for "${symbol}".`,
+          },
+        ];
+      }
+
+      const formatted = searchResults
+        .map(
+          (r: { path: string; matches: string[] }) =>
+            `${this.normalizeDisplayPath(r.path)}:\n${r.matches.join("\n")}`,
+        )
+        .join("\n\n");
+
+      return [
+        {
+          tool: call.tool,
+          ok: true,
+          summary: `Found ${searchResults.length} file(s) with references to "${symbol}".`,
+          detail: formatted.slice(0, 6000),
+        },
+      ];
+    }
+
+    // ── file_search: Find files by glob pattern ─────────────────────
+    if (call.tool === "file_search") {
+      const pattern = this.firstString(
+        call.args.pattern,
+        call.args.glob,
+        call.args.query,
+        call.args.name,
+      );
+      if (!pattern) {
+        return [
+          {
+            tool: call.tool,
+            ok: false,
+            summary: "file_search requires a pattern (e.g. **/*.ts).",
+          },
+        ];
+      }
+
+      try {
+        const files = await vscode.workspace.findFiles(
+          pattern,
+          "**/{node_modules,dist,.git,build,out,.next}/**",
+          50,
+        );
+
+        if (files.length === 0) {
+          return [
+            {
+              tool: call.tool,
+              ok: true,
+              summary: `No files matching "${pattern}".`,
+            },
+          ];
+        }
+
+        const paths = files.map((f) => this.normalizeDisplayPath(f.fsPath));
+        return [
+          {
+            tool: call.tool,
+            ok: true,
+            summary: `Found ${files.length} file(s) matching "${pattern}".`,
+            detail: paths.join("\n"),
+          },
+        ];
+      } catch (err) {
+        return [
+          {
+            tool: call.tool,
+            ok: false,
+            summary: `file_search failed: ${stringifyError(err)}`,
+          },
+        ];
+      }
+    }
+
+    // ── get_problems: Retrieve VS Code problems/diagnostics ─────────
+    if (call.tool === "get_problems") {
+      const filePath = this.firstString(
+        call.args.filePath,
+        call.args.path,
+        call.args.file,
+      );
+
+      const allDiagnostics: string[] = [];
+      let errorCount = 0;
+      let warningCount = 0;
+
+      if (filePath) {
+        // Scoped to a specific file
+        const resolved = this.resolveWorkspacePath(filePath);
+        if (resolved) {
+          const uri = vscode.Uri.file(resolved);
+          const diags = vscode.languages.getDiagnostics(uri);
+          for (const d of diags.slice(0, 50)) {
+            const severity =
+              d.severity === vscode.DiagnosticSeverity.Error
+                ? "ERROR"
+                : d.severity === vscode.DiagnosticSeverity.Warning
+                  ? "WARN"
+                  : "INFO";
+            if (d.severity === vscode.DiagnosticSeverity.Error) errorCount++;
+            if (d.severity === vscode.DiagnosticSeverity.Warning)
+              warningCount++;
+            allDiagnostics.push(
+              `[${severity}] ${this.normalizeDisplayPath(resolved)}:${d.range.start.line + 1}: ${d.message}`,
+            );
+          }
+        }
+      } else {
+        // All workspace diagnostics
+        const diagnosticCollection = vscode.languages.getDiagnostics();
+        for (const [uri, diags] of diagnosticCollection) {
+          for (const d of diags.slice(0, 20)) {
+            const severity =
+              d.severity === vscode.DiagnosticSeverity.Error
+                ? "ERROR"
+                : d.severity === vscode.DiagnosticSeverity.Warning
+                  ? "WARN"
+                  : "INFO";
+            if (d.severity === vscode.DiagnosticSeverity.Error) errorCount++;
+            if (d.severity === vscode.DiagnosticSeverity.Warning)
+              warningCount++;
+            allDiagnostics.push(
+              `[${severity}] ${this.normalizeDisplayPath(uri.fsPath)}:${d.range.start.line + 1}: ${d.message}`,
+            );
+          }
+        }
+      }
+
+      return [
+        {
+          tool: call.tool,
+          ok: errorCount === 0,
+          summary: `${errorCount} error(s), ${warningCount} warning(s) found.`,
+          detail:
+            allDiagnostics.length > 0
+              ? allDiagnostics.slice(0, 100).join("\n")
+              : "No problems found.",
+        },
+      ];
+    }
+
+    // ── get_terminal_output: Retrieve last terminal command output ───
+    if (call.tool === "get_terminal_output") {
+      const lastResult = this.lastTerminalResult;
+      if (!lastResult) {
+        return [
+          {
+            tool: call.tool,
+            ok: true,
+            summary: "No recent terminal output available.",
+          },
+        ];
+      }
+
+      return [
+        {
+          tool: call.tool,
+          ok: lastResult.exitCode === 0,
+          summary: `Last command: "${lastResult.command}" (exit ${lastResult.exitCode ?? "unknown"})`,
+          detail: lastResult.output.slice(0, 6000),
         },
       ];
     }
