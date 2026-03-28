@@ -214,7 +214,7 @@ export class AgentRuntime {
     this.tokenCallback = cb;
   }
 
-  private emitProgress(step: string, detail?: string, icon = "⚡"): void {
+  private emitProgress(step: string, detail?: string, icon = "\u25B8"): void {
     this.progressCallback?.({ icon, step, detail });
   }
 
@@ -243,7 +243,7 @@ export class AgentRuntime {
 
   private emitTerminalRun(command: string): void {
     this.progressCallback?.({
-      icon: "🖥️",
+      icon: "\u25B6",
       step: "Terminal",
       detail: command,
       kind: "terminal",
@@ -252,7 +252,7 @@ export class AgentRuntime {
 
   private emitReasoningChunk(chunk: string): void {
     this.progressCallback?.({
-      icon: "✨",
+      icon: "\u25B8",
       step: "Reasoning",
       detail: chunk.slice(0, 240),
       kind: "reasoning",
@@ -656,7 +656,7 @@ export class AgentRuntime {
       if (signal?.aborted) throw new Error("__TASK_CANCELLED__");
     };
     checkAborted();
-    this.emitProgress("Starting", "Initializing session context", "🚀");
+    this.emitProgress("Starting", "Initializing session context", "\u25B8");
     let session = await this.sessionStore.getActiveSession();
     if (!session) {
       session = await this.sessionStore.createSession(objective, {
@@ -714,7 +714,11 @@ export class AgentRuntime {
     const inventoryRequest = this.isWorkspaceDiscoveryObjective(objective);
 
     if (inventoryRequest) {
-      this.emitProgress("Scanning workspace", "Listing project files", "🔍");
+      this.emitProgress(
+        "Scanning workspace",
+        "Listing project files",
+        "\u25CB",
+      );
       const inventory = await this.buildWorkspaceInventory(250);
       const responseText = this.formatWorkspaceInventoryResponse(
         inventory,
@@ -748,7 +752,11 @@ export class AgentRuntime {
     }
 
     if (mode === "ask") {
-      this.emitProgress("Ask mode", "Preparing conversational response", "💬");
+      this.emitProgress(
+        "Ask mode",
+        "Preparing conversational response",
+        "\u25CB",
+      );
       const [model, styleHint, improvementHints, webResearch] =
         await Promise.all([
           this.resolveModelOrFallback(this.currentConfig.fastModel),
@@ -761,10 +769,10 @@ export class AgentRuntime {
         this.emitProgress(
           "Web research",
           webResearch.query ?? "searching",
-          "🌐",
+          "\u25CB",
         );
       }
-      this.emitProgress("Generating response", model, "✨");
+      this.emitProgress("Generating response", model, "\u25B8");
       const taskStart = Date.now();
       checkAborted();
       const response = await this.provider.chat({
@@ -847,7 +855,7 @@ export class AgentRuntime {
     }
 
     if (mode === "plan") {
-      this.emitProgress("Plan mode", "Preparing structured plan", "📋");
+      this.emitProgress("Plan mode", "Preparing structured plan", "\u25A0");
       const [plannerModel, webResearch] = await Promise.all([
         this.resolveModelOrFallback(this.currentConfig.plannerModel),
         this.collectWebResearch(objective, mode),
@@ -856,26 +864,40 @@ export class AgentRuntime {
         this.emitProgress(
           "Web research",
           webResearch.query ?? "searching",
-          "🌐",
+          "\u25CB",
         );
       }
-      this.emitProgress("Building plan", plannerModel, "🧠");
+      this.emitProgress("Building plan", plannerModel, "\u25A0");
       const plan = await this.planner.createPlan(objective, plannerModel);
-      this.emitProgress("Saving plan artifact", undefined, "💾");
+      this.emitProgress("Saving plan artifact", undefined, "\u25CB");
       const artifactPath = await this.writePlanArtifact(
         objective,
         plan,
         webResearch,
       );
       const responseText = [
-        `Plan mode active. Wrote ${artifactPath ? `plan artifact to ${artifactPath}` : "a plan summary"}.`,
+        `**Plan mode active.** ${artifactPath ? `Wrote plan artifact to \`${artifactPath}\`.` : "Generated a plan summary."}`,
         "This mode does not make code changes.",
         webResearch
           ? "Latest web research was included in the plan artifact."
-          : "No web research was needed for this plan.",
+          : "",
         "",
-        JSON.stringify(plan, null, 2),
-      ].join("\n");
+        `**Objective:** ${plan.objective || objective}`,
+        plan.assumptions.length > 0
+          ? `\n**Assumptions:**\n${plan.assumptions.map((a: string) => `- ${a}`).join("\n")}`
+          : "",
+        plan.steps.length > 0
+          ? `\n**Steps:**\n${plan.steps.map((s, i) => `${i + 1}. ${s.goal}`).join("\n")}`
+          : "",
+        plan.todos.length > 0
+          ? `\n**Todos:**\n${plan.todos.map((t) => `- [${t.status === "done" ? "x" : " "}] ${t.title}`).join("\n")}`
+          : "",
+        plan.acceptanceCriteria.length > 0
+          ? `\n**Acceptance criteria:**\n${plan.acceptanceCriteria.map((c: string) => `- ${c}`).join("\n")}`
+          : "",
+      ]
+        .filter(Boolean)
+        .join("\n");
 
       await this.persistTaskResult(session.id, objective, responseText, mode);
 
@@ -894,7 +916,7 @@ export class AgentRuntime {
       this.emitProgress(
         "Generating response",
         this.currentConfig.fastModel,
-        "✨",
+        "\u25B8",
       );
       const [model, styleHintConvo, improvementHintsConvo] = await Promise.all([
         this.resolveModelOrFallback(this.currentConfig.fastModel),
@@ -984,7 +1006,7 @@ export class AgentRuntime {
       };
     }
 
-    this.emitProgress("Agent mode", "Analyzing request", "🧠");
+    this.emitProgress("Agent mode", "Analyzing request", "\u25B8");
     const taskStartAgent = Date.now();
     const agentResult = await this.runAgentWorkflow(
       objective,
@@ -2072,14 +2094,22 @@ export class AgentRuntime {
     const normalized = objective.toLowerCase();
     const explicitSearchIntent = [
       "search the web",
+      "search online",
       "look it up online",
       "find online",
       "check the internet",
       "browse for",
+      "search for",
+      "google",
+      "look up",
+      "find out",
+      "web search",
     ];
 
     const timeSensitiveSignals = [
       "latest version",
+      "latest",
+      "newest",
       "release notes",
       "changelog",
       "what changed",
@@ -2092,6 +2122,12 @@ export class AgentRuntime {
       "just released",
       "just announced",
       "official docs",
+      "documentation",
+      "tutorial",
+      "example",
+      "best practice",
+      "2024",
+      "2025",
     ];
 
     if (
@@ -2110,6 +2146,11 @@ export class AgentRuntime {
         "compare",
         "recommend",
         "should i",
+        "explain",
+        "difference between",
+        "alternative",
+        "versus",
+        "vs",
       ]);
     }
 
@@ -2124,6 +2165,11 @@ export class AgentRuntime {
         "docs",
         "release notes",
         "version",
+        "install",
+        "setup",
+        "configure",
+        "api",
+        "integration",
       ])
     );
   }
@@ -2233,7 +2279,11 @@ export class AgentRuntime {
     ]);
     const agentAwarenessAgent = this.improvementEngine.getAgentAwarenessHints();
     if (webResearch) {
-      this.emitProgress("Web research", webResearch.query ?? "searching", "🌐");
+      this.emitProgress(
+        "Web research",
+        webResearch.query ?? "searching",
+        "\u25CB",
+      );
     }
 
     const session = await sessionPromise;
@@ -2248,7 +2298,7 @@ export class AgentRuntime {
     const optionalShortcuts =
       this.skillRegistry.buildOptionalShortcuts(selectedSkills);
     const shortcutSummary = formatShortcutHints(optionalShortcuts);
-    this.emitProgress("Building plan", plannerModel, "🧠");
+    this.emitProgress("Building plan", plannerModel, "\u25A0");
     const plan = await this.planner.createPlan(objective, plannerModel);
 
     const buildPrompt = (
@@ -2326,7 +2376,7 @@ export class AgentRuntime {
 
     // Keep the refinement loop short so edit tasks stay responsive.
     for (let iteration = 0; iteration < 3; iteration += 1) {
-      this.emitProgress("Generating response", editorModel, "✨");
+      this.emitProgress("Generating response", editorModel, "\u25B8");
       checkAborted();
       const response = await this.provider.chat({
         model: editorModel,
@@ -2371,7 +2421,7 @@ export class AgentRuntime {
         this.emitProgress(
           "Tool results",
           `${observations.length} observation(s) collected`,
-          "🛠️",
+          "\u25CB",
         );
       }
 
@@ -2427,7 +2477,11 @@ export class AgentRuntime {
 
     let autoApplied = false;
     if (proposal && this.shouldAutoApplyProposal(normalizedEdits)) {
-      this.emitProgress("Auto-applying edits", "Safe workspace edits", "✅");
+      this.emitProgress(
+        "Auto-applying edits",
+        "Safe workspace edits",
+        "\u2713",
+      );
       await this.applyPendingEdits(true);
       autoApplied = true;
     }
@@ -2866,7 +2920,7 @@ export class AgentRuntime {
 
     for (const command of commands.slice(0, 3)) {
       checkAborted();
-      this.emitProgress("Verification", command, "🧪");
+      this.emitProgress("Verification", command, "\u25CB");
       const result = await this.executeTerminalCommand(command, {
         cwd: this.workspaceRoot?.fsPath,
         timeoutMs: 120_000,

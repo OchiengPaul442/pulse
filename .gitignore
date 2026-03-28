@@ -10,3 +10,33 @@ yarn-error.log*
 pnpm-debug.log*
 .DS_Store
 Thumbs.db
+
+# Build artifacts
+out/
+*.js.map
+
+# Versions folder (built VSIX packages)
+versions/
+
+# Evaluation reports
+evals/reports/
+
+# OS files
+Desktop.ini
+.Spotlight-V100
+.Trashes
+
+# Editor
+.idea/
+*.swp
+*.swo
+*~
+
+# Package manager lock files are committed
+# but ignore local overrides
+.npmrc.local
+
+# Environment files
+.env
+.env.local
+.env.*.local

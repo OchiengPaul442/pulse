@@ -927,7 +927,8 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
     .popup-opt.active { font-weight: 700; }
     .popup-opt.active::after { content: '\\2713'; margin-left: auto; font-size: 10px; opacity: .5; }
 
-    .model-popup { position: absolute; bottom: calc(100% + 4px); left: 0; z-index: 200; background: var(--vscode-editorWidget-background, var(--bg2)); border: 1px solid var(--border); border-radius: var(--r); min-width: 170px; max-height: 200px; overflow-y: auto; box-shadow: 0 4px 16px rgba(0,0,0,.22); }
+    .model-popup { position: absolute; bottom: calc(100% + 4px); left: 0; z-index: 200; background: var(--vscode-editorWidget-background, var(--bg2)); border: 1px solid var(--border); border-radius: var(--r); min-width: 170px; max-height: 200px; overflow-y: auto; box-shadow: 0 4px 16px rgba(0,0,0,.22); scrollbar-width: none; -ms-overflow-style: none; }
+    .model-popup::-webkit-scrollbar { display: none; }
     .model-popup.hidden { display: none; }
     .model-popup-title { font-size: 9px; font-weight: 700; text-transform: uppercase; letter-spacing: .5px; color: var(--fg3); padding: 6px 10px 3px; }
     .model-popup-list { display: flex; flex-direction: column; gap: 1px; padding: 2px 3px 3px; }
@@ -995,14 +996,16 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
     #scrollBtn:hover { color: var(--accent); border-color: var(--accent); transform: translateY(-1px); }
 
     /* --- Rich code blocks --- */
-    .code-block { margin: 6px 0; border-radius: 6px; overflow: hidden; border: 1px solid rgba(128,128,128,.1); }
-    .code-header { display: flex; align-items: center; justify-content: space-between; background: rgba(0,0,0,.22); padding: 4px 9px; }
-    .code-lang { font-size: 9px; font-weight: 700; text-transform: uppercase; letter-spacing: .5px; color: var(--fg3); }
-    .code-copy { border: none; background: transparent; color: var(--fg2); cursor: pointer; font-size: 9px; padding: 1px 6px; border-radius: 3px; transition: all var(--spd); }
-    .code-copy:hover { color: var(--accent); background: rgba(128,128,128,.1); }
-    .code-block pre { margin: 0; border-radius: 0; border: none; padding: 9px 11px; background: rgba(0,0,0,.14); }
-    .bubble pre { font-family: var(--vscode-editor-font-family, monospace); font-size: 11.5px; line-height: 1.45; background: rgba(0,0,0,.14); border-radius: 5px; padding: 7px 9px; margin: 5px 0; overflow-x: auto; white-space: pre-wrap; position: relative; }
+    .code-block { margin: 6px 0; border-radius: 6px; overflow: hidden; border: 1px solid var(--vscode-editorWidget-border, rgba(128,128,128,.12)); background: var(--vscode-editor-background, rgba(0,0,0,.18)); }
+    .code-header { display: flex; align-items: center; justify-content: space-between; background: rgba(0,0,0,.15); padding: 5px 10px; border-bottom: 1px solid rgba(128,128,128,.08); }
+    .code-lang { font-size: 9px; font-weight: 700; text-transform: uppercase; letter-spacing: .6px; color: var(--fg3); font-family: var(--vscode-font-family); }
+    .code-copy { border: none; background: transparent; color: var(--fg3); cursor: pointer; font-size: 9px; padding: 2px 8px; border-radius: 4px; transition: all var(--spd); font-family: var(--vscode-font-family); }
+    .code-copy:hover { color: var(--accent); background: rgba(128,128,128,.12); }
+    .code-block pre { margin: 0; border-radius: 0; border: none; padding: 10px 12px; background: transparent; overflow-x: auto; }
+    .code-block pre code { font-family: var(--vscode-editor-font-family, 'Cascadia Code', 'Fira Code', Consolas, monospace); font-size: 11.5px; line-height: 1.55; color: var(--vscode-editor-foreground, var(--fg)); tab-size: 2; }
+    .bubble pre { font-family: var(--vscode-editor-font-family, 'Cascadia Code', 'Fira Code', Consolas, monospace); font-size: 11.5px; line-height: 1.5; background: var(--vscode-editor-background, rgba(0,0,0,.14)); border-radius: 5px; padding: 8px 10px; margin: 5px 0; overflow-x: auto; white-space: pre-wrap; position: relative; border: 1px solid rgba(128,128,128,.08); }
     .bubble pre code { background: none; padding: 0; }
+    .bubble code { font-family: var(--vscode-editor-font-family, 'Cascadia Code', 'Fira Code', Consolas, monospace); font-size: 11px; background: rgba(128,128,128,.1); padding: 1px 4px; border-radius: 3px; }
 
     /* ── Permission bar ─── */
     .perm-bar { display: flex; align-items: center; justify-content: space-between; padding: 3px 3px 1px; gap: 5px; }
@@ -1289,6 +1292,12 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
   // Markdown rendering
   function renderMarkdown(raw) {
     if (!raw) return '';
+    // Strip <break> tags, thinking artifacts, and clean up model output noise
+    raw = raw.replace(/<break\s*\/?>/gi, '\n').replace(/<\/break>/gi, '\n');
+    // Strip raw JSON blocks that models sometimes emit as response text
+    raw = raw.replace(/^\s*\{[\s\S]*?"response"\s*:\s*"[\s\S]*?"[\s\S]*?\}\s*$/gm, function(match) {
+      try { var obj = JSON.parse(match); return obj.response || match; } catch(e) { return match; }
+    });
     // Extract fenced code blocks first, replace with placeholders
     var blocks = [];
     var blockIdx = 0;
@@ -1400,10 +1409,11 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
   // Thinking — GitHub Copilot-style step list
   var thinkingTimer = null, stepsCollapsed = false;
   function startThinking() {
-    thinkingSteps = []; thinkingStartTime = Date.now(); stepsCollapsed = false;
+    thinkingSteps = []; thinkingStartTime = Date.now(); stepsCollapsed = true;
     var panel = D('thinkingPanel'), title = D('thinkingTitle'), elapsed = D('thinkingElapsed'), list = D('stepsList');
     if (!panel) return;
-    panel.classList.remove('hidden', 'done', 'steps-collapsed');
+    panel.classList.remove('hidden', 'done');
+    panel.classList.add('steps-collapsed');
     if (title) title.textContent = 'Thinking\u2026';
     if (elapsed) elapsed.textContent = '';
     if (list) list.innerHTML = '';
@@ -1883,7 +1893,15 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
       var isCancelled = payload && payload.cancelled;
       finishThinking(isCancelled);
       if (!isCancelled) {
-        var text = (payload && payload.responseText) || JSON.stringify(payload, null, 2);
+        var text = (payload && payload.responseText) || 'Task completed.';
+        // Clean response: strip raw JSON wrappers that models sometimes emit
+        if (text && text.charAt(0) === '{') {
+          try { var parsed = JSON.parse(text); if (parsed && typeof parsed.response === 'string' && parsed.response.length > 0) { text = parsed.response; } } catch(e) {}
+        }
+        // Strip <break> tags
+        text = text.replace(/<break\s*\/?>/gi, '\n').replace(/<\/break>/gi, '\n');
+        // Remove leading/trailing whitespace artifacts
+        text = text.trim();
         if (payload && payload.autoApplied && payload.proposedEdits > 0) {
           text += '\\n\\n\\u2705 **' + payload.proposedEdits + ' edit(s) auto-applied** (bypass mode active)';
         }

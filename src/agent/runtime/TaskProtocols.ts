@@ -174,12 +174,43 @@ function buildModelResponse(
   parsed: Record<string, unknown>,
   raw: string,
 ): TaskModelResponse {
-  const response =
+  let response =
     typeof parsed.response === "string" && parsed.response.trim().length > 0
       ? parsed.response.trim()
-      : raw.trim().length > 0
-        ? raw.trim()
-        : "Task completed.";
+      : "";
+
+  // If no response field is present, try other common field names models use
+  if (
+    !response &&
+    typeof parsed.message === "string" &&
+    parsed.message.trim().length > 0
+  ) {
+    response = parsed.message.trim();
+  }
+  if (
+    !response &&
+    typeof parsed.text === "string" &&
+    parsed.text.trim().length > 0
+  ) {
+    response = parsed.text.trim();
+  }
+  if (
+    !response &&
+    typeof parsed.answer === "string" &&
+    parsed.answer.trim().length > 0
+  ) {
+    response = parsed.answer.trim();
+  }
+
+  // Only use raw text as fallback if it doesn't look like JSON
+  if (!response) {
+    const trimmedRaw = raw.trim();
+    if (trimmedRaw.startsWith("{") || trimmedRaw.startsWith("[")) {
+      response = "Task completed.";
+    } else {
+      response = trimmedRaw.length > 0 ? trimmedRaw : "Task completed.";
+    }
+  }
 
   return {
     response,
