@@ -4,6 +4,8 @@ import { Planner } from "../src/agent/planner/Planner";
 import type { ModelProvider } from "../src/agent/model/ModelProvider";
 
 class ThrowingProvider implements ModelProvider {
+  public readonly providerType = "ollama";
+
   public async chat(): Promise<{ text: string }> {
     throw new Error("boom");
   }

@@ -20,7 +20,13 @@ import { computeFileDiff, type FileDiffResult } from "../edits/DiffEngine";
 import { WorkspaceScanner } from "../indexing/WorkspaceScanner";
 import { McpManager, type McpServerStatus } from "../mcp/McpManager";
 import { OllamaProvider } from "../model/OllamaProvider";
-import type { ModelSummary, ProviderHealth } from "../model/ModelProvider";
+import type {
+  ChatMessage,
+  ChatMessageContent,
+  ModelProvider,
+  ModelSummary,
+  ProviderHealth,
+} from "../model/ModelProvider";
 import { MemoryStore } from "../memory/MemoryStore";
 import {
   PermissionPolicy,
@@ -114,7 +120,7 @@ export interface PrepublishGuardResult {
 type ModelRole = "planner" | "editor" | "fast" | "embedding";
 
 export class AgentRuntime {
-  private readonly provider: OllamaProvider;
+  private readonly provider: ModelProvider;
 
   private readonly planner: Planner;
 
@@ -189,9 +195,10 @@ export class AgentRuntime {
     private readonly storage: StorageState,
     private readonly logger: Logger,
     webSearch: WebSearchService,
+    provider?: ModelProvider,
   ) {
     this.currentConfig = { ...config };
-    this.provider = new OllamaProvider(config.ollamaBaseUrl);
+    this.provider = provider ?? new OllamaProvider(config.ollamaBaseUrl);
     this.planner = new Planner(this.provider);
     this.scanner = new WorkspaceScanner();
     this.sessionStore = new SessionStore(storage.sessionsPath);
@@ -219,6 +226,16 @@ export class AgentRuntime {
     this.tokenCallback = cb;
   }
 
+  private streamCallback: ((chunk: string) => void) | null = null;
+
+  public setStreamCallback(cb: ((chunk: string) => void) | null): void {
+    this.streamCallback = cb;
+  }
+
+  private emitStreamChunk(chunk: string): void {
+    this.streamCallback?.(chunk);
+  }
+
   private emitProgress(step: string, detail?: string, icon = "\u25B8"): void {
     this.progressCallback?.({ icon, step, detail });
   }
@@ -244,6 +261,26 @@ export class AgentRuntime {
       linesAdded,
       linesRemoved: 0,
     });
+  }
+
+  private terminalOutputCallback:
+    | ((data: {
+        command: string;
+        output: string;
+        exitCode: number | null;
+      }) => void)
+    | null = null;
+
+  public setTerminalOutputCallback(
+    cb:
+      | ((data: {
+          command: string;
+          output: string;
+          exitCode: number | null;
+        }) => void)
+      | null,
+  ): void {
+    this.terminalOutputCallback = cb;
   }
 
   private emitTerminalRun(command: string): void {
@@ -652,6 +689,23 @@ export class AgentRuntime {
     };
   }
 
+  private buildUserMessage(
+    text: string,
+    images?: Array<{ name: string; dataUrl: string }>,
+  ): ChatMessage {
+    if (!images || images.length === 0) {
+      return { role: "user", content: text };
+    }
+    const parts: ChatMessageContent[] = [{ type: "text", text }];
+    for (const img of images) {
+      parts.push({
+        type: "image_url",
+        image_url: { url: img.dataUrl, detail: "auto" },
+      });
+    }
+    return { role: "user", content: parts };
+  }
+
   private async executeTask(
     request: RunTaskRequest,
     signal?: AbortSignal,
@@ -674,6 +728,18 @@ export class AgentRuntime {
     if (this.activeTokenSessionId !== session.id) {
       this.activeTokenSessionId = session.id;
       this.resetTokenUsage();
+    } else {
+      // Auto-reset context window when approaching budget (like Copilot does)
+      const budget = Math.max(this.currentConfig.maxContextTokens, 1);
+      const usageRatio = this.tokensConsumed / budget;
+      if (usageRatio >= 0.9) {
+        this.emitProgress(
+          "Context reset",
+          "Token budget reached, resetting context window",
+          "\u21BB",
+        );
+        this.resetTokenUsage();
+      }
     }
 
     if (request.messageId) {
@@ -785,6 +851,7 @@ export class AgentRuntime {
         signal,
         onChunk: (chunk) => {
           this.emitReasoningChunk(chunk);
+          this.emitStreamChunk(chunk);
         },
         messages: [
           {
@@ -813,10 +880,7 @@ export class AgentRuntime {
                 },
               ]
             : []),
-          {
-            role: "user" as const,
-            content: objective,
-          },
+          this.buildUserMessage(objective, request.images),
         ],
         maxTokens: 2048,
       });
@@ -937,6 +1001,7 @@ export class AgentRuntime {
         signal,
         onChunk: (chunk) => {
           this.emitReasoningChunk(chunk);
+          this.emitStreamChunk(chunk);
         },
         messages: [
           {
@@ -964,10 +1029,7 @@ export class AgentRuntime {
                 },
               ]
             : []),
-          {
-            role: "user" as const,
-            content: objective,
-          },
+          this.buildUserMessage(objective, request.images),
         ],
         maxTokens: 2048,
       });
@@ -1017,6 +1079,7 @@ export class AgentRuntime {
       objective,
       session.id,
       signal,
+      request.images,
     );
 
     await this.persistTaskResult(
@@ -1114,6 +1177,19 @@ export class AgentRuntime {
     this.packageScriptsCache.clear();
 
     return `Applied transaction ${result.id}.`;
+  }
+
+  public async acceptFileEdit(filePath: string): Promise<string> {
+    const ok = await this.editManager.acceptFile(filePath);
+    if (!ok) return "File not found in pending proposal.";
+    this.packageScriptsCache.clear();
+    return `Accepted edit for ${path.basename(filePath)}.`;
+  }
+
+  public async rejectFileEdit(filePath: string): Promise<string> {
+    const ok = await this.editManager.rejectFile(filePath);
+    if (!ok) return "File not found in pending proposal.";
+    return `Rejected edit for ${path.basename(filePath)}.`;
   }
 
   public async revertLastAppliedEdits(): Promise<string> {
@@ -2119,6 +2195,43 @@ export class AgentRuntime {
     mode: ConversationMode,
   ): boolean {
     const normalized = objective.toLowerCase();
+
+    // Skip web search if the query is clearly about local workspace files or code
+    const localCodeSignals = [
+      "this file",
+      "this code",
+      "my code",
+      "my project",
+      "my app",
+      "the codebase",
+      "refactor",
+      "rename",
+      "move to",
+      "delete the",
+      "add a method",
+      "add a function",
+      "fix the error",
+      "fix the bug",
+      "fix this",
+      "fix my",
+      "implement",
+      "create a component",
+      "create a file",
+      "write a test",
+      "add tests",
+      "src/",
+      "./",
+      ".ts",
+      ".js",
+      ".py",
+      ".java",
+      ".go",
+      ".rs",
+    ];
+    if (this.matchesAny(normalized, localCodeSignals)) {
+      return false;
+    }
+
     const explicitSearchIntent = [
       "search the web",
       "search online",
@@ -2126,35 +2239,22 @@ export class AgentRuntime {
       "find online",
       "check the internet",
       "browse for",
-      "search for",
       "google",
-      "look up",
-      "find out",
       "web search",
     ];
 
     const timeSensitiveSignals = [
-      "latest version",
-      "latest",
-      "newest",
-      "release notes",
-      "changelog",
-      "what changed",
-      "current price",
-      "pricing",
-      "breaking change",
-      "migration guide",
-      "this week",
-      "today",
+      "latest version of",
+      "latest release",
+      "newest version",
+      "release notes for",
+      "changelog for",
+      "breaking change in",
+      "migration guide for",
       "just released",
       "just announced",
-      "official docs",
-      "documentation",
-      "tutorial",
-      "example",
-      "best practice",
-      "2024",
-      "2025",
+      "official docs for",
+      "official documentation for",
     ];
 
     if (
@@ -2164,46 +2264,37 @@ export class AgentRuntime {
       return true;
     }
 
+    // In ask mode, only search for genuinely external knowledge queries
     if (mode === "ask") {
       return this.matchesAny(normalized, [
-        "what is",
-        "who is",
-        "how to",
-        "how do i",
-        "compare",
-        "recommend",
-        "should i",
-        "explain",
-        "difference between",
-        "alternative",
-        "versus",
-        "vs",
+        "compare .* vs",
+        "difference between .* and",
+        "alternative to",
+        "recommend a",
+        "best practice for",
+        "tutorial for",
       ]);
     }
 
+    // In agent mode, only search for package/dependency resolution
     return (
       mode === "agent" &&
       this.matchesAny(normalized, [
-        "package",
-        "dependency",
-        "sdk",
-        "library",
-        "framework",
-        "docs",
-        "release notes",
-        "version",
-        "install",
-        "setup",
-        "configure",
-        "api",
-        "integration",
+        "install .* package",
+        "add .* dependency",
+        "upgrade .* to",
+        "migrate from .* to",
       ])
     );
   }
 
-  private matchesAny(text: string, tokens: string[]): boolean {
-    return tokens.some((token) => {
-      const escaped = token.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  private matchesAny(text: string, patterns: string[]): boolean {
+    return patterns.some((pattern) => {
+      // If pattern contains regex metacharacters like .*, use it as-is
+      if (/[.*+?^${}()|[\]\\]/.test(pattern) && pattern.includes(".*")) {
+        return new RegExp(pattern, "i").test(text);
+      }
+      const escaped = pattern.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
       return new RegExp(`\\b${escaped}\\b`, "i").test(text);
     });
   }
@@ -2264,6 +2355,7 @@ export class AgentRuntime {
     objective: string,
     sessionId: string,
     signal?: AbortSignal,
+    images?: Array<{ name: string; dataUrl: string }>,
   ): Promise<{
     plan: TaskPlan;
     responseText: string;
@@ -2366,6 +2458,15 @@ export class AgentRuntime {
         "- If tool results are shown below and you have NO more toolCalls: write your FINAL response.",
         "- CHAIN: read files → make edits → run verification → report results.",
         "",
+        "## ERROR RECOVERY (CRITICAL)",
+        "- NEVER give up on first failure. Analyze the error message carefully.",
+        "- If a terminal command fails: read the error output, diagnose the root cause, try an alternative approach.",
+        "- If a file read fails: search for the correct path using search_files or list_dir.",
+        "- If a build/test fails: read the error details, locate the failing code, fix it, then re-verify.",
+        "- Always investigate the ACTUAL cause — don't guess. Use tools to read files, search for context.",
+        "- Try at least 2-3 different approaches before reporting failure to the user.",
+        "- Common recovery patterns: check file exists → read it → understand structure → make targeted fix.",
+        "",
         "## AVAILABLE TOOLS",
         "workspace_scan — List all workspace files",
         'read_files — Read file contents {args: {paths: ["path1", "path2"]}}',
@@ -2420,7 +2521,8 @@ export class AgentRuntime {
     // observe results and act on them). It stops when:
     //   - The LLM returns NO tool calls and quality meets target, OR
     //   - Max iterations reached.
-    const MAX_AGENT_ITERATIONS = 10;
+    const MAX_AGENT_ITERATIONS = 15;
+    const ITERATION_TIMEOUT_MS = 120_000; // 2 min per iteration to prevent stalling
     for (let iteration = 0; iteration < MAX_AGENT_ITERATIONS; iteration += 1) {
       this.emitProgress(
         iteration === 0 ? "Generating response" : "Continuing",
@@ -2428,25 +2530,68 @@ export class AgentRuntime {
         "\u25B8",
       );
       checkAborted();
-      const response = await this.provider.chat({
-        model: editorModel,
-        format: "json",
-        signal,
-        messages: [
-          {
-            role: "system",
-            content:
-              "You are a coding agent. You MUST return ONLY valid JSON with these fields: response, todos, toolCalls, edits, shortcuts. No markdown fences. No text outside the JSON object. Start your response with { and end with }.",
+
+      // Per-iteration timeout to prevent stalling
+      const iterationAbort = new AbortController();
+      const timeoutId = setTimeout(
+        () => iterationAbort.abort(),
+        ITERATION_TIMEOUT_MS,
+      );
+      // Forward parent abort to iteration controller
+      const onParentAbort = () => iterationAbort.abort();
+      signal?.addEventListener("abort", onParentAbort, { once: true });
+
+      let response;
+      try {
+        response = await this.provider.chat({
+          model: editorModel,
+          format: "json",
+          signal: iterationAbort.signal,
+          onChunk: (chunk) => {
+            this.emitReasoningChunk(chunk);
+            this.emitStreamChunk(chunk);
           },
-          ...conversationHistory,
-          {
-            role: "user",
-            content: buildPrompt(toolContext, critiqueContext),
-          },
-        ],
-        maxTokens: 4096,
-      });
+          messages: [
+            {
+              role: "system",
+              content:
+                "You are a coding agent. You MUST return ONLY valid JSON with these fields: response, todos, toolCalls, edits, shortcuts. No markdown fences. No text outside the JSON object. Start your response with { and end with }.",
+            },
+            ...conversationHistory,
+            this.buildUserMessage(
+              buildPrompt(toolContext, critiqueContext),
+              iteration === 0 ? images : undefined,
+            ),
+          ],
+          maxTokens: 4096,
+        });
+      } catch (err: unknown) {
+        if (iterationAbort.signal.aborted && !signal?.aborted) {
+          // Iteration-level timeout — log and break out with whatever we have
+          this.emitProgress(
+            "Timeout",
+            `Iteration ${iteration + 1} timed out`,
+            "⚠️",
+          );
+          break;
+        }
+        throw err;
+      } finally {
+        clearTimeout(timeoutId);
+        signal?.removeEventListener("abort", onParentAbort);
+      }
       this.consumeTokens(response.tokenUsage);
+
+      // Auto-reset context if budget exhausted mid-loop
+      const midBudget = Math.max(this.currentConfig.maxContextTokens, 1);
+      if (this.tokensConsumed / midBudget >= 0.95) {
+        this.emitProgress(
+          "Context reset",
+          "Token budget near limit, resetting for next iteration",
+          "\u21BB",
+        );
+        this.resetTokenUsage();
+      }
 
       parsed = parseTaskResponse(response.text);
       if (parsed.todos.length === 0) {
@@ -2464,6 +2609,24 @@ export class AgentRuntime {
         parsed.toolCalls.length > 0
           ? await this.executeTaskToolCalls(parsed.toolCalls, objective, signal)
           : [];
+
+      // Error recovery: if tool calls failed, inject failure context so LLM
+      // can diagnose and try alternatives on the next iteration
+      const failedObs = observations.filter((o) => !o.ok);
+      if (
+        failedObs.length > 0 &&
+        observations.length > 0 &&
+        parsed.toolCalls.length > 0
+      ) {
+        const failSummary = failedObs
+          .map((o) => `[FAILED] ${o.tool}: ${o.summary}`)
+          .join("\n");
+        critiqueContext =
+          (critiqueContext ? critiqueContext + "\n\n" : "") +
+          "## TOOL FAILURES — INVESTIGATE AND RETRY\n" +
+          "The following tool calls failed. Do NOT give up. Analyze the error, find the root cause, and try an alternative approach:\n" +
+          failSummary;
+      }
 
       if (observations.length > 0) {
         toolTrace.push(...observations);
@@ -2489,7 +2652,10 @@ export class AgentRuntime {
       // If tool calls were executed this iteration, always continue so the
       // LLM sees tool results and can produce an informed final response.
       if (observations.length > 0) {
-        critiqueContext = "";
+        // Preserve failure critique so LLM can diagnose; only clear if all succeeded
+        if (failedObs.length === 0) {
+          critiqueContext = "";
+        }
         continue;
       }
 
@@ -2894,6 +3060,12 @@ export class AgentRuntime {
         cwd: workspaceRoot ?? undefined,
         timeoutMs: terminalTimeout,
         purpose: "tool",
+      });
+      // Emit terminal output for chat display
+      this.terminalOutputCallback?.({
+        command,
+        output: result ? result.output.slice(0, 5000) : "",
+        exitCode: result?.exitCode ?? null,
       });
       return [
         {

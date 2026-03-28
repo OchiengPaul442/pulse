@@ -15,6 +15,7 @@ export interface RunTaskRequest {
   objective: string;
   action?: "new" | "edit" | "retry";
   messageId?: string;
+  images?: Array<{ name: string; dataUrl: string }>;
 }
 
 export type ConversationMode = "agent" | "ask" | "plan";

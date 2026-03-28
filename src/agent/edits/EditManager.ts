@@ -86,6 +86,73 @@ export class EditManager {
     await this.save(state);
   }
 
+  /**
+   * Accept a single file from the pending proposal — apply it and remove from pending.
+   */
+  public async acceptFile(filePath: string): Promise<boolean> {
+    const state = await this.load();
+    const proposal = state.pendingProposal;
+    if (!proposal) return false;
+
+    const normalized = path.resolve(filePath);
+    const idx = proposal.edits.findIndex(
+      (e) => path.resolve(e.filePath) === normalized,
+    );
+    if (idx === -1) return false;
+
+    const edit = proposal.edits[idx];
+    const op = edit.operation ?? "write";
+
+    if (op === "write") {
+      const fp = this.normalizeAndAssertInWorkspace(edit.filePath);
+      await this.ensureParentDir(fp);
+      await vscode.workspace.fs.writeFile(
+        vscode.Uri.file(fp),
+        Buffer.from(edit.content ?? "", "utf8"),
+      );
+    } else if (op === "delete") {
+      const fp = this.normalizeAndAssertInWorkspace(edit.filePath);
+      try {
+        await vscode.workspace.fs.delete(vscode.Uri.file(fp), {
+          recursive: true,
+          useTrash: true,
+        });
+      } catch {
+        // Already deleted or doesn't exist
+      }
+    }
+
+    // Remove from pending
+    proposal.edits.splice(idx, 1);
+    if (proposal.edits.length === 0) {
+      state.pendingProposal = null;
+    }
+    await this.save(state);
+    return true;
+  }
+
+  /**
+   * Reject a single file from the pending proposal — just remove it without applying.
+   */
+  public async rejectFile(filePath: string): Promise<boolean> {
+    const state = await this.load();
+    const proposal = state.pendingProposal;
+    if (!proposal) return false;
+
+    const normalized = path.resolve(filePath);
+    const idx = proposal.edits.findIndex(
+      (e) => path.resolve(e.filePath) === normalized,
+    );
+    if (idx === -1) return false;
+
+    proposal.edits.splice(idx, 1);
+    if (proposal.edits.length === 0) {
+      state.pendingProposal = null;
+    }
+    await this.save(state);
+    return true;
+  }
+
   public async applyPending(): Promise<AppliedTransaction | null> {
     const state = await this.load();
     const proposal = state.pendingProposal;

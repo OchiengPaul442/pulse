@@ -117,6 +117,10 @@ describe("AgentRuntime", () => {
       mcpServers: [],
       telemetryOptIn: false,
       selfLearnEnabled: false,
+      providerType: "ollama",
+      openaiBaseUrl: "",
+      openaiApiKey: "",
+      openaiModels: [],
     };
 
     vi.spyOn(

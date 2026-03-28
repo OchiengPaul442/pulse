@@ -2,7 +2,7 @@
   "name": "pulse-agent",
   "displayName": "Pulse Agent",
   "description": "Local offline AI coding agent for VS Code powered by Ollama.",
-  "version": "0.0.60",
+  "version": "0.0.63",
   "publisher": "local",
   "license": "MIT",
   "keywords": [
@@ -128,6 +128,35 @@
     "configuration": {
       "title": "Pulse",
       "properties": {
+        "pulse.provider.type": {
+          "type": "string",
+          "enum": [
+            "ollama",
+            "openai",
+            "anthropic",
+            "custom"
+          ],
+          "default": "ollama",
+          "description": "Model provider: ollama (local), openai, anthropic, or custom OpenAI-compatible endpoint."
+        },
+        "pulse.provider.openaiBaseUrl": {
+          "type": "string",
+          "default": "https://api.openai.com",
+          "description": "Base URL for OpenAI-compatible providers (e.g. https://api.openai.com, https://api.anthropic.com, or your own endpoint)."
+        },
+        "pulse.provider.apiKey": {
+          "type": "string",
+          "default": "",
+          "description": "API key for the selected provider (not needed for Ollama)."
+        },
+        "pulse.provider.models": {
+          "type": "array",
+          "default": [],
+          "description": "Model names available on the provider (e.g. [\"gpt-4o\", \"gpt-4o-mini\"]). When empty, Pulse will try to list models from the API.",
+          "items": {
+            "type": "string"
+          }
+        },
         "pulse.ollama.baseUrl": {
           "type": "string",
           "default": "http://127.0.0.1:11434",

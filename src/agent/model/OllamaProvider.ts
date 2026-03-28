@@ -53,6 +53,8 @@ const DEFAULT_TIMEOUT_MS = 5_000;
 const CHAT_TIMEOUT_MS = 300_000;
 
 export class OllamaProvider implements ModelProvider {
+  public readonly providerType = "ollama" as const;
+
   public constructor(private readonly baseUrl: string) {}
 
   public async healthCheck(): Promise<ProviderHealth> {

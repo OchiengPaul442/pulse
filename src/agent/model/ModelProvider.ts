@@ -1,6 +1,13 @@
 export interface ChatMessage {
   role: "system" | "user" | "assistant";
-  content: string;
+  content: string | ChatMessageContent[];
+}
+
+/** Multi-modal content block (text or image). */
+export interface ChatMessageContent {
+  type: "text" | "image_url";
+  text?: string;
+  image_url?: { url: string; detail?: "auto" | "low" | "high" };
 }
 
 export interface ChatRequest {
@@ -35,7 +42,20 @@ export interface ModelSummary {
   sizeBytes?: number;
   modifiedAt?: string;
   source?: "local" | "running" | "configured";
+  supportsVision?: boolean;
 }
+
+/** Provider interface that all model backends must implement. */
+export interface ModelProvider {
+  chat(request: ChatRequest): Promise<ChatResponse>;
+  healthCheck(): Promise<ProviderHealth>;
+  listModels(): Promise<ModelSummary[]>;
+  /** Returns the provider type identifier (e.g. "ollama", "openai", "custom"). */
+  readonly providerType: string;
+}
+
+/** Known provider types. */
+export type ProviderType = "ollama" | "openai" | "anthropic" | "custom";
 
 export interface ModelProvider {
   chat(request: ChatRequest): Promise<ChatResponse>;

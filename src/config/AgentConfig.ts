@@ -22,8 +22,17 @@ export interface McpServerConfig {
   [key: string]: unknown;
 }
 
+export type ProviderType = "ollama" | "openai" | "anthropic" | "custom";
+
 export interface AgentConfig {
+  providerType: ProviderType;
   ollamaBaseUrl: string;
+  /** OpenAI-compatible endpoint URL (for openai/anthropic/custom providers). */
+  openaiBaseUrl: string;
+  /** API key for OpenAI-compatible providers. */
+  openaiApiKey: string;
+  /** Comma-separated model names for non-Ollama providers. */
+  openaiModels: string[];
   plannerModel: string;
   editorModel: string;
   fastModel: string;
@@ -52,7 +61,14 @@ export function getAgentConfig(): AgentConfig {
       : "http://localhost:11434";
 
   return {
+    providerType: cfg.get<ProviderType>("provider.type", "ollama"),
     ollamaBaseUrl: cfg.get<string>("ollama.baseUrl", ollamaDefaultUrl),
+    openaiBaseUrl: cfg.get<string>(
+      "provider.openaiBaseUrl",
+      "https://api.openai.com",
+    ),
+    openaiApiKey: cfg.get<string>("provider.apiKey", ""),
+    openaiModels: cfg.get<string[]>("provider.models", []),
     plannerModel: cfg.get<string>("models.planner", "deepseek-r1:7b"),
     editorModel: cfg.get<string>("models.editor", "qwen2.5-coder:7b"),
     fastModel: cfg.get<string>("models.fast", "qwen2.5-coder:7b"),

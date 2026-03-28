@@ -9,6 +9,7 @@ import type { Logger } from "../platform/vscode/Logger";
 
 export class PulseSidebarProvider implements vscode.WebviewViewProvider {
   public static readonly viewType = "pulse.sidebar";
+  private pendingImages: Array<{ name: string; dataUrl: string }> = [];
 
   public constructor(
     private readonly extensionUri: vscode.Uri,
@@ -127,6 +128,22 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
       });
     });
 
+    // Forward streaming text chunks for typewriter effect
+    this.runtime.setStreamCallback((chunk) => {
+      void webviewView.webview.postMessage({
+        type: "streamChunk",
+        payload: chunk,
+      });
+    });
+
+    // Forward terminal output for in-chat terminal blocks
+    this.runtime.setTerminalOutputCallback((data) => {
+      void webviewView.webview.postMessage({
+        type: "terminalOutput",
+        payload: data,
+      });
+    });
+
     // Re-push state every time the sidebar panel becomes visible
     webviewView.onDidChangeVisibility(() => {
       if (webviewView.visible) {
@@ -206,6 +223,11 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
                 },
               });
               return;
+            }
+
+            if (this.pendingImages.length > 0) {
+              request.images = [...this.pendingImages];
+              this.pendingImages = [];
             }
 
             try {
@@ -315,6 +337,30 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
             await webviewView.webview.postMessage({
               type: "actionResult",
               payload: reverted,
+            });
+            return;
+          }
+
+          if (
+            message.type === "acceptFile" &&
+            typeof message.payload === "string"
+          ) {
+            const result = await this.runtime.acceptFileEdit(message.payload);
+            await webviewView.webview.postMessage({
+              type: "actionResult",
+              payload: result,
+            });
+            return;
+          }
+
+          if (
+            message.type === "rejectFile" &&
+            typeof message.payload === "string"
+          ) {
+            const result = await this.runtime.rejectFileEdit(message.payload);
+            await webviewView.webview.postMessage({
+              type: "actionResult",
+              payload: result,
             });
             return;
           }
@@ -733,6 +779,35 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
             return;
           }
 
+          if (message.type === "dropImage") {
+            const img = message.payload as {
+              name?: string;
+              dataUrl?: string;
+            } | null;
+            if (
+              img &&
+              typeof img.name === "string" &&
+              typeof img.dataUrl === "string"
+            ) {
+              if (!this.pendingImages) {
+                this.pendingImages = [];
+              }
+              this.pendingImages.push({ name: img.name, dataUrl: img.dataUrl });
+            }
+            return;
+          }
+
+          if (message.type === "removeImage") {
+            const imgName =
+              typeof message.payload === "string" ? message.payload : "";
+            if (this.pendingImages && imgName) {
+              this.pendingImages = this.pendingImages.filter(
+                (img: { name: string }) => img.name !== imgName,
+              );
+            }
+            return;
+          }
+
           if (
             message.type === "setEnabledTools" &&
             message.payload &&
@@ -908,11 +983,43 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
     .thinking-panel { align-self: flex-start; width: 100%; overflow: hidden; font-size: 12px; margin: 2px 0; }
     .thinking-panel.hidden { display: none; }
     .thinking-header { display: flex; align-items: center; gap: 6px; padding: 5px 2px; cursor: default; }
-    .thinking-shimmer { display: block; width: 36px; height: 6px; flex-shrink: 0; border-radius: 999px; background: linear-gradient(90deg, rgba(0,120,212,0.1) 0%, rgba(0,120,212,0.5) 50%, rgba(0,120,212,0.1) 100%); background-size: 200% 100%; animation: shimmer 1.4s ease-in-out infinite; }
+    .thinking-shimmer { display: block; width: 36px; height: 6px; flex-shrink: 0; border-radius: 999px; background: linear-gradient(90deg, rgba(160,160,160,0.1) 0%, rgba(160,160,160,0.4) 50%, rgba(160,160,160,0.1) 100%); background-size: 200% 100%; animation: shimmer 1.4s ease-in-out infinite; }
     .thinking-panel.done .thinking-shimmer { display: none; }
     .thinking-done-icon { flex-shrink: 0; font-size: 10px; font-weight: 700; color: var(--green); display: none; }
     .thinking-panel.done .thinking-done-icon { display: block; }
     @keyframes shimmer { 0% { background-position: 200% 0; } 50% { background-position: -200% 0; } 100% { background-position: -200% 0; } }
+
+    /* ── Streaming text (typewriter + text shimmer) ─── */
+    .streaming-active .stream-bubble { position: relative; }
+    .streaming-active .stream-text { display: inline; }
+    .streaming-active .stream-cursor { display: inline-block; width: 2px; height: 1.1em; background: var(--fg); margin-left: 2px; vertical-align: text-bottom; animation: blink-cursor .7s step-end infinite; }
+    @keyframes blink-cursor { 0%,100% { opacity: 1; } 50% { opacity: 0; } }
+
+    /* Shimmer placeholder before first tokens arrive */
+    .stream-placeholder { display: flex; flex-direction: column; gap: 8px; padding: 4px 0; }
+    .stream-placeholder-line { height: 12px; border-radius: 4px; background: linear-gradient(90deg, var(--bg3) 25%, var(--fg3) 50%, var(--bg3) 75%); background-size: 200% 100%; animation: text-shimmer 1.5s linear infinite; opacity: 0.18; }
+    .stream-placeholder-line:nth-child(1) { width: 85%; }
+    .stream-placeholder-line:nth-child(2) { width: 70%; }
+    .stream-placeholder-line:nth-child(3) { width: 55%; }
+
+    /* Text shimmer effect on the latest streamed words */
+    .stream-text .shimmer-word { background: linear-gradient(90deg, var(--fg2), var(--fg), var(--fg2)); background-size: 200% 100%; -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text; animation: text-shimmer 1.8s linear infinite; }
+    @keyframes text-shimmer { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }
+
+    /* ── Terminal chat blocks ─── */
+    .terminal-chat-block { border: 1px solid var(--border); border-radius: 8px; overflow: hidden; margin: 4px 0; font-size: 12px; background: var(--bg2); }
+    .terminal-chat-block.terminal-error { border-color: var(--red); }
+    .terminal-chat-header { display: flex; align-items: center; gap: 6px; padding: 8px 10px; cursor: pointer; user-select: none; }
+    .terminal-chat-header:hover { background: rgba(128,128,128,.06); }
+    .terminal-chat-icon { font-size: 10px; color: var(--accent); flex-shrink: 0; }
+    .terminal-chat-cmd { flex: 1; font-family: var(--vscode-editor-font-family, monospace); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .terminal-chat-status { font-size: 10px; flex-shrink: 0; }
+    .terminal-error .terminal-chat-status { color: var(--red); }
+    .terminal-chat-toggle { font-size: 9px; color: var(--fg3); transition: transform var(--spd); flex-shrink: 0; }
+    .terminal-chat-block.open .terminal-chat-toggle { transform: rotate(180deg); }
+    .terminal-chat-output { margin: 0; padding: 8px 10px; font-family: var(--vscode-editor-font-family, monospace); font-size: 11px; line-height: 1.5; max-height: 300px; overflow: auto; background: rgba(0,0,0,.15); border-top: 1px solid var(--border); white-space: pre-wrap; word-break: break-all; }
+    .terminal-chat-output.hidden { display: none; }
+    .msg.terminal { padding: 0; }
     #thinkingTitle { flex: 1; font-size: 11px; font-weight: 600; color: var(--fg2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     .thinking-panel:not(.done) #thinkingTitle { color: var(--fg); }
     .thinking-elapsed { font-size: 9px; color: var(--fg3); flex-shrink: 0; font-variant-numeric: tabular-nums; }
@@ -1040,6 +1147,11 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
     .diff-tr-del .diff-code::before { content: '\u2212'; margin-right: 4px; font-weight: 700; }
     .diff-tr-ctx .diff-code::before { content: ' '; margin-right: 4px; }
     .diff-actions { display: flex; gap: 6px; padding: 8px 10px; justify-content: flex-end; border-top: 1px solid var(--border); }
+    .diff-file-actions { display: flex; gap: 4px; padding: 4px 10px; justify-content: flex-end; }
+    .diff-file-actions .btn.xs { font-size: 10px; padding: 2px 8px; border-radius: 4px; }
+    .diff-file-actions .btn.xs.primary { background: var(--green); color: #fff; border: none; cursor: pointer; }
+    .diff-file-actions .btn.xs.danger { background: transparent; color: var(--red); border: 1px solid var(--red); cursor: pointer; }
+    .diff-file-actions .btn.xs:hover { opacity: .85; }
     .diff-truncated { padding: 6px 10px; font-size: 10px; color: var(--fg3); font-style: italic; text-align: center; }
 
     /* ── Composer ─── */
@@ -1114,6 +1226,11 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
 
     .attachment-row { display: flex; gap: 3px; align-items: center; flex-wrap: wrap; padding: 0 0 3px; }
     .attachment-label { font-size: 9px; font-weight: 700; text-transform: uppercase; letter-spacing: .5px; color: var(--fg3); }
+    .img-preview { display: inline-flex; align-items: center; gap: 4px; background: var(--bg2); border: 1px solid var(--border); border-radius: 6px; padding: 2px 6px 2px 2px; font-size: 10px; color: var(--fg2); position: relative; }
+    .img-thumb { width: 28px; height: 28px; object-fit: cover; border-radius: 4px; }
+    .img-name { max-width: 80px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .img-remove { border: none; background: none; color: var(--fg3); font-size: 14px; cursor: pointer; padding: 0 2px; line-height: 1; }
+    .img-remove:hover { color: var(--red); }
 
     /* ── Generic buttons ─── */
     .btn { font: 600 10px var(--vscode-font-family); padding: 3px 8px; border-radius: 5px; border: 1px solid var(--border); background: transparent; color: var(--fg); cursor: pointer; transition: all var(--spd); }
@@ -1344,6 +1461,11 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
   var isBusy = false;
   var composeState = { mode: 'new', messageId: '', messageIndex: -1 };
   var pendingRequest = null;
+  var streamBuffer = '';
+  var streamBubble = null;
+  var streamChunkQueue = [];
+  var streamFlushTimer = null;
+  var streamRenderBuffer = '';
 
   // Helpers
   function esc(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
@@ -1769,6 +1891,13 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
         }
       }
       h += '</div>';
+      // Per-file accept/reject buttons
+      if (!isAutoApplied) {
+        h += '<div class="diff-file-actions" data-diff-file="' + esc(d.filePath || fname) + '">';
+        h += '<button class="btn primary xs diff-file-accept" title="Accept this file">&#10003; Accept</button>';
+        h += '<button class="btn danger xs diff-file-reject" title="Reject this file">&#10007; Reject</button>';
+        h += '</div>';
+      }
       h += '</div>';
     }
     if (!isAutoApplied) {
@@ -1796,6 +1925,27 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
       div.className = 'msg ' + role + ' fadein';
       div.dataset.messageId = String(m.id || '');
       div.dataset.messageIndex = String(i);
+
+      // Terminal blocks render as special expandable elements
+      if (m.role === 'terminal' && m.isHtml) {
+        div.innerHTML = m.text || '';
+        // Add toggle handler for terminal blocks
+        var termHeader = div.querySelector('.terminal-chat-header');
+        if (termHeader) {
+          termHeader.addEventListener('click', function(e) {
+            e.stopPropagation();
+            var block = this.parentElement;
+            if (block) {
+              var output = block.querySelector('.terminal-chat-output');
+              if (output) output.classList.toggle('hidden');
+              block.classList.toggle('open');
+            }
+          });
+        }
+        messages.appendChild(div);
+        continue;
+      }
+
       if (composeState.mode === 'edit' && String(m.id || '') === String(composeState.messageId || '')) {
         div.classList.add('editing');
       }
@@ -1866,6 +2016,31 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
             var sec = el.querySelector('.diff-actions');
             if (sec) sec.innerHTML = '<span style="font-size:11px;color:var(--red);font-weight:600">\u2717 Discarded</span>';
           });
+          // Per-file accept/reject buttons
+          var fileAcceptBtns = el.querySelectorAll('.diff-file-accept');
+          for (var fa = 0; fa < fileAcceptBtns.length; fa++) {
+            fileAcceptBtns[fa].addEventListener('click', function(e) {
+              e.stopPropagation();
+              var actionsDiv = this.parentElement;
+              var filePath = actionsDiv ? actionsDiv.dataset.diffFile : '';
+              if (filePath) {
+                vscode.postMessage({ type: 'acceptFile', payload: filePath });
+                if (actionsDiv) actionsDiv.innerHTML = '<span style="font-size:10px;color:var(--green);font-weight:600">\u2713 Accepted</span>';
+              }
+            });
+          }
+          var fileRejectBtns = el.querySelectorAll('.diff-file-reject');
+          for (var fr = 0; fr < fileRejectBtns.length; fr++) {
+            fileRejectBtns[fr].addEventListener('click', function(e) {
+              e.stopPropagation();
+              var actionsDiv = this.parentElement;
+              var filePath = actionsDiv ? actionsDiv.dataset.diffFile : '';
+              if (filePath) {
+                vscode.postMessage({ type: 'rejectFile', payload: filePath });
+                if (actionsDiv) actionsDiv.innerHTML = '<span style="font-size:10px;color:var(--red);font-weight:600">\u2717 Rejected</span>';
+              }
+            });
+          }
         }
       })(text, div, role);
       messages.appendChild(div);
@@ -1875,9 +2050,36 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
   function renderAttachments(files) {
     attachedFiles = Array.isArray(files) ? files.slice() : [];
     if (!attachmentRow) return;
-    if (!attachedFiles.length) { attachmentRow.innerHTML = ''; return; }
-    attachmentRow.innerHTML = '<span class="attachment-label">Attached</span>' +
+    if (!attachedFiles.length && !attachmentRow.querySelector('.img-preview')) { attachmentRow.innerHTML = ''; return; }
+    var html = '<span class="attachment-label">Attached</span>' +
       attachedFiles.map(function(f) { return '<span class="chip" title="' + esc(f) + '">' + esc(f.split(/[\\\\/]/).pop()) + '</span>'; }).join('');
+    // Preserve existing image previews
+    var existing = attachmentRow.querySelectorAll('.img-preview');
+    attachmentRow.innerHTML = html;
+    for (var p = 0; p < existing.length; p++) {
+      attachmentRow.appendChild(existing[p]);
+    }
+  }
+
+  function addImagePreview(name, dataUrl) {
+    if (!attachmentRow) return;
+    // Show the label if not present
+    if (!attachmentRow.querySelector('.attachment-label')) {
+      var label = document.createElement('span');
+      label.className = 'attachment-label';
+      label.textContent = 'Attached';
+      attachmentRow.insertBefore(label, attachmentRow.firstChild);
+    }
+    var wrap = document.createElement('span');
+    wrap.className = 'img-preview';
+    wrap.title = name;
+    wrap.innerHTML = '<img src="' + dataUrl + '" class="img-thumb" /><span class="img-name">' + esc(name) + '</span><button class="img-remove" title="Remove">&times;</button>';
+    wrap.querySelector('.img-remove').addEventListener('click', function(e) {
+      e.stopPropagation();
+      wrap.parentNode.removeChild(wrap);
+      vscode.postMessage({ type: 'removeImage', payload: name });
+    });
+    attachmentRow.appendChild(wrap);
   }
 
   function renderSessions(list) {
@@ -2037,6 +2239,11 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
     }
     showChat(); startThinking(); scrollBottom();
     vscode.postMessage({ type: 'runTask', payload: { objective: text, action: action, messageId: messageId } });
+    // Clear image previews after sending
+    if (attachmentRow) {
+      var imgPreviews = attachmentRow.querySelectorAll('.img-preview');
+      for (var ip = 0; ip < imgPreviews.length; ip++) imgPreviews[ip].parentNode.removeChild(imgPreviews[ip]);
+    }
     resetComposeState();
   }
 
@@ -2098,11 +2305,21 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
       var items = e.dataTransfer && e.dataTransfer.items;
       if (!items || !items.length) return;
       var paths = [];
+      var imageFiles = [];
       for (var i = 0; i < items.length; i++) {
         var item = items[i];
         if (item.kind === 'file') {
           var file = item.getAsFile();
-          if (file && file.name) paths.push(file.name);
+          if (file && file.name) {
+            var ext = (file.name.split('.').pop() || '').toLowerCase();
+            var isImage = ['png','jpg','jpeg','gif','webp','bmp','svg'].indexOf(ext) !== -1;
+            if (isImage && file.size < 10 * 1024 * 1024) {
+              // Read image as base64 for vision model support
+              imageFiles.push(file);
+            } else {
+              paths.push(file.name);
+            }
+          }
         } else if (item.kind === 'string' && item.type === 'text/plain') {
           item.getAsString(function(s) {
             if (s && s.trim()) vscode.postMessage({ type: 'dropFiles', payload: [s.trim()] });
@@ -2110,6 +2327,20 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
         }
       }
       if (paths.length > 0) vscode.postMessage({ type: 'dropFiles', payload: paths });
+      // Read and preview image files
+      imageFiles.forEach(function(imgFile) {
+        var reader = new FileReader();
+        reader.onload = function(ev) {
+          var dataUrl = ev.target && ev.target.result;
+          if (typeof dataUrl === 'string') {
+            // Show preview in attachment row
+            addImagePreview(imgFile.name, dataUrl);
+            // Send to backend
+            vscode.postMessage({ type: 'dropImage', payload: { name: imgFile.name, dataUrl: dataUrl } });
+          }
+        };
+        reader.readAsDataURL(imgFile);
+      });
     });
   }());
 
@@ -2189,8 +2420,81 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
     if (type === 'sessionDeleted') { handleSessionDeleted(payload); return; }
     if (type === 'sessionAttachments') { renderAttachments(payload); return; }
     if (type === 'thinkingStep') { addThinkingStep(payload); return; }
+    if (type === 'terminalOutput') {
+      // Render terminal output as an expandable block in chat
+      if (payload && typeof payload.command === 'string') {
+        var termId = makeMessageId();
+        var exitOk = payload.exitCode === 0;
+        var termHtml = '<div class="terminal-chat-block' + (exitOk ? '' : ' terminal-error') + '">' +
+          '<div class="terminal-chat-header" data-termid="' + esc(termId) + '">' +
+          '<span class="terminal-chat-icon">&#9654;</span>' +
+          '<span class="terminal-chat-cmd">$ ' + esc(payload.command) + '</span>' +
+          '<span class="terminal-chat-status">' + (exitOk ? '\\u2713' : '\\u2717 exit ' + (payload.exitCode != null ? payload.exitCode : '?')) + '</span>' +
+          '<span class="terminal-chat-toggle">\\u25BC</span>' +
+          '</div>' +
+          '<pre class="terminal-chat-output hidden">' + esc(payload.output || '(no output)') + '</pre>' +
+          '</div>';
+        chatHistory.push({ id: termId, role: 'terminal', text: termHtml, ts: Date.now(), isHtml: true });
+        renderMessages(); scrollBottom();
+      }
+      return;
+    }
+    if (type === 'streamChunk') {
+      if (!isBusy) return;
+      streamBuffer += (payload || '');
+      if (!streamBubble) {
+        // Create streaming bubble with placeholder skeleton
+        streamBubble = document.createElement('div');
+        streamBubble.className = 'msg agent fadein streaming-active';
+        streamBubble.innerHTML = '<div class="bubble stream-bubble">' +
+          '<div class="stream-placeholder">' +
+          '<div class="stream-placeholder-line"></div>' +
+          '<div class="stream-placeholder-line"></div>' +
+          '<div class="stream-placeholder-line"></div>' +
+          '</div>' +
+          '<span class="stream-text" style="display:none"></span>' +
+          '<span class="stream-cursor" style="display:none"></span></div>';
+        messages.appendChild(streamBubble);
+        streamRenderBuffer = '';
+      }
+      // Queue chunk for smooth rendering
+      streamChunkQueue.push(payload || '');
+      if (!streamFlushTimer) {
+        streamFlushTimer = setInterval(function() {
+          if (streamChunkQueue.length === 0) {
+            clearInterval(streamFlushTimer);
+            streamFlushTimer = null;
+            return;
+          }
+          // Flush queued chunks with slight smoothing
+          var chunk = streamChunkQueue.shift();
+          streamRenderBuffer += chunk;
+          if (streamBubble) {
+            // Remove placeholder once text starts flowing
+            var ph = streamBubble.querySelector('.stream-placeholder');
+            if (ph) ph.parentNode.removeChild(ph);
+            var textEl = streamBubble.querySelector('.stream-text');
+            var cursor = streamBubble.querySelector('.stream-cursor');
+            if (textEl) { textEl.style.display = 'inline'; textEl.innerHTML = renderMarkdown(streamRenderBuffer); }
+            if (cursor) cursor.style.display = 'inline-block';
+          }
+          scrollBottom();
+        }, 18); // ~18ms between renders for premium smoothness
+      }
+      return;
+    }
     if (type === 'taskResult') {
       var isCancelled = payload && payload.cancelled;
+      // Flush remaining chunks immediately
+      if (streamFlushTimer) { clearInterval(streamFlushTimer); streamFlushTimer = null; }
+      streamChunkQueue = [];
+      streamRenderBuffer = '';
+      // Remove temporary streaming bubble
+      if (streamBubble && streamBubble.parentNode) {
+        streamBubble.parentNode.removeChild(streamBubble);
+      }
+      streamBubble = null;
+      streamBuffer = '';
       finishThinking(isCancelled);
       if (!isCancelled) {
         var text = (payload && payload.responseText) || 'Task completed.';
