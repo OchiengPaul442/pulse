@@ -320,15 +320,22 @@ describe("isSafeTerminalCommand – expanded patterns", () => {
     expect(isSafeTerminalCommand(cmd)).toBe(false);
   });
 
-  // Still blocked: shell chaining
+  // Safe chains — both parts of && and first part of pipe are safe
+  it.each(["npm test && echo done", "cat file.txt | grep TODO"])(
+    "allows safe chained command: %s",
+    (cmd) => {
+      expect(isSafeTerminalCommand(cmd)).toBe(true);
+    },
+  );
+
+  // Still blocked: redirection, semicolons, subshells, unsafe chains
   it.each([
-    "npm test && echo done",
-    "cat file.txt | grep TODO",
     "echo test > file.txt",
     "ls; rm -rf /",
     "echo `whoami`",
     "echo $(id)",
-  ])("blocks shell chaining/redirection: %s", (cmd) => {
+    "npm test && rm -rf /",
+  ])("blocks dangerous chaining/redirection: %s", (cmd) => {
     expect(isSafeTerminalCommand(cmd)).toBe(false);
   });
 

@@ -57,6 +57,7 @@ import { VerificationRunner } from "../verification/VerificationRunner";
 import {
   assessTaskQuality,
   buildTaskRefinementPrompt,
+  estimateCommandTimeout,
   formatCompactTodos,
   formatShortcutHints,
   formatToolObservations,
@@ -2324,13 +2325,20 @@ export class AgentRuntime {
         "## Rules",
         "- Create a short TODO list (3-5 items) before making changes.",
         "- Use tools to gather evidence. Do NOT guess when a tool can answer.",
-        "- When asked to run a command, use run_terminal immediately.",
+        "- When asked to run a command, use run_terminal IMMEDIATELY. Do not just describe the command — execute it.",
         "- Prefer small, targeted edits over rewrites.",
         "- After making edits, ALWAYS run verification (build/test/lint) to validate your changes.",
         "- If verification fails, analyze the error output and fix the issues before responding.",
         "- Proactively use run_terminal to inspect project state: check types (tsc --noEmit), run tests, lint, format code.",
         "- Use diagnostics to check for VS Code errors after editing files.",
         "- If refinement feedback is present, address it.",
+        "- You can chain commands with && (e.g. cd my-app && npm run dev).",
+        "",
+        "## Tool execution flow",
+        "When you include toolCalls, they are executed AUTOMATICALLY and you will see the results on your next turn.",
+        "- If you include toolCalls: set response to a brief note about what you are doing. You will get another turn with tool results.",
+        "- If tool results are already present below and you have NO more toolCalls: write your FINAL detailed response summarizing what was done and the outcome.",
+        "- NEVER tell the user to run a command themselves — use run_terminal to run it for them.",
         "",
         "## Response format",
         "Return JSON only with fields: response, todos, shortcuts, toolCalls, edits.",
@@ -2385,9 +2393,18 @@ export class AgentRuntime {
     let requestedVerification = false;
     let finalAssessment: TaskQualityAssessment | null = null;
 
-    // Keep the refinement loop short so edit tasks stay responsive.
-    for (let iteration = 0; iteration < 3; iteration += 1) {
-      this.emitProgress("Generating response", editorModel, "\u25B8");
+    // Agent loop: up to 10 iterations to allow multi-step tool workflows.
+    // The loop continues as long as the LLM requests tool calls (so it can
+    // observe results and act on them). It stops when:
+    //   - The LLM returns NO tool calls and quality meets target, OR
+    //   - Max iterations reached.
+    const MAX_AGENT_ITERATIONS = 10;
+    for (let iteration = 0; iteration < MAX_AGENT_ITERATIONS; iteration += 1) {
+      this.emitProgress(
+        iteration === 0 ? "Generating response" : "Continuing",
+        `${editorModel} (step ${iteration + 1})`,
+        "\u25B8",
+      );
       checkAborted();
       const response = await this.provider.chat({
         model: editorModel,
@@ -2447,7 +2464,16 @@ export class AgentRuntime {
         isEditTask: this.isLikelyEditTaskObjective(objective),
       });
 
-      if (finalAssessment.meetsTarget || iteration === 2) {
+      // If tool calls were executed this iteration, always continue so the
+      // LLM sees tool results and can produce an informed final response.
+      if (observations.length > 0) {
+        critiqueContext = "";
+        continue;
+      }
+
+      // No tool calls this iteration — the LLM is done acting.
+      // Break if quality is sufficient or we've used enough iterations.
+      if (finalAssessment.meetsTarget || iteration >= 2) {
         break;
       }
 
@@ -2829,9 +2855,10 @@ export class AgentRuntime {
       }
 
       this.emitTerminalRun(command);
+      const terminalTimeout = estimateCommandTimeout(command);
       const result = await this.executeTerminalCommand(command, {
         cwd: workspaceRoot ?? undefined,
-        timeoutMs: 120_000,
+        timeoutMs: terminalTimeout,
         purpose: "tool",
       });
       return [

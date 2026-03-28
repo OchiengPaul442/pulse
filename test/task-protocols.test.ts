@@ -69,8 +69,16 @@ describe("TaskProtocols", () => {
       isSafeTerminalCommand('node -e "process.stdout.write(\"ok\")"'),
     ).toBe(false);
     expect(isSafeTerminalCommand("rm -rf node_modules")).toBe(false);
-    expect(isSafeTerminalCommand("git status && echo hi")).toBe(false);
-    expect(isSafeTerminalCommand("npm test | tee output.txt")).toBe(false);
+    // Safe chains are now allowed when every segment is individually safe
+    expect(isSafeTerminalCommand("git status && echo hi")).toBe(true);
+    // Pipes are allowed when the first command is safe
+    expect(isSafeTerminalCommand("npm test | tee output.txt")).toBe(true);
     expect(isSafeTerminalCommand("python -m pytest > report.txt")).toBe(false);
+    // Mixed safe/unsafe chains are blocked
+    expect(isSafeTerminalCommand("npm test && rm -rf /")).toBe(false);
+    expect(isSafeTerminalCommand("cd my-app && npm install")).toBe(true);
+    expect(
+      isSafeTerminalCommand("pnpm create next-app@latest my-app --yes"),
+    ).toBe(true);
   });
 });

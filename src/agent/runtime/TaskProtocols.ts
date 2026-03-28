@@ -293,8 +293,31 @@ export function isSafeTerminalCommand(command: string): boolean {
     return false;
   }
 
-  // Block shell control operators (chaining, redirection, subshells)
-  const shellControlPattern = /(?:&&|\|\||;|`|\$\(|\r|\n|>|<|\|)/;
+  // Allow && and || chains — split and validate each segment independently
+  if (/&&|\|\|/.test(normalized)) {
+    const segments = normalized.split(/\s*(?:&&|\|\|)\s*/).filter(Boolean);
+    return (
+      segments.length > 0 &&
+      segments.every((seg) => isSafeSingleCommand(seg.trim()))
+    );
+  }
+
+  // Allow simple pipes where the first command is safe (piping is read-only)
+  if (/\|/.test(normalized) && !/\|\|/.test(normalized)) {
+    const first = normalized.split(/\s*\|\s*/)[0].trim();
+    return isSafeSingleCommand(first);
+  }
+
+  return isSafeSingleCommand(normalized);
+}
+
+function isSafeSingleCommand(normalized: string): boolean {
+  if (!normalized) {
+    return false;
+  }
+
+  // Block dangerous shell operators (subshells, background, redirection)
+  const shellControlPattern = /(?:;|`|\$\(|\r|\n|>|<)/;
   if (shellControlPattern.test(normalized) || /(^|\s)&(?!&)/.test(normalized)) {
     return false;
   }
@@ -322,15 +345,17 @@ export function isSafeTerminalCommand(command: string): boolean {
   }
 
   const safePatterns = [
+    // Directory navigation
+    /^cd\b/,
     // Git read-only operations
     /\bgit\s+(status|diff|log|show|blame|branch|stash\s+list)\b/,
     // Git write operations that are safe within a project
-    /\bgit\s+(add|commit|checkout|switch|stash|pull|fetch)\b/,
+    /\bgit\s+(add|commit|checkout|switch|stash|pull|fetch|init)\b/,
     // Node.js ecosystem — build, test, run, install
-    /\bnpm\s+(test|run|exec|install|ci|ls|outdated|audit)\b/,
+    /\bnpm\s+(test|run|exec|install|ci|ls|outdated|audit|init)\b/,
     /\bnpx\s+\S/,
-    /\bpnpm\s+(test|run|install|add|exec|ls|audit|dlx)\b/,
-    /\byarn\s+(test|run|install|add|dlx|audit)\b/,
+    /\bpnpm\s+(test|run|install|add|exec|ls|audit|dlx|create)\b/,
+    /\byarn\s+(test|run|install|add|dlx|audit|create)\b/,
     // TypeScript / JavaScript tooling
     /\btsc(\s|$)/,
     /\bvitest(\s|$)/,
@@ -389,6 +414,31 @@ export function isSafeTerminalCommand(command: string): boolean {
   ];
 
   return safePatterns.some((pattern) => pattern.test(normalized));
+}
+
+/**
+ * Estimate an appropriate timeout for a terminal command.
+ * Long-running commands (scaffolding, installs) get 5 minutes; others 2 minutes.
+ */
+export function estimateCommandTimeout(command: string): number {
+  const lower = command.toLowerCase();
+  const longRunningPatterns = [
+    /\b(pnpm|npm|yarn)\s+create\b/,
+    /\bnpx\s+create-/,
+    /\bpnpm\s+dlx\s+create-/,
+    /\bnpm\s+(install|ci)\b/,
+    /\bpnpm\s+(install|add)\b/,
+    /\byarn\s+(install|add)\b/,
+    /\bpip3?\s+install\b/,
+    /\bcargo\s+(build|test)\b/,
+    /\bdotnet\s+(build|restore|new)\b/,
+    /\bgo\s+(build|test|mod)\b/,
+    /\bdocker\s+build\b/,
+  ];
+  if (longRunningPatterns.some((p) => p.test(lower))) {
+    return 300_000; // 5 minutes
+  }
+  return 120_000; // 2 minutes
 }
 
 export function formatToolObservations(
