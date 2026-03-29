@@ -100,6 +100,34 @@ That should work.`;
     expect(parsed.toolCalls[2]?.tool).toBe("list_dir");
   });
 
+  it("deduplicates repeated tool calls and edits", () => {
+    const parsed = parseTaskResponse(
+      JSON.stringify({
+        response: "working",
+        toolCalls: [
+          { tool: "read_file", args: { path: "src/index.ts" } },
+          { tool: "read_file", args: { path: "src/index.ts" } },
+          { tool: "run_terminal", args: { command: "npm test" } },
+        ],
+        edits: [
+          {
+            operation: "write",
+            filePath: "src/app.ts",
+            content: "export const a = 1;",
+          },
+          {
+            operation: "write",
+            filePath: "src/app.ts",
+            content: "export const a = 1;",
+          },
+        ],
+      }),
+    );
+
+    expect(parsed.toolCalls).toHaveLength(2);
+    expect(parsed.edits).toHaveLength(1);
+  });
+
   it("handles string-only tool calls from local models", () => {
     const parsed = parseTaskResponse(
       JSON.stringify({

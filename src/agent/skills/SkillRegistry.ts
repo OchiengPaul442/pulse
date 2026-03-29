@@ -469,9 +469,30 @@ export class SkillRegistry {
           ? fallback
           : scored;
 
-    const selected = picked
-      .slice(0, Math.max(limit, 1))
-      .map((row) => row.skill);
+    const selected: SkillManifest[] = [];
+    const coveredTools = new Set<string>();
+
+    for (const row of picked) {
+      if (selected.length >= Math.max(limit, 1)) {
+        break;
+      }
+
+      const hasNewTool = row.skill.tools.some(
+        (tool) => !coveredTools.has(tool),
+      );
+      if (!hasNewTool && selected.length > 0) {
+        continue;
+      }
+
+      selected.push(row.skill);
+      for (const tool of row.skill.tools) {
+        coveredTools.add(tool);
+      }
+    }
+
+    if (selected.length === 0 && picked.length > 0) {
+      selected.push(picked[0].skill);
+    }
 
     return {
       primary: highConfidence[0]?.skill ?? selected[0] ?? null,

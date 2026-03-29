@@ -24,4 +24,20 @@ describe("SkillRegistry", () => {
       selected.selected.some((skill) => skill.id === "terminalInvestigation"),
     ).toBe(true);
   });
+
+  it("avoids overlapping tool coverage across selected skills", () => {
+    const registry = new SkillRegistry();
+    const selected = registry.selectForObjective(
+      "generate a feature, edit files, and run diagnostics",
+      5,
+    );
+
+    const coveredTools = new Set<string>();
+    for (const skill of selected.selected) {
+      for (const tool of skill.tools) {
+        expect(coveredTools.has(tool)).toBe(false);
+        coveredTools.add(tool);
+      }
+    }
+  });
 });

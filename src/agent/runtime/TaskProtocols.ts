@@ -362,9 +362,15 @@ export function normalizeTodos(value: unknown): TaskTodo[] {
     return [];
   }
 
-  return value
-    .map((entry, index) => normalizeTodoEntry(entry, index))
-    .filter((entry): entry is TaskTodo => entry !== null);
+  return dedupeBySignature(
+    value
+      .map((entry, index) => normalizeTodoEntry(entry, index))
+      .filter((entry): entry is TaskTodo => entry !== null),
+    (todo) =>
+      [todo.id, todo.title.toLowerCase(), todo.status, todo.detail ?? ""]
+        .join("|")
+        .toLowerCase(),
+  );
 }
 
 export function normalizeToolCalls(value: unknown): TaskToolCall[] {
@@ -372,9 +378,12 @@ export function normalizeToolCalls(value: unknown): TaskToolCall[] {
     return [];
   }
 
-  return value
-    .map((entry) => normalizeToolCall(entry))
-    .filter((entry): entry is TaskToolCall => entry !== null);
+  return dedupeBySignature(
+    value
+      .map((entry) => normalizeToolCall(entry))
+      .filter((entry): entry is TaskToolCall => entry !== null),
+    (call) => `${call.tool}|${stableStringify(call.args)}`,
+  );
 }
 
 export function normalizeEdits(value: unknown): ProposedEdit[] {
@@ -420,7 +429,14 @@ export function normalizeEdits(value: unknown): ProposedEdit[] {
     });
   }
 
-  return edits;
+  return dedupeBySignature(edits, (edit) =>
+    [
+      edit.operation ?? "write",
+      edit.filePath,
+      edit.targetPath ?? "",
+      edit.content ?? "",
+    ].join("|"),
+  );
 }
 
 export function isSafeTerminalCommand(command: string): boolean {
@@ -954,4 +970,42 @@ function compactText(value: string): string {
     .replace(/\s+/g, " ")
     .trim()
     .replace(/[.。]+$/, "");
+}
+
+function dedupeBySignature<T>(items: T[], signature: (item: T) => string): T[] {
+  const seen = new Set<string>();
+  const result: T[] = [];
+
+  for (const item of items) {
+    const key = signature(item).trim();
+    if (!key || seen.has(key)) {
+      continue;
+    }
+
+    seen.add(key);
+    result.push(item);
+  }
+
+  return result;
+}
+
+function stableStringify(value: unknown): string {
+  if (value === null || typeof value !== "object") {
+    return JSON.stringify(value);
+  }
+
+  if (Array.isArray(value)) {
+    return `[${value.map((entry) => stableStringify(entry)).join(",")}]`;
+  }
+
+  const entries = Object.entries(value as Record<string, unknown>)
+    .filter(([, entryValue]) => entryValue !== undefined)
+    .sort(([left], [right]) => left.localeCompare(right));
+
+  return `{${entries
+    .map(
+      ([key, entryValue]) =>
+        `${JSON.stringify(key)}:${stableStringify(entryValue)}`,
+    )
+    .join(",")}}`;
 }

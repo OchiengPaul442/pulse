@@ -2553,6 +2553,8 @@ export class AgentRuntime {
         "5. On failure: analyze error → try alternatives → never give up on first attempt.",
         "6. Never delete files unless explicitly asked. Contain fixes — don't break other code.",
         "7. You get MULTIPLE turns. Each turn you can make tool calls. Use them!",
+        "8. Do not repeat the same tool call, edit, todo text, or summary wording unless the inputs changed or you are intentionally retrying after a new error.",
+        "9. Prefer the smallest fresh next action. One successful step is better than repeating the same plan.",
         "",
         "## TODO RULES",
         "- Create 3-5 actionable todos upfront. Update statuses EVERY turn.",
@@ -2641,6 +2643,8 @@ export class AgentRuntime {
         "## INSTRUCTIONS",
         "- Work on the NEXT pending todo. Mark it in-progress, complete it, mark it done.",
         "- Use create_file tool for new files. Use batch_edit for modifying existing files.",
+        "- Do not repeat exact tool calls, edits, or todo text already shown in tool results.",
+        "- If a prior tool call succeeded, move forward instead of replaying it.",
         "- After completing a todo, update its status to done and proceed to the next.",
         "- When ALL todos are done, write a final summary in response with NO toolCalls.",
         "",
@@ -2852,8 +2856,9 @@ export class AgentRuntime {
         if (failedObs.length === 0) {
           critiqueContext = "";
         }
-        // If all todos done after this iteration's work, we can stop
-        if (allTodosDone) {
+        // Low-end models can mark everything done too early; require at
+        // least a couple of iterations before accepting completion.
+        if (allTodosDone && iteration >= 2) {
           break;
         }
         continue;
@@ -3143,27 +3148,36 @@ export class AgentRuntime {
     // Keep the response text clean — TODOs, file changes, verification
     // are shown in dedicated UI drawers, not dumped into the chat bubble.
     const sections: string[] = [];
-    const intro = generic ? "Task completed." : raw;
+    const hasIncompleteTodos = params.todos.some(
+      (todo) => todo.status !== "done",
+    );
+    const intro = hasIncompleteTodos
+      ? "Task not completed."
+      : generic
+        ? "Task completed."
+        : raw;
     sections.push(intro);
 
     const incompleteEditTask = this.summarizeIncompleteEditTask(params);
     if (incompleteEditTask) {
-      sections.push(`**Issue:** ${incompleteEditTask.issue}`);
+      sections.push("## Issue");
+      sections.push(incompleteEditTask.issue);
       if (incompleteEditTask.nextSteps.length > 0) {
+        sections.push("## Next steps");
         sections.push(
-          `**Next steps:**\n${incompleteEditTask.nextSteps
-            .map((step) => `- ${step}`)
-            .join("\n")}`,
+          ...incompleteEditTask.nextSteps.map((step) => `- ${step}`),
         );
       }
     }
 
     const issueSummary = this.summarizeIssueCompact(params.toolTrace);
     if (issueSummary) {
-      sections.push(`**Issue:** ${issueSummary}`);
+      sections.push("## Issue");
+      sections.push(issueSummary);
       const nextSteps = this.summarizeIssueNextSteps(params.toolTrace);
       if (nextSteps) {
-        sections.push(`**Next steps:**\n${nextSteps}`);
+        sections.push("## Next steps");
+        sections.push(nextSteps);
       }
     }
 
