@@ -291,6 +291,21 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
           }
 
           if (
+            message.type === "openFile" &&
+            typeof message.payload === "string" &&
+            message.payload.length > 0
+          ) {
+            try {
+              const filePath = message.payload;
+              const uri = vscode.Uri.file(filePath);
+              await vscode.window.showTextDocument(uri, { preview: true });
+            } catch {
+              /* ignore if file not found */
+            }
+            return;
+          }
+
+          if (
             message.type === "setSelfLearn" &&
             typeof message.payload === "boolean"
           ) {
@@ -1292,6 +1307,43 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
     #scrollBtn.visible { opacity: 1; pointer-events: all; }
     #scrollBtn:hover { color: var(--accent); border-color: var(--accent); transform: translateY(-1px); }
 
+    /* ── TODO Drawer (above composer) ─── */
+    #todoDrawer { display: none; flex-direction: column; border-top: 1px solid var(--border); flex-shrink: 0; max-height: 200px; overflow: hidden; }
+    #todoDrawer.visible { display: flex; }
+    .todo-drawer-header { display: flex; align-items: center; justify-content: space-between; padding: 4px 10px; cursor: pointer; user-select: none; font-size: 11px; font-weight: 600; color: var(--fg2); transition: background var(--spd); }
+    .todo-drawer-header:hover { background: rgba(128,128,128,.06); }
+    .todo-drawer-chevron { font-size: 9px; color: var(--fg3); transition: transform var(--spd); }
+    #todoDrawer.collapsed .todo-drawer-chevron { transform: rotate(-90deg); }
+    .todo-drawer-count { font-size: 9px; color: var(--fg3); font-variant-numeric: tabular-nums; }
+    .todo-drawer-list { display: flex; flex-direction: column; gap: 0; padding: 0 10px 4px; max-height: 160px; overflow-y: auto; }
+    #todoDrawer.collapsed .todo-drawer-list { display: none; }
+    .todo-item { display: flex; align-items: center; gap: 6px; padding: 2px 0; font-size: 11px; color: var(--fg); min-height: 20px; }
+    .todo-icon { flex-shrink: 0; font-size: 10px; width: 14px; text-align: center; }
+    .todo-icon.pending { color: var(--fg3); }
+    .todo-icon.in-progress { color: var(--orange); }
+    .todo-icon.done { color: var(--green); }
+    .todo-icon.blocked { color: var(--red); }
+    .todo-title { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .todo-title.done { text-decoration: line-through; color: var(--fg3); }
+    .todo-title.blocked { color: var(--red); opacity: .7; }
+
+    /* ── Files Changed Drawer (above composer) ─── */
+    #filesDrawer { display: none; flex-direction: column; border-top: 1px solid var(--border); flex-shrink: 0; max-height: 180px; overflow: hidden; }
+    #filesDrawer.visible { display: flex; }
+    .files-drawer-header { display: flex; align-items: center; justify-content: space-between; padding: 4px 10px; cursor: pointer; user-select: none; font-size: 11px; font-weight: 600; color: var(--fg2); transition: background var(--spd); }
+    .files-drawer-header:hover { background: rgba(128,128,128,.06); }
+    .files-drawer-chevron { font-size: 9px; color: var(--fg3); transition: transform var(--spd); }
+    #filesDrawer.collapsed .files-drawer-chevron { transform: rotate(-90deg); }
+    .files-drawer-list { display: flex; flex-direction: column; gap: 0; padding: 0 10px 4px; max-height: 140px; overflow-y: auto; }
+    #filesDrawer.collapsed .files-drawer-list { display: none; }
+    .file-item { display: flex; align-items: center; gap: 6px; padding: 3px 4px; border-radius: 4px; font-size: 11px; color: var(--fg); cursor: pointer; transition: background var(--spd); }
+    .file-item:hover { background: rgba(128,128,128,.08); }
+    .file-item-icon { flex-shrink: 0; font-size: 10px; color: var(--accent); }
+    .file-item-name { flex: 1; font-family: var(--vscode-editor-font-family, monospace); font-size: 10px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .file-item-stats { display: flex; gap: 4px; flex-shrink: 0; }
+    .file-stat-add { color: var(--green); font-size: 10px; font-weight: 700; }
+    .file-stat-del { color: var(--red); font-size: 10px; font-weight: 700; }
+
     /* --- Rich code blocks --- */
     .code-block { margin: 6px 0; border-radius: 6px; overflow: hidden; border: 1px solid var(--vscode-editorWidget-border, rgba(128,128,128,.12)); background: var(--vscode-editor-background, rgba(0,0,0,.18)); }
     .code-header { display: flex; align-items: center; justify-content: space-between; background: rgba(0,0,0,.15); padding: 5px 10px; border-bottom: 1px solid rgba(128,128,128,.08); }
@@ -1447,6 +1499,22 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
     </div>
   </div>
 
+  <div id="todoDrawer">
+    <div class="todo-drawer-header" id="todoDrawerToggle">
+      <span>&#9745; Tasks <span id="todoDrawerCount" class="todo-drawer-count"></span></span>
+      <span class="todo-drawer-chevron" id="todoDrawerChevron">&#9660;</span>
+    </div>
+    <div class="todo-drawer-list" id="todoDrawerList"></div>
+  </div>
+
+  <div id="filesDrawer">
+    <div class="files-drawer-header" id="filesDrawerToggle">
+      <span>&#128196; Files changed <span id="filesDrawerCount" class="todo-drawer-count"></span></span>
+      <span class="files-drawer-chevron" id="filesDrawerChevron">&#9660;</span>
+    </div>
+    <div class="files-drawer-list" id="filesDrawerList"></div>
+  </div>
+
   <div class="composer">
     <div class="composer-box" id="composerBox">
       <textarea id="taskInput" placeholder="Ask Pulse anything about your code\u2026" rows="2" aria-label="Message"></textarea>
@@ -1538,6 +1606,8 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
   var permBtn = D('permBtn'), permBtnIcon = D('permBtnIcon'), permBtnLabel = D('permBtnLabel');
   var scrollBtn = D('scrollBtn'), selfLearnToggle = D('selfLearnToggle');
   var learningBadge = D('learningBadge');
+  var todoDrawer = D('todoDrawer'), todoDrawerList = D('todoDrawerList'), todoDrawerCount = D('todoDrawerCount');
+  var filesDrawer = D('filesDrawer'), filesDrawerList = D('filesDrawerList'), filesDrawerCount = D('filesDrawerCount');
 
   // State
   var summary = null, models = [], mcpServers = [];
@@ -1555,6 +1625,72 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
   var streamChunkQueue = [];
   var streamFlushTimer = null;
   var streamRenderBuffer = '';
+  var currentTodos = [];
+  var currentFiles = [];
+  var todoDrawerCollapsed = false;
+  var filesDrawerCollapsed = false;
+
+  // --- Drawer render functions ---
+  function renderTodoDrawer(todos) {
+    if (!todoDrawer || !todoDrawerList || !Array.isArray(todos) || !todos.length) {
+      if (todoDrawer) todoDrawer.classList.remove('visible');
+      return;
+    }
+    currentTodos = todos;
+    var doneCount = 0;
+    todoDrawerList.innerHTML = '';
+    for (var i = 0; i < todos.length; i++) {
+      var t = todos[i];
+      var status = String(t.status || 'pending').toLowerCase();
+      var icon = status === 'done' || status === 'completed' ? '\u2705' :
+                 status === 'in-progress' || status === 'in_progress' ? '\uD83D\uDD04' :
+                 status === 'blocked' || status === 'failed' ? '\u274C' : '\u2B1C';
+      if (status === 'done' || status === 'completed') doneCount++;
+      var item = document.createElement('div');
+      item.className = 'todo-drawer-item' + (status === 'done' || status === 'completed' ? ' done' : '') + (status === 'in-progress' || status === 'in_progress' ? ' active' : '');
+      item.innerHTML = '<span class="todo-icon">' + icon + '</span><span class="todo-text">' + esc(t.task || t.title || t.text || '') + '</span>';
+      todoDrawerList.appendChild(item);
+    }
+    todoDrawerCount.textContent = doneCount + '/' + todos.length;
+    todoDrawer.classList.add('visible');
+    todoDrawer.classList.toggle('collapsed', todoDrawerCollapsed);
+  }
+
+  function renderFilesDrawer(files) {
+    if (!filesDrawer || !filesDrawerList || !Array.isArray(files) || !files.length) {
+      if (filesDrawer) filesDrawer.classList.remove('visible');
+      return;
+    }
+    currentFiles = files;
+    filesDrawerList.innerHTML = '';
+    for (var i = 0; i < files.length; i++) {
+      var f = files[i];
+      var fpath = String(f.path || f.file || '');
+      var basename = fpath.split(/[\\/]/).pop() || fpath;
+      var added = parseInt(f.additions || f.linesAdded || 0, 10) || 0;
+      var removed = parseInt(f.deletions || f.linesRemoved || 0, 10) || 0;
+      var item = document.createElement('div');
+      item.className = 'files-drawer-item';
+      item.dataset.filepath = fpath;
+      item.innerHTML = '<span class="file-icon">\uD83D\uDCC4</span>' +
+        '<span class="file-name" title="' + esc(fpath) + '">' + esc(basename) + '</span>' +
+        '<span class="file-stat-added">+' + added + '</span>' +
+        '<span class="file-stat-removed">\u2212' + removed + '</span>';
+      item.addEventListener('click', (function(p) {
+        return function() { vscode.postMessage({ type: 'openFile', payload: p }); };
+      })(fpath));
+      filesDrawerList.appendChild(item);
+    }
+    filesDrawerCount.textContent = files.length + ' file' + (files.length === 1 ? '' : 's');
+    filesDrawer.classList.add('visible');
+    filesDrawer.classList.toggle('collapsed', filesDrawerCollapsed);
+  }
+
+  function resetDrawers() {
+    currentTodos = []; currentFiles = [];
+    if (todoDrawer) { todoDrawer.classList.remove('visible'); todoDrawerList.innerHTML = ''; todoDrawerCount.textContent = ''; }
+    if (filesDrawer) { filesDrawer.classList.remove('visible'); filesDrawerList.innerHTML = ''; filesDrawerCount.textContent = ''; }
+  }
 
   // Helpers
   function esc(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
@@ -1818,6 +1954,10 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
     var label = step.step || 'Processing';
     if (!list) return;
 
+    // Drawer updates — render without adding a step item
+    if (kind === 'todo_update') { renderTodoDrawer(step.todos || []); return; }
+    if (kind === 'files_changed') { renderFilesDrawer(step.files || []); return; }
+
     if (kind === 'reasoning') {
       // Update the live reasoning block — APPEND new chunk to accumulated text
       var active = list.querySelector('.step-reasoning-active');
@@ -1919,6 +2059,16 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
     var panel = D('thinkingPanel'); if (!panel) return;
     stepsCollapsed = !stepsCollapsed;
     panel.classList.toggle('steps-collapsed', stepsCollapsed);
+  });
+
+  // Drawer toggles
+  on(D('todoDrawerToggle'), 'click', function() {
+    todoDrawerCollapsed = !todoDrawerCollapsed;
+    if (todoDrawer) todoDrawer.classList.toggle('collapsed', todoDrawerCollapsed);
+  });
+  on(D('filesDrawerToggle'), 'click', function() {
+    filesDrawerCollapsed = !filesDrawerCollapsed;
+    if (filesDrawer) filesDrawer.classList.toggle('collapsed', filesDrawerCollapsed);
   });
 
   // MCP utils
@@ -2397,7 +2547,7 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
       chatHistory.push({ id: makeMessageId(), role: 'user', text: text, ts: Date.now() });
       renderMessages();
     }
-    showChat(); startThinking(); scrollBottom();
+    showChat(); startThinking(); resetDrawers(); scrollBottom();
     vscode.postMessage({ type: 'runTask', payload: { objective: text, action: action, messageId: messageId } });
     // Clear image previews after sending
     if (attachmentRow) {
@@ -2682,15 +2832,31 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
       streamBuffer = '';
       finishThinking(isCancelled);
       if (!isCancelled) {
+        // Update drawers with final state
+        if (payload && payload.todos && payload.todos.length) renderTodoDrawer(payload.todos);
+        if (payload && payload.fileDiffs && payload.fileDiffs.length) renderFilesDrawer(payload.fileDiffs);
+
         var text = (payload && payload.responseText) || 'Task completed.';
         // Clean response: strip raw JSON wrappers that models sometimes emit
-        if (text && text.charAt(0) === '{') {
-          try { var parsed = JSON.parse(text); if (parsed && typeof parsed.response === 'string' && parsed.response.length > 0) { text = parsed.response; } } catch(e) {}
+        if (text && (text.charAt(0) === '{' || text.charAt(0) === '[')) {
+          try {
+            var parsed = JSON.parse(text);
+            if (parsed && typeof parsed.response === 'string' && parsed.response.length > 0) { text = parsed.response; }
+            else if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+              // If it's a raw JSON object with no .response, try to extract meaningful text
+              if (parsed.summary) text = String(parsed.summary);
+              else if (parsed.text) text = String(parsed.text);
+            }
+          } catch(e) {}
         }
+        // Strip markdown sections that duplicate drawer data
+        text = text.replace(/##\\s*(TODOs?|Tasks?|What I found|What changed|Verification|Changes made|Files? changed)[\\s\\S]*?(?=\\n##|$)/gi, '');
         // Strip <break> tags
         text = text.replace(/<break\\s*\\/?>/gi, '\\n').replace(/<\\/break>/gi, '\\n');
         // Remove leading/trailing whitespace artifacts
         text = text.trim();
+        // If text became empty after cleanup, use fallback
+        if (!text) text = 'Task completed.';
         if (payload && payload.autoApplied && payload.proposedEdits > 0) {
           text += '\\n\\n\\u2705 **' + payload.proposedEdits + ' edit(s) auto-applied** (bypass mode active)';
         }

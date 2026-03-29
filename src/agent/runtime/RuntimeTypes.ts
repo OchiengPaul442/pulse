@@ -31,7 +31,9 @@ export interface AgentProgressStep {
     | "file_patch"
     | "file_patched"
     | "terminal"
-    | "tool";
+    | "tool"
+    | "todo_update"
+    | "files_changed";
   /** For file_patch / file_patched: the file's basename */
   file?: string;
   /** For file_patch: total line count of new content */
@@ -40,6 +42,10 @@ export interface AgentProgressStep {
   linesAdded?: number;
   /** For file_patched: lines removed (0 when not computed) */
   linesRemoved?: number;
+  /** For todo_update: current state of all todos */
+  todos?: TaskTodo[];
+  /** For files_changed: list of changed files with stats */
+  files?: Array<{ path: string; additions: number; deletions: number }>;
 }
 
 /** Lightweight token-usage snapshot pushed to the webview in real time. */

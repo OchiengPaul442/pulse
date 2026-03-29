@@ -316,6 +316,26 @@ export class AgentRuntime {
     });
   }
 
+  private emitTodoUpdate(todos: TaskTodo[]): void {
+    this.progressCallback?.({
+      icon: "\u2611",
+      step: "Updating tasks",
+      kind: "todo_update",
+      todos,
+    });
+  }
+
+  private emitFilesChanged(
+    files: Array<{ path: string; additions: number; deletions: number }>,
+  ): void {
+    this.progressCallback?.({
+      icon: "\uD83D\uDCC4",
+      step: "Files changed",
+      kind: "files_changed",
+      files,
+    });
+  }
+
   private emitTokenUpdate(): void {
     if (!this.tokenCallback) return;
     const budget = this.currentConfig.maxContextTokens;
@@ -2517,6 +2537,23 @@ export class AgentRuntime {
         "5. VALIDATE THOROUGHLY: After fixing, run verification to confirm the fix works and hasn't broken anything else.",
         "6. NEVER say 'Task completed' unless the problem is actually solved and verified.",
         "",
+        "## TODO MANAGEMENT (CRITICAL)",
+        "- Create your todo list BEFORE starting work. Each todo must be specific and actionable (3-7 words).",
+        "- Update todo statuses EVERY turn: mark the current step 'in-progress', mark completed steps 'done'.",
+        "- Only ONE todo should be 'in-progress' at a time. Complete it before moving to the next.",
+        "- If a step fails, mark it 'blocked' and add a note, then continue with an alternative.",
+        "- NEVER mark all todos 'done' in your first response — work through them one at a time across turns.",
+        "- Valid statuses: 'pending' | 'in-progress' | 'done' | 'blocked'",
+        "",
+        "## TERMINAL VERIFICATION (CRITICAL)",
+        "- After EVERY run_terminal call, you MUST inspect the output in the tool results before proceeding.",
+        "- If the command exited with a non-zero code, DO NOT proceed — diagnose the error first.",
+        "- If the output contains errors, warnings, or unexpected results, address them before moving on.",
+        "- Use get_terminal_output if the terminal output was truncated or you need to review it again.",
+        "- NEVER assume a command succeeded without checking its output.",
+        "- After installing packages, verify the install succeeded before using them.",
+        "- After running build/test commands, check for failures and fix them before marking the todo done.",
+        "",
         "## CRITICAL RULES",
         "1. ALWAYS return valid JSON. No markdown fences, no text before/after the JSON.",
         "2. You MUST use tools to gather evidence. Do NOT guess file contents — read them first.",
@@ -2528,7 +2565,7 @@ export class AgentRuntime {
         "8. Include a short TODO list (3-5 items) before making changes.",
         "9. Use batch_edit to apply targeted changes to multiple files at once — this is more efficient than full file rewrites.",
         "10. ALWAYS read a file before editing it. Never guess file contents.",
-        "11. When the task changes files or uses tools, end with a short summary of what you found, what changed, why, and how you verified it.",
+        "11. The 'response' field should contain ONLY your explanation — do NOT include JSON, todos, tool summaries, or metadata in the response field.",
         "12. After every run_terminal call, inspect the output before moving on. If the command fails or times out, use get_terminal_output when helpful, identify the root cause, and either fix it or propose the next best options.",
         "13. If you find an issue, say what failed and include 1-3 realistic next-step options the user can choose from.",
         "",
@@ -2699,6 +2736,11 @@ export class AgentRuntime {
         parsed.shortcuts = optionalShortcuts;
       }
 
+      // Emit progressive todo updates so the UI shows them evolving
+      if (parsed.todos.length > 0) {
+        this.emitTodoUpdate(parsed.todos);
+      }
+
       requestedVerification ||= parsed.toolCalls.some(
         (call) => call.tool === "run_verification",
       );
@@ -2800,6 +2842,15 @@ export class AgentRuntime {
             : (edit.content ?? "");
         fileDiffs.push(computeFileDiff(edit.filePath, oldContent, newContent));
       }
+
+      // Emit files-changed summary so the UI can show the drawer
+      this.emitFilesChanged(
+        fileDiffs.map((d) => ({
+          path: d.filePath ?? d.fileName ?? "",
+          additions: d.additions ?? 0,
+          deletions: d.deletions ?? 0,
+        })),
+      );
     }
 
     const proposal =
@@ -2984,57 +3035,35 @@ export class AgentRuntime {
     raw: string,
     generic: boolean,
   ): string {
+    // Keep the response text clean — TODOs, file changes, verification
+    // are shown in dedicated UI drawers, not dumped into the chat bubble.
     const sections: string[] = [];
     const intro = generic ? "Task completed." : raw;
-    sections.push(`## Summary\n${intro}`);
+    sections.push(intro);
 
     const incompleteEditTask = this.summarizeIncompleteEditTask(params);
     if (incompleteEditTask) {
-      sections.push(`## Issue\n${incompleteEditTask.issue}`);
-      sections.push(
-        `## Next steps\n${incompleteEditTask.nextSteps
-          .map((step) => `- ${step}`)
-          .join("\n")}`,
-      );
+      sections.push(`**Issue:** ${incompleteEditTask.issue}`);
+      if (incompleteEditTask.nextSteps.length > 0) {
+        sections.push(
+          `**Next steps:**\n${incompleteEditTask.nextSteps
+            .map((step) => `- ${step}`)
+            .join("\n")}`,
+        );
+      }
     }
 
     const issueSummary = this.summarizeIssueCompact(params.toolTrace);
     if (issueSummary) {
-      sections.push(`## Issue\n${issueSummary}`);
+      sections.push(`**Issue:** ${issueSummary}`);
       const nextSteps = this.summarizeIssueNextSteps(params.toolTrace);
       if (nextSteps) {
-        sections.push(`## Next steps\n${nextSteps}`);
+        sections.push(`**Next steps:**\n${nextSteps}`);
       }
     }
 
-    const todoSummary = this.summarizeTodosCompact(params.todos);
-    if (todoSummary) {
-      sections.push(`## TODOs\n${todoSummary}`);
-    }
-
-    const findings = this.summarizeEvidenceCompact(params.toolTrace);
-    if (findings) {
-      sections.push(`## What I found\n${findings}`);
-    }
-
-    const changes = this.summarizeChangesCompact(
-      params.proposal,
-      params.fileDiffs,
-      params.autoApplied,
-    );
-    if (changes) {
-      sections.push(`## What changed\n${changes}`);
-    }
-
-    const verification = this.summarizeVerificationCompact(
-      params.toolTrace,
-      params.qualityScore,
-      params.qualityTarget,
-      params.meetsQualityTarget,
-    );
-    if (verification) {
-      sections.push(`## Verification\n${verification}`);
-    }
+    // TODOs, file changes, and verification are rendered in dedicated
+    // UI drawers — do NOT append them to the chat bubble text.
 
     return sections.join("\n");
   }
