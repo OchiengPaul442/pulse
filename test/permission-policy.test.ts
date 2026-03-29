@@ -116,6 +116,10 @@ describe("classifyAction", () => {
     expect(classifyAction("npm install lodash")).toBe("package_install");
   });
 
+  it("classifies pnpm install as package_install", () => {
+    expect(classifyAction("pnpm install")).toBe("package_install");
+  });
+
   it("classifies rm -rf as destructive", () => {
     expect(classifyAction("rm -rf /tmp")).toBe("destructive");
   });

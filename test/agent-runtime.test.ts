@@ -455,7 +455,7 @@ describe("AgentRuntime", () => {
       openaiBaseUrl: "",
       openaiApiKey: "",
       openaiModels: [],
-      performanceProfile: "auto",
+      performanceProfile: "balanced",
       qualityTargetScore: 0.9,
     };
 

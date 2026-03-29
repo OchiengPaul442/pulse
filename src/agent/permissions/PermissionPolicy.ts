@@ -85,7 +85,7 @@ export function classifyAction(description: string): ActionCategory {
     return "git_read";
   }
   if (
-    /\b(npm\s+install|yarn\s+add|pip\s+install|pnpm\s+add|cargo\s+add|go\s+get)\b/.test(
+    /\b(npm\s+(install|ci)|yarn\s+(add|install)|pip\s+install|pnpm\s+(add|install)|cargo\s+add|go\s+get)\b/.test(
       lower,
     )
   ) {

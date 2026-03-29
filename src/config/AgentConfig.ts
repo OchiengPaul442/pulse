@@ -151,16 +151,16 @@ export function resolveProfileDefaults(config: AgentConfig): ProfileDefaults {
     return {
       numCtx: 4096,
       plannerKeepAlive: 0,
-      editorKeepAlive: 300,
-      iterationTimeoutMs: 180_000,
-      coldStartBonusMs: 120_000,
-      maxAgentIterations: 12,
+      editorKeepAlive: 180,
+      iterationTimeoutMs: 120_000,
+      coldStartBonusMs: 60_000,
+      maxAgentIterations: 10,
       qualityTarget:
         config.qualityTargetScore < 0.9 ? config.qualityTargetScore : 0.75,
-      useSingleModel: config.plannerModel === config.editorModel,
-      firstIterationMaxTokens: 2048,
-      followUpMaxTokens: 1536,
-      noActionThreshold: 3,
+      useSingleModel: true,
+      firstIterationMaxTokens: 1536,
+      followUpMaxTokens: 1024,
+      noActionThreshold: 2,
     };
   }
 
@@ -201,16 +201,16 @@ export function resolveProfileDefaults(config: AgentConfig): ProfileDefaults {
     return {
       numCtx: 4096,
       plannerKeepAlive: 0,
-      editorKeepAlive: 300,
-      iterationTimeoutMs: 180_000,
-      coldStartBonusMs: 120_000,
-      maxAgentIterations: 12,
+      editorKeepAlive: 180,
+      iterationTimeoutMs: 120_000,
+      coldStartBonusMs: 60_000,
+      maxAgentIterations: 10,
       qualityTarget:
         config.qualityTargetScore < 0.9 ? config.qualityTargetScore : 0.8,
-      useSingleModel: config.plannerModel === config.editorModel,
-      firstIterationMaxTokens: 2048,
-      followUpMaxTokens: 1536,
-      noActionThreshold: 3,
+      useSingleModel: true,
+      firstIterationMaxTokens: 1536,
+      followUpMaxTokens: 1024,
+      noActionThreshold: 2,
     };
   }
 

@@ -197,6 +197,9 @@ export class AgentRuntime {
   /** Last terminal execution result for get_terminal_output tool. */
   private lastTerminalResult: TerminalExecResult | null = null;
 
+  /** Throttle marker for reasoning pulse updates in the progress UI. */
+  private lastReasoningPulseAt = 0;
+
   public constructor(
     config: AgentConfig,
     private readonly storage: StorageState,
@@ -311,12 +314,63 @@ export class AgentRuntime {
   }
 
   private emitReasoningChunk(chunk: string): void {
+    const cleaned = this.sanitizeReasoningChunk(chunk);
+    if (!cleaned) {
+      return;
+    }
+
     this.progressCallback?.({
       icon: "\u25B8",
       step: "Reasoning",
-      detail: chunk.slice(0, 240),
+      detail: cleaned.slice(0, 240),
       kind: "reasoning",
     });
+  }
+
+  private emitReasoningPulse(
+    message = "Thinking through the next action...",
+  ): void {
+    const now = Date.now();
+    if (now - this.lastReasoningPulseAt < 1200) {
+      return;
+    }
+    this.lastReasoningPulseAt = now;
+
+    this.progressCallback?.({
+      icon: "\u25B8",
+      step: "Reasoning",
+      detail: message,
+      kind: "reasoning",
+    });
+  }
+
+  private sanitizeReasoningChunk(chunk: string): string {
+    const trimmed = chunk.trim();
+    if (!trimmed) {
+      return "";
+    }
+
+    // Hide raw schema-token streaming fragments from structured JSON mode.
+    if (/^[\s{}\[\]",:]+$/.test(trimmed)) {
+      return "";
+    }
+
+    if (
+      /^"?(response|todos|toolCalls|tool_calls|edits|shortcuts|activeTodoId|todoId)"?\s*:?$/i.test(
+        trimmed,
+      )
+    ) {
+      return "";
+    }
+
+    if (
+      (trimmed.startsWith("{") || trimmed.startsWith("[")) &&
+      /"(response|todos|toolCalls|tool_calls|edits|shortcuts)"/i.test(trimmed)
+    ) {
+      return "";
+    }
+
+    return trimmed;
   }
 
   private emitTodoUpdate(todos: TaskTodo[]): void {
@@ -427,8 +481,13 @@ export class AgentRuntime {
     this.logger.debug(`Storage path: ${this.storage.storageDir}`);
     this.logger.info(`Ollama health: ${this.health.message}`);
 
-    if (this.currentConfig.selfLearnEnabled) {
+    const profileDefaults = resolveProfileDefaults(this.currentConfig);
+    if (this.currentConfig.selfLearnEnabled && profileDefaults.numCtx > 4096) {
       this.startSelfLearnLoop();
+    } else if (this.currentConfig.selfLearnEnabled) {
+      this.logger.info(
+        "Self-learn loop skipped on low-VRAM profile to improve responsiveness",
+      );
     }
   }
 
@@ -673,7 +732,15 @@ export class AgentRuntime {
     await this.updateSetting("behavior.selfLearn", enabled);
     this.currentConfig.selfLearnEnabled = enabled;
     if (enabled) {
-      this.startSelfLearnLoop();
+      const profileDefaults = resolveProfileDefaults(this.currentConfig);
+      if (profileDefaults.numCtx > 4096) {
+        this.startSelfLearnLoop();
+      } else {
+        this.stopSelfLearnLoop();
+        this.logger.info(
+          "Self-learn remains disabled on low-VRAM profile to keep agent responsive",
+        );
+      }
     } else {
       this.stopSelfLearnLoop();
     }
@@ -711,6 +778,7 @@ export class AgentRuntime {
         if (controller.signal.aborted) {
           return this.makeCancelledResult(normalizedRequest.objective);
         }
+        this.lastReasoningPulseAt = 0;
         return this.executeTask(normalizedRequest, controller.signal);
       })
       .finally(() => {
@@ -1334,6 +1402,7 @@ export class AgentRuntime {
       timeoutMs?: number;
       visible?: boolean;
       purpose?: "tool" | "verification" | "manual";
+      objective?: string;
     },
   ): Promise<TerminalExecResult | null> {
     // Auto-fix known bad commands before execution
@@ -1345,6 +1414,38 @@ export class AgentRuntime {
       this.logger.info(`Command sanitized: "${command}" → "${sanitized}"`);
     }
 
+    // Guard against wrong-ecosystem commands (e.g. npm in Python projects)
+    const shouldGateByStack =
+      options?.purpose === "tool" || options?.purpose === "verification";
+    const projectRoot = options?.cwd ?? this.workspaceRoot?.fsPath;
+    if (shouldGateByStack && projectRoot) {
+      const projectType = await this.detectProjectType(projectRoot);
+      const commandEcosystem = this.detectCommandEcosystem(sanitized);
+      const crossStackAllowed = this.objectiveAllowsCrossStack(
+        options?.objective ?? "",
+        commandEcosystem,
+      );
+
+      if (
+        projectType !== "unknown" &&
+        commandEcosystem !== "unknown" &&
+        !this.isCommandCompatibleWithProject(projectType, commandEcosystem) &&
+        !crossStackAllowed
+      ) {
+        const message =
+          `Blocked ${commandEcosystem} command for detected ${projectType} project. ` +
+          "Use a project-compatible command or explicitly request cross-stack scaffolding.";
+        this.logger.info(message);
+        return {
+          exitCode: 1,
+          output: message,
+          command: sanitized,
+          durationMs: 0,
+          timedOut: false,
+        };
+      }
+    }
+
     const action = classifyAction(sanitized);
     const decision = this.permissionPolicy.evaluate({
       action,
@@ -1353,10 +1454,10 @@ export class AgentRuntime {
     const safeCommand = isSafeTerminalCommand(sanitized);
     // Safe commands always run in non-strict mode.
     // Unsafe commands require allowTerminalExecution or autoRunVerification.
-    // Package installs require explicit approval even if safe otherwise.
     const mode = this.permissionPolicy.getMode();
     const isInstall = action === "package_install";
-    const canAutoRunSafeCommand =
+
+    const canAutoRunNonInstall =
       mode !== "strict" &&
       !isInstall &&
       (safeCommand ||
@@ -1364,6 +1465,15 @@ export class AgentRuntime {
           this.currentConfig.autoRunVerification) ||
         (options?.purpose === "tool" &&
           this.currentConfig.allowTerminalExecution));
+
+    const canAutoRunInstall =
+      mode !== "strict" &&
+      isInstall &&
+      safeCommand &&
+      options?.purpose !== "manual" &&
+      this.currentConfig.allowTerminalExecution;
+
+    const canAutoRunSafeCommand = canAutoRunNonInstall || canAutoRunInstall;
 
     if (!decision.allowed && !canAutoRunSafeCommand) {
       this.logger.info(`Terminal exec blocked by policy: ${sanitized}`);
@@ -2521,6 +2631,9 @@ export class AgentRuntime {
       ]);
 
     const profileDefaults = resolveProfileDefaults(this.currentConfig);
+    const planningModel = profileDefaults.useSingleModel
+      ? editorModel
+      : plannerModel;
 
     // Budget-aware context trimming for low-VRAM profiles
     const maxSnippets =
@@ -2536,8 +2649,15 @@ export class AgentRuntime {
       this.skillRegistry.buildOptionalShortcuts(selectedSkills);
     const shortcutSummary = formatShortcutHints(optionalShortcuts);
     const primarySkillName = selectedSkills.primary?.name ?? "None";
-    this.emitProgress("Building plan", plannerModel, "\u25A0");
-    const plan = await this.planner.createPlan(objective, plannerModel, {
+    if (planningModel !== plannerModel) {
+      this.emitProgress(
+        "Low-VRAM speed",
+        `Using ${planningModel} for planning and editing`,
+        "⚡",
+      );
+    }
+    this.emitProgress("Building plan", planningModel, "\u25A0");
+    const plan = await this.planner.createPlan(objective, planningModel, {
       keepAlive: profileDefaults.plannerKeepAlive,
       numCtx: profileDefaults.numCtx,
     });
@@ -2546,11 +2666,11 @@ export class AgentRuntime {
     // editor loop to avoid VRAM contention between two loaded models.
     if (
       profileDefaults.plannerKeepAlive === 0 &&
-      plannerModel !== editorModel &&
+      planningModel !== editorModel &&
       this.provider.providerType === "ollama"
     ) {
-      this.emitProgress("Freeing VRAM", `Unloading ${plannerModel}`, "\u21BB");
-      await (this.provider as OllamaProvider).unloadModel(plannerModel);
+      this.emitProgress("Freeing VRAM", `Unloading ${planningModel}`, "\u21BB");
+      await (this.provider as OllamaProvider).unloadModel(planningModel);
     }
 
     const buildPrompt = (
@@ -2742,7 +2862,9 @@ export class AgentRuntime {
           numCtx: profileDefaults.numCtx,
           signal: iterationAbort.signal,
           onChunk: (chunk) => {
-            this.emitReasoningChunk(chunk);
+            this.emitReasoningPulse(
+              "Reasoning through tools and code changes...",
+            );
           },
           messages: isFollowUp
             ? [
@@ -2827,7 +2949,16 @@ export class AgentRuntime {
 
       parsed = parseTaskResponse(response.text);
       if (parsed.todos.length === 0) {
-        parsed.todos = plan.todos;
+        const hasNoActions =
+          parsed.toolCalls.length === 0 && parsed.edits.length === 0;
+        if (hasNoActions && parsed.response.trim().length > 0) {
+          parsed.todos = plan.todos.map((todo) => ({
+            ...todo,
+            status: "done" as const,
+          }));
+        } else {
+          parsed.todos = plan.todos;
+        }
       }
       if (parsed.shortcuts.length === 0) {
         parsed.shortcuts = optionalShortcuts;
@@ -3213,6 +3344,11 @@ export class AgentRuntime {
       raw,
       generic,
     );
+
+    const profileDefaults = resolveProfileDefaults(this.currentConfig);
+    if (profileDefaults.numCtx <= 4096) {
+      return this.normalizeTaskSummaryPresentation(fallback);
+    }
 
     try {
       const summaryModel = await this.resolveModelOrFallback(
@@ -4058,6 +4194,7 @@ export class AgentRuntime {
         cwd: workspaceRoot ?? undefined,
         timeoutMs: terminalTimeout,
         purpose: "tool",
+        objective,
       });
       // Store for get_terminal_output tool
       if (result) {
@@ -4534,6 +4671,7 @@ export class AgentRuntime {
         cwd: this.workspaceRoot?.fsPath,
         timeoutMs: 120_000,
         purpose: "verification",
+        objective,
       });
 
       if (!result) {
@@ -4657,6 +4795,71 @@ export class AgentRuntime {
     if (checks[4]) return "rust";
     if (checks[5]) return "go";
     return "unknown";
+  }
+
+  private detectCommandEcosystem(
+    command: string,
+  ): "node" | "python" | "rust" | "go" | "dotnet" | "unknown" {
+    const lower = command.trim().toLowerCase();
+
+    if (/^(npm|pnpm|yarn|npx)\b/.test(lower)) {
+      return "node";
+    }
+    if (/^(python|python3|pip|pip3|pytest|mypy|ruff|black)\b/.test(lower)) {
+      return "python";
+    }
+    if (/^cargo\b/.test(lower)) {
+      return "rust";
+    }
+    if (/^go\b/.test(lower)) {
+      return "go";
+    }
+    if (/^dotnet\b/.test(lower)) {
+      return "dotnet";
+    }
+
+    return "unknown";
+  }
+
+  private isCommandCompatibleWithProject(
+    projectType: "node" | "python" | "rust" | "go" | "unknown",
+    commandEcosystem: "node" | "python" | "rust" | "go" | "dotnet" | "unknown",
+  ): boolean {
+    if (projectType === "unknown" || commandEcosystem === "unknown") {
+      return true;
+    }
+
+    return projectType === commandEcosystem;
+  }
+
+  private objectiveAllowsCrossStack(
+    objective: string,
+    ecosystem: "node" | "python" | "rust" | "go" | "dotnet" | "unknown",
+  ): boolean {
+    const lower = objective.toLowerCase();
+    if (!lower.trim() || ecosystem === "unknown") {
+      return false;
+    }
+
+    if (ecosystem === "node") {
+      return /\b(node|npm|pnpm|yarn|npx|next\.?js|react|vue|angular|vite|typescript|javascript)\b/.test(
+        lower,
+      );
+    }
+    if (ecosystem === "python") {
+      return /\b(python|pip|django|flask|fastapi|pytest)\b/.test(lower);
+    }
+    if (ecosystem === "rust") {
+      return /\b(rust|cargo)\b/.test(lower);
+    }
+    if (ecosystem === "go") {
+      return /\b(golang|go\s+module|go\s+project|go\s+app|go)\b/.test(lower);
+    }
+    if (ecosystem === "dotnet") {
+      return /\b(dotnet|c#|asp\.?net|nuget)\b/.test(lower);
+    }
+
+    return false;
   }
 
   private async fileExists(filePath: string): Promise<boolean> {
