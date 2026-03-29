@@ -1308,39 +1308,48 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
     #scrollBtn:hover { color: var(--accent); border-color: var(--accent); transform: translateY(-1px); }
 
     /* ── TODO Drawer (above composer) ─── */
-    #todoDrawer { display: none; flex-direction: column; border-top: 1px solid var(--border); flex-shrink: 0; max-height: 200px; overflow: hidden; }
+    #todoDrawer { display: none; flex-direction: column; border-top: 1px solid var(--border); flex-shrink: 0; max-height: 220px; overflow: hidden; background: var(--vscode-sideBar-background, var(--bg)); }
     #todoDrawer.visible { display: flex; }
-    .todo-drawer-header { display: flex; align-items: center; justify-content: space-between; padding: 4px 10px; cursor: pointer; user-select: none; font-size: 11px; font-weight: 600; color: var(--fg2); transition: background var(--spd); }
-    .todo-drawer-header:hover { background: rgba(128,128,128,.06); }
-    .todo-drawer-chevron { font-size: 9px; color: var(--fg3); transition: transform var(--spd); }
+    .todo-drawer-header { display: flex; align-items: center; justify-content: space-between; padding: 6px 12px; cursor: pointer; user-select: none; font-size: 11px; font-weight: 600; color: var(--fg2); transition: background var(--spd); }
+    .todo-drawer-header:hover { background: rgba(128,128,128,.08); }
+    .todo-drawer-header-left { display: flex; align-items: center; gap: 6px; }
+    .todo-drawer-icon { font-size: 12px; opacity: .7; }
+    .todo-drawer-chevron { font-size: 8px; color: var(--fg3); transition: transform 0.15s ease; }
     #todoDrawer.collapsed .todo-drawer-chevron { transform: rotate(-90deg); }
-    .todo-drawer-count { font-size: 9px; color: var(--fg3); font-variant-numeric: tabular-nums; }
-    .todo-drawer-list { display: flex; flex-direction: column; gap: 0; padding: 0 10px 4px; max-height: 160px; overflow-y: auto; }
+    .todo-drawer-count { font-size: 9px; color: var(--fg3); font-weight: 500; font-variant-numeric: tabular-nums; background: rgba(128,128,128,.1); padding: 1px 6px; border-radius: 8px; }
+    .todo-drawer-list { display: flex; flex-direction: column; gap: 1px; padding: 2px 8px 6px; max-height: 170px; overflow-y: auto; }
     #todoDrawer.collapsed .todo-drawer-list { display: none; }
-    .todo-item { display: flex; align-items: center; gap: 6px; padding: 2px 0; font-size: 11px; color: var(--fg); min-height: 20px; }
-    .todo-icon { flex-shrink: 0; font-size: 10px; width: 14px; text-align: center; }
+    .todo-item { display: flex; align-items: center; gap: 8px; padding: 4px 6px; font-size: 11.5px; color: var(--fg); min-height: 22px; border-radius: 4px; transition: background var(--spd); }
+    .todo-item:hover { background: rgba(128,128,128,.06); }
+    .todo-item.active { background: rgba(var(--accent-rgb, 0,120,212), .08); }
+    .todo-icon { flex-shrink: 0; width: 16px; height: 16px; display: flex; align-items: center; justify-content: center; border-radius: 3px; font-size: 11px; }
     .todo-icon.pending { color: var(--fg3); }
-    .todo-icon.in-progress { color: var(--orange); }
+    .todo-icon.in-progress { color: var(--accent); }
     .todo-icon.done { color: var(--green); }
     .todo-icon.blocked { color: var(--red); }
-    .todo-title { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .todo-title { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; line-height: 1.3; }
     .todo-title.done { text-decoration: line-through; color: var(--fg3); }
     .todo-title.blocked { color: var(--red); opacity: .7; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .todo-icon.in-progress::after { content: ''; display: inline-block; width: 10px; height: 10px; border: 1.5px solid var(--accent); border-top-color: transparent; border-radius: 50%; animation: spin .8s linear infinite; }
 
     /* ── Files Changed Drawer (above composer) ─── */
-    #filesDrawer { display: none; flex-direction: column; border-top: 1px solid var(--border); flex-shrink: 0; max-height: 180px; overflow: hidden; }
+    #filesDrawer { display: none; flex-direction: column; border-top: 1px solid var(--border); flex-shrink: 0; max-height: 180px; overflow: hidden; background: var(--vscode-sideBar-background, var(--bg)); }
     #filesDrawer.visible { display: flex; }
-    .files-drawer-header { display: flex; align-items: center; justify-content: space-between; padding: 4px 10px; cursor: pointer; user-select: none; font-size: 11px; font-weight: 600; color: var(--fg2); transition: background var(--spd); }
-    .files-drawer-header:hover { background: rgba(128,128,128,.06); }
-    .files-drawer-chevron { font-size: 9px; color: var(--fg3); transition: transform var(--spd); }
+    .files-drawer-header { display: flex; align-items: center; justify-content: space-between; padding: 6px 12px; cursor: pointer; user-select: none; font-size: 11px; font-weight: 600; color: var(--fg2); transition: background var(--spd); }
+    .files-drawer-header:hover { background: rgba(128,128,128,.08); }
+    .files-drawer-header-left { display: flex; align-items: center; gap: 6px; }
+    .files-drawer-icon { font-size: 12px; opacity: .7; }
+    .files-drawer-chevron { font-size: 8px; color: var(--fg3); transition: transform 0.15s ease; }
     #filesDrawer.collapsed .files-drawer-chevron { transform: rotate(-90deg); }
-    .files-drawer-list { display: flex; flex-direction: column; gap: 0; padding: 0 10px 4px; max-height: 140px; overflow-y: auto; }
+    .files-drawer-count { font-size: 9px; color: var(--fg3); font-weight: 500; font-variant-numeric: tabular-nums; background: rgba(128,128,128,.1); padding: 1px 6px; border-radius: 8px; }
+    .files-drawer-list { display: flex; flex-direction: column; gap: 1px; padding: 2px 8px 6px; max-height: 140px; overflow-y: auto; }
     #filesDrawer.collapsed .files-drawer-list { display: none; }
-    .file-item { display: flex; align-items: center; gap: 6px; padding: 3px 4px; border-radius: 4px; font-size: 11px; color: var(--fg); cursor: pointer; transition: background var(--spd); }
-    .file-item:hover { background: rgba(128,128,128,.08); }
-    .file-item-icon { flex-shrink: 0; font-size: 10px; color: var(--accent); }
-    .file-item-name { flex: 1; font-family: var(--vscode-editor-font-family, monospace); font-size: 10px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    .file-item-stats { display: flex; gap: 4px; flex-shrink: 0; }
+    .file-item { display: flex; align-items: center; gap: 8px; padding: 4px 6px; border-radius: 4px; font-size: 11px; color: var(--fg); cursor: pointer; transition: background var(--spd); }
+    .file-item:hover { background: rgba(128,128,128,.1); }
+    .file-item-icon { flex-shrink: 0; font-size: 12px; color: var(--accent); display: flex; align-items: center; }
+    .file-item-name { flex: 1; font-family: var(--vscode-editor-font-family, monospace); font-size: 11px; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .file-item-stats { display: flex; gap: 6px; flex-shrink: 0; font-variant-numeric: tabular-nums; }
     .file-stat-add { color: var(--green); font-size: 10px; font-weight: 700; }
     .file-stat-del { color: var(--red); font-size: 10px; font-weight: 700; }
 
@@ -1501,16 +1510,16 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
 
   <div id="todoDrawer">
     <div class="todo-drawer-header" id="todoDrawerToggle">
-      <span>&#9745; Tasks <span id="todoDrawerCount" class="todo-drawer-count"></span></span>
-      <span class="todo-drawer-chevron" id="todoDrawerChevron">&#9660;</span>
+      <span class="todo-drawer-header-left"><span class="todo-drawer-icon">&#9745;</span> Tasks</span>
+      <span style="display:flex;align-items:center;gap:6px"><span id="todoDrawerCount" class="todo-drawer-count"></span><span class="todo-drawer-chevron" id="todoDrawerChevron">&#9660;</span></span>
     </div>
     <div class="todo-drawer-list" id="todoDrawerList"></div>
   </div>
 
   <div id="filesDrawer">
     <div class="files-drawer-header" id="filesDrawerToggle">
-      <span>&#128196; Files changed <span id="filesDrawerCount" class="todo-drawer-count"></span></span>
-      <span class="files-drawer-chevron" id="filesDrawerChevron">&#9660;</span>
+      <span class="files-drawer-header-left"><span class="files-drawer-icon">&#128196;</span> Files changed</span>
+      <span style="display:flex;align-items:center;gap:6px"><span id="filesDrawerCount" class="files-drawer-count"></span><span class="files-drawer-chevron" id="filesDrawerChevron">&#9660;</span></span>
     </div>
     <div class="files-drawer-list" id="filesDrawerList"></div>
   </div>
@@ -1642,13 +1651,24 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
     for (var i = 0; i < todos.length; i++) {
       var t = todos[i];
       var status = String(t.status || 'pending').toLowerCase();
-      var icon = status === 'done' || status === 'completed' ? '\u2705' :
-                 status === 'in-progress' || status === 'in_progress' ? '\uD83D\uDD04' :
-                 status === 'blocked' || status === 'failed' ? '\u274C' : '\u2B1C';
-      if (status === 'done' || status === 'completed') doneCount++;
+      var isDone = status === 'done' || status === 'completed';
+      var isActive = status === 'in-progress' || status === 'in_progress';
+      var isBlocked = status === 'blocked' || status === 'failed';
+      if (isDone) doneCount++;
+      var statusClass = isDone ? 'done' : isActive ? 'in-progress' : isBlocked ? 'blocked' : 'pending';
       var item = document.createElement('div');
-      item.className = 'todo-drawer-item' + (status === 'done' || status === 'completed' ? ' done' : '') + (status === 'in-progress' || status === 'in_progress' ? ' active' : '');
-      item.innerHTML = '<span class="todo-icon">' + icon + '</span><span class="todo-text">' + esc(t.task || t.title || t.text || '') + '</span>';
+      item.className = 'todo-item' + (isActive ? ' active' : '');
+      var iconEl = document.createElement('span');
+      iconEl.className = 'todo-icon ' + statusClass;
+      if (isDone) iconEl.textContent = '\u2713';
+      else if (isBlocked) iconEl.textContent = '\u2717';
+      else if (!isActive) iconEl.textContent = '\u25CB';
+      // in-progress uses CSS spinner via ::after
+      var titleEl = document.createElement('span');
+      titleEl.className = 'todo-title' + (isDone ? ' done' : isBlocked ? ' blocked' : '');
+      titleEl.textContent = t.task || t.title || t.text || '';
+      item.appendChild(iconEl);
+      item.appendChild(titleEl);
       todoDrawerList.appendChild(item);
     }
     todoDrawerCount.textContent = doneCount + '/' + todos.length;
@@ -1665,17 +1685,20 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
     filesDrawerList.innerHTML = '';
     for (var i = 0; i < files.length; i++) {
       var f = files[i];
-      var fpath = String(f.path || f.file || '');
+      var fpath = String(f.path || f.file || f.filePath || f.fileName || '');
       var basename = fpath.split(/[\\/]/).pop() || fpath;
       var added = parseInt(f.additions || f.linesAdded || 0, 10) || 0;
       var removed = parseInt(f.deletions || f.linesRemoved || 0, 10) || 0;
       var item = document.createElement('div');
-      item.className = 'files-drawer-item';
+      item.className = 'file-item';
       item.dataset.filepath = fpath;
-      item.innerHTML = '<span class="file-icon">\uD83D\uDCC4</span>' +
-        '<span class="file-name" title="' + esc(fpath) + '">' + esc(basename) + '</span>' +
-        '<span class="file-stat-added">+' + added + '</span>' +
-        '<span class="file-stat-removed">\u2212' + removed + '</span>';
+      var iconSpan = '<span class="file-item-icon">\uD83D\uDCCB</span>';
+      var nameSpan = '<span class="file-item-name" title="' + esc(fpath) + '">' + esc(basename) + '</span>';
+      var statsSpan = '<span class="file-item-stats">' +
+        (added > 0 ? '<span class="file-stat-add">+' + added + '</span>' : '') +
+        (removed > 0 ? '<span class="file-stat-del">\u2212' + removed + '</span>' : '') +
+        '</span>';
+      item.innerHTML = iconSpan + nameSpan + statsSpan;
       item.addEventListener('click', (function(p) {
         return function() { vscode.postMessage({ type: 'openFile', payload: p }); };
       })(fpath));
@@ -2838,16 +2861,29 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
 
         var text = (payload && payload.responseText) || 'Task completed.';
         // Clean response: strip raw JSON wrappers that models sometimes emit
+        // Handle single JSON object or multiple concatenated JSON objects
         if (text && (text.charAt(0) === '{' || text.charAt(0) === '[')) {
           try {
             var parsed = JSON.parse(text);
             if (parsed && typeof parsed.response === 'string' && parsed.response.length > 0) { text = parsed.response; }
             else if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-              // If it's a raw JSON object with no .response, try to extract meaningful text
               if (parsed.summary) text = String(parsed.summary);
               else if (parsed.text) text = String(parsed.text);
             }
-          } catch(e) {}
+          } catch(e) {
+            // May be multiple concatenated JSON objects — extract .response from each
+            var jsonParts = text.match(/\\{[^{}]*(?:\\{[^{}]*\\}[^{}]*)*\\}/g);
+            if (jsonParts && jsonParts.length > 0) {
+              var extracted = [];
+              for (var jp = 0; jp < jsonParts.length; jp++) {
+                try {
+                  var p = JSON.parse(jsonParts[jp]);
+                  if (p && typeof p.response === 'string' && p.response.length > 0) extracted.push(p.response);
+                } catch(e2) {}
+              }
+              if (extracted.length > 0) text = extracted[extracted.length - 1];
+            }
+          }
         }
         // Strip markdown sections that duplicate drawer data
         text = text.replace(/##\\s*(TODOs?|Tasks?|What I found|What changed|Verification|Changes made|Files? changed)[\\s\\S]*?(?=\\n##|$)/gi, '');

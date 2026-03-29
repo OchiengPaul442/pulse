@@ -2520,120 +2520,49 @@ export class AgentRuntime {
         ...(improvementHintsAgent ? [improvementHintsAgent] : []),
         ...(agentAwarenessAgent ? [agentAwarenessAgent] : []),
         shortcutSummary ? shortcutSummary : "",
-        "## SKILL GUIDANCE",
         `Primary skill: ${primarySkillName}`,
-        skillsSummary
-          ? `Selected skills:\n${skillsSummary}`
-          : "Selected skills: none",
-        "Use the primary skill and selected skills as the first lens for tool choice and reasoning.",
-        "If a skill exposes a direct tool for the job, prefer it over a generic response.",
+        skillsSummary ? `Skills:\n${skillsSummary}` : "",
         "",
-        "## PROBLEM-SOLVING METHODOLOGY (CRITICAL)",
-        "You are a CRITICAL PROBLEM SOLVER. Follow this methodology for EVERY task:",
-        "1. UNDERSTAND FIRST: Before making ANY changes, gather evidence. Read files, run diagnostics, search for patterns.",
-        "2. DIAGNOSE ROOT CAUSE: Don't fix symptoms — find the underlying cause. Ask 'why' repeatedly until you reach the root.",
-        "3. FORM HYPOTHESES: List 2-3 potential causes before acting. Verify each with evidence from tools.",
-        "4. FIX INCREMENTALLY: Apply fixes one logical step at a time. Verify after each step.",
-        "5. VALIDATE THOROUGHLY: After fixing, run verification to confirm the fix works and hasn't broken anything else.",
-        "6. NEVER say 'Task completed' unless the problem is actually solved and verified.",
+        "## WORKFLOW",
+        "1. Read/search files BEFORE editing. Never guess contents.",
+        "2. Work through todos ONE at a time: mark current 'in-progress', mark finished 'done'.",
+        "3. After run_terminal, ALWAYS check output. If non-zero exit or errors: diagnose and fix before proceeding.",
+        "4. After edits, run run_verification. If it fails, fix and re-verify.",
+        "5. On failure: analyze error → try 2-3 alternatives → never give up on first attempt.",
+        "6. Use batch_edit for targeted multi-file changes. Use edits[] for full file writes/creates.",
+        "7. Never delete files unless explicitly asked. Contain fixes — don't break other code.",
         "",
-        "## TODO MANAGEMENT (CRITICAL)",
-        "- Create your todo list BEFORE starting work. Each todo must be specific and actionable (3-7 words).",
-        "- Update todo statuses EVERY turn: mark the current step 'in-progress', mark completed steps 'done'.",
-        "- Only ONE todo should be 'in-progress' at a time. Complete it before moving to the next.",
-        "- If a step fails, mark it 'blocked' and add a note, then continue with an alternative.",
-        "- NEVER mark all todos 'done' in your first response — work through them one at a time across turns.",
-        "- Valid statuses: 'pending' | 'in-progress' | 'done' | 'blocked'",
+        "## TODO RULES",
+        "- Create 3-5 actionable todos upfront. Update statuses every turn.",
+        "- Statuses: 'pending' | 'in-progress' | 'done' | 'blocked'",
+        "- ONE 'in-progress' at a time. Complete and verify before moving to next.",
         "",
-        "## TERMINAL VERIFICATION (CRITICAL)",
-        "- After EVERY run_terminal call, you MUST inspect the output in the tool results before proceeding.",
-        "- If the command exited with a non-zero code, DO NOT proceed — diagnose the error first.",
-        "- If the output contains errors, warnings, or unexpected results, address them before moving on.",
-        "- Use get_terminal_output if the terminal output was truncated or you need to review it again.",
-        "- NEVER assume a command succeeded without checking its output.",
-        "- After installing packages, verify the install succeeded before using them.",
-        "- After running build/test commands, check for failures and fix them before marking the todo done.",
+        "## JSON FORMAT (STRICT)",
+        '{"response":"<plain explanation>","todos":[{"id":"todo_1","title":"...","status":"pending"}],"toolCalls":[{"tool":"<name>","args":{}}],"edits":[{"filePath":"<path>","content":"<text>","operation":"write"}],"shortcuts":[]}',
+        "- 'response': plain text explanation ONLY. No JSON/metadata/tool summaries.",
+        "- If toolCalls present: brief note in response, you get another turn with results.",
+        "- If no toolCalls: write your FINAL summary in response.",
         "",
-        "## CRITICAL RULES",
-        "1. ALWAYS return valid JSON. No markdown fences, no text before/after the JSON.",
-        "2. You MUST use tools to gather evidence. Do NOT guess file contents — read them first.",
-        "3. When the user asks to run a command, use run_terminal IMMEDIATELY. Do not just describe it.",
-        "4. After making edits, ALWAYS run run_verification to validate your changes.",
-        "5. If verification fails, fix the issues and verify again.",
-        '6. Create file edits using the "edits" array — these are applied to the workspace.',
-        '7. For new files, use edits with operation "write". For deleting, use operation "delete".',
-        "8. Include a short TODO list (3-5 items) before making changes.",
-        "9. Use batch_edit to apply targeted changes to multiple files at once — this is more efficient than full file rewrites.",
-        "10. ALWAYS read a file before editing it. Never guess file contents.",
-        "11. The 'response' field should contain ONLY your explanation — do NOT include JSON, todos, tool summaries, or metadata in the response field.",
-        "12. After every run_terminal call, inspect the output before moving on. If the command fails or times out, use get_terminal_output when helpful, identify the root cause, and either fix it or propose the next best options.",
-        "13. If you find an issue, say what failed and include 1-3 realistic next-step options the user can choose from.",
-        "",
-        "## RESPONSE FORMAT (STRICT JSON)",
-        "You MUST respond with this exact JSON structure:",
-        "{",
-        '  "response": "<your explanation of what you did or plan to do>",',
-        '  "todos": [{"id": "todo_1", "title": "Step description", "status": "pending"}],',
-        '  "toolCalls": [{"tool": "<tool_name>", "args": {<arguments>}}],',
-        '  "edits": [{"filePath": "<absolute_path>", "content": "<full_file_content>", "operation": "write"}],',
-        '  "shortcuts": []',
-        "}",
-        "",
-        "## HOW TOOL CALLS WORK",
-        "- If you include toolCalls: set response to a brief note. You will get another turn with results.",
-        "- If tool results are shown below and you have NO more toolCalls: write your FINAL response.",
-        "- CHAIN: read files → diagnose → make edits → run verification → report results.",
-        "- Use batch_edit for surgical multi-file changes. Use edits[] for full file writes/creates.",
-        "",
-        "## ERROR RECOVERY (CRITICAL)",
-        "- NEVER give up on first failure. Analyze the error message carefully.",
-        "- If a terminal command fails: read the error output, diagnose the root cause, try an alternative approach.",
-        "- If a file read fails: search for the correct path using search_files or list_dir.",
-        "- If a build/test fails: read the error details, locate the failing code, fix it, then re-verify.",
-        "- Always investigate the ACTUAL cause — don't guess. Use tools to read files, search for context.",
-        "- Try at least 2-3 different approaches before reporting failure to the user.",
-        "- Common recovery patterns: check file exists → read it → understand structure → make targeted fix.",
-        "- If you encounter dependency issues: check package.json, lock file, and node_modules integrity.",
-        "- If types/imports fail: search for the correct export names and paths in the codebase.",
-        "",
-        "## AVAILABLE TOOLS",
-        "workspace_scan — List all workspace files",
-        'read_files — Read file contents {args: {paths: ["path1", "path2"]}}',
-        'create_file — Create or overwrite a file {args: {filePath: "...", content: "..."}}',
-        'delete_file — Delete a file {args: {filePath: "..."}}',
-        'search_files — Search code for a pattern {args: {query: "..."}}',
-        'list_dir — List directory contents {args: {path: "..."}}',
-        'run_terminal — Execute a shell command {args: {command: "..."}}',
-        "run_verification — Run tests/build/lint after edits",
-        'web_search — Search the web {args: {query: "..."}}',
-        'git_diff — View git changes {args: {filePath: "..."} or no args}',
-        "diagnostics — Check VS Code errors",
-        'batch_edit — Apply targeted edits to multiple files at once {args: {edits: [{filePath: "...", search: "exact text to find", replace: "replacement text"}]}}',
-        'rename_file — Rename or move a file {args: {oldPath: "...", newPath: "..."}}',
-        'find_references — Find all usages of a symbol across workspace {args: {symbol: "functionName"}}',
-        'file_search — Find files by glob pattern {args: {pattern: "**/*.ts"}}',
-        'get_problems — Get VS Code diagnostics/errors {args: {filePath: "..."} or no args for all}',
-        "get_terminal_output — Get the output of the last terminal command",
+        "## TOOLS",
+        "workspace_scan, read_files {paths:[]}, create_file {filePath,content}, delete_file {filePath}",
+        "search_files {query}, list_dir {path}, run_terminal {command}, run_verification",
+        "web_search {query}, git_diff {filePath?}, diagnostics, get_terminal_output",
+        "batch_edit {edits:[{filePath,search,replace}]}, rename_file {oldPath,newPath}",
+        "find_references {symbol}, file_search {pattern}, get_problems {filePath?}",
         "",
         "## CONTEXT",
         `Objective: ${objective}`,
-        `Skills: ${skillsSummary}`,
-        `Plan: ${JSON.stringify(plan, null, 2)}`,
         plan.todos.length > 0
-          ? `Current todos: ${JSON.stringify(plan.todos, null, 2)}`
+          ? `Plan todos: ${JSON.stringify(plan.todos)}`
           : "",
-        episodes.length > 0
-          ? `Memory: ${JSON.stringify(episodes, null, 2)}`
-          : "",
-        `Workspace files:\n${contextSnippets.map((s) => `File: ${s.path}\n${s.content}`).join("\n\n")}`,
+        episodes.length > 0 ? `Memory: ${JSON.stringify(episodes)}` : "",
+        `Workspace:\n${contextSnippets.map((s) => `${s.path}\n${s.content}`).join("\n\n")}`,
         attachedContext.length > 0
-          ? `Attached:\n${attachedContext.map((s) => `File: ${s.path}\n${s.content}`).join("\n\n")}`
+          ? `Attached:\n${attachedContext.map((s) => `${s.path}\n${s.content}`).join("\n\n")}`
           : "",
-        webResearch
-          ? `Web research: ${JSON.stringify(webResearch, null, 2)}`
-          : "",
+        webResearch ? `Web research: ${JSON.stringify(webResearch)}` : "",
         toolContext ? `Tool results:\n${toolContext}` : "",
-        critiqueContext ? `Refinement feedback:\n${critiqueContext}` : "",
+        critiqueContext ? `Feedback:\n${critiqueContext}` : "",
       ]
         .filter((value) => value.length > 0)
         .join("\n");
@@ -2656,8 +2585,8 @@ export class AgentRuntime {
     // observe results and act on them). It stops when:
     //   - The LLM returns NO tool calls and quality meets target, OR
     //   - Max iterations reached.
-    const MAX_AGENT_ITERATIONS = 15;
-    const ITERATION_TIMEOUT_MS = 120_000; // 2 min per iteration to prevent stalling
+    const MAX_AGENT_ITERATIONS = 10;
+    const ITERATION_TIMEOUT_MS = 90_000; // 90s per iteration to prevent stalling
     for (let iteration = 0; iteration < MAX_AGENT_ITERATIONS; iteration += 1) {
       this.emitProgress(
         iteration === 0 ? "Generating response" : "Continuing",
@@ -2683,8 +2612,10 @@ export class AgentRuntime {
           format: "json",
           signal: iterationAbort.signal,
           onChunk: (chunk) => {
+            // Only emit reasoning chunks in agent mode — do NOT stream
+            // raw JSON tokens to the chat bubble. The parsed .response
+            // field is shown after the full response is received.
             this.emitReasoningChunk(chunk);
-            this.emitStreamChunk(chunk);
           },
           messages: [
             {
@@ -2698,7 +2629,7 @@ export class AgentRuntime {
               iteration === 0 ? images : undefined,
             ),
           ],
-          maxTokens: 4096,
+          maxTokens: 3072,
         });
       } catch (err: unknown) {
         if (iterationAbort.signal.aborted && !signal?.aborted) {
@@ -2996,7 +2927,7 @@ export class AgentRuntime {
           {
             role: "system",
             content:
-              "You write final task summaries for a coding agent similar to GitHub Copilot. Produce a concise, task-specific closing summary that adapts to the evidence. Do not use a fixed template unless it fits the task. If the task was research, emphasize findings; if it changed files, mention the files and why; if verification ran, mention the result. Use plain markdown only, avoid JSON, avoid code fences, avoid repeating the same boilerplate every time, and do not say 'Task completed.' unless that is the only accurate summary.",
+              "You write concise closing summaries for a VS Code coding agent. Summarize what happened in 2-4 sentences, focusing on outcomes and key actions. Do NOT list TODOs, file changes, or verification details — those are shown separately. Use plain markdown, no JSON, no code fences. Be specific to the task. If there was a failure, state what failed and suggest recovery options.",
           },
           {
             role: "user",
@@ -3133,25 +3064,51 @@ export class AgentRuntime {
     }
 
     sections.push(
-      "Write a concise PR-style closing summary with short sections.",
-      "Use headings like Summary, Issue, Next steps, TODOs, What I found, What changed, and Verification when relevant.",
-      "Keep each section brief, avoid code fences, and do not repeat boilerplate.",
-      "If there was a failure, a missed quality target, or no edits for a code-change task, say the requested change was not applied and include 1-3 concrete recovery options the user can choose from.",
-      "Return plain markdown only.",
+      "Write a concise closing summary in 2-4 sentences.",
+      "Focus on: what was done (or what failed), key outcomes, and any next steps.",
+      "Do NOT list TODOs, file changes, or verification results — those are shown separately in the UI.",
+      "If there was a failure or quality gap, explain what went wrong and suggest 1-2 recovery options.",
+      "Return plain markdown only. Be specific to this task, avoid generic boilerplate.",
     );
 
     return sections.filter((value) => value.length > 0).join("\n\n");
   }
 
   private cleanGeneratedSummary(text: string): string {
-    const trimmed = text.trim();
+    let trimmed = text.trim();
     if (!trimmed) {
       return "";
+    }
+
+    // Strip JSON wrappers the model may have emitted
+    if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
+      try {
+        const parsed = JSON.parse(trimmed);
+        if (parsed && typeof parsed === "object") {
+          if (
+            typeof parsed.response === "string" &&
+            parsed.response.length > 0
+          ) {
+            trimmed = parsed.response;
+          } else if (typeof parsed.summary === "string") {
+            trimmed = parsed.summary;
+          } else if (typeof parsed.text === "string") {
+            trimmed = parsed.text;
+          }
+        }
+      } catch {
+        // Not valid JSON, continue
+      }
     }
 
     const stripped = trimmed
       .replace(/^```(?:markdown|md)?\s*/i, "")
       .replace(/\s*```$/i, "")
+      // Remove any "TODOs:" / "Files changed:" / "Verification:" sections
+      .replace(
+        /\n##?\s*(TODOs?|Tasks?|Files?\s+changed|Verification|What I found|What changed|Changes made)[\s\S]*?(?=\n##|$)/gi,
+        "",
+      )
       .trim();
 
     if (this.isGenericTaskResponse(stripped)) {
