@@ -2947,7 +2947,11 @@ export class AgentRuntime {
         this.resetTokenUsage();
       }
 
+      const previousTodos = parsed.todos;
       parsed = parseTaskResponse(response.text);
+      if (previousTodos.length > 0 && parsed.todos.length > 0) {
+        parsed.todos = this.reconcileTodoProgress(previousTodos, parsed.todos);
+      }
       if (parsed.todos.length === 0) {
         const hasNoActions =
           parsed.toolCalls.length === 0 && parsed.edits.length === 0;
@@ -3010,6 +3014,13 @@ export class AgentRuntime {
         parsed.edits = []; // Clear so they aren't re-processed after loop
       }
 
+      // Deterministic TODO updates when toolCalls include todoId bindings.
+      this.applyTodoOutcomesFromToolCalls(
+        parsed.todos,
+        parsed.toolCalls,
+        observations,
+      );
+
       // Auto-advance todo statuses based on completed work
       this.advanceTodoStatuses(parsed.todos, observations);
 
@@ -3066,7 +3077,12 @@ export class AgentRuntime {
       // If work was done this iteration (tool calls or edits), continue
       // so the LLM can observe results and proceed to next todo.
       if (observations.length > 0) {
-        noActionCount = 0;
+        const hasSuccessfulObservations = observations.some((o) => o.ok);
+        if (hasSuccessfulObservations) {
+          noActionCount = 0;
+        } else {
+          noActionCount += 1;
+        }
         if (failedObs.length === 0) {
           critiqueContext = "";
         }
@@ -3075,6 +3091,34 @@ export class AgentRuntime {
         if (allTodosDone && iteration >= 2) {
           break;
         }
+
+        if (
+          pendingTodos.length > 0 &&
+          noActionCount >= profileDefaults.noActionThreshold
+        ) {
+          this.emitProgress(
+            "Auto-bootstrap",
+            "Repeated tool failures — injecting workspace context",
+            "\u21BB",
+          );
+          const bootstrapObs = await this.executeTaskToolCalls(
+            [{ tool: "workspace_scan", args: {} }],
+            objective,
+            signal,
+          );
+          if (bootstrapObs.length > 0) {
+            toolTrace.push(...bootstrapObs);
+            const maxObs = profileDefaults.numCtx <= 4096 ? 3 : 5;
+            toolContext = formatToolObservations(toolTrace.slice(-maxObs));
+          }
+          critiqueContext =
+            "The previous tool attempts failed repeatedly. " +
+            "Use the refreshed workspace context above and choose a smaller next step. " +
+            "Complete pending todos one by one.\n" +
+            `Pending: ${pendingTodos.map((t) => t.title).join(", ")}`;
+          noActionCount = 0;
+        }
+
         continue;
       }
 
@@ -3256,15 +3300,25 @@ export class AgentRuntime {
       }
     }
 
+    const finalTodos = parsed.todos.length > 0 ? parsed.todos : plan.todos;
+    if (
+      finalTodos.some(
+        (todo) => todo.status === "pending" || todo.status === "in-progress",
+      )
+    ) {
+      this.finalizeIncompleteTodos(finalTodos, MAX_AGENT_ITERATIONS);
+      this.emitTodoUpdate(finalTodos);
+    }
+
     return {
       plan: {
         ...plan,
-        todos: parsed.todos.length > 0 ? parsed.todos : plan.todos,
+        todos: finalTodos,
       },
       responseText: await this.buildTaskCompletionSummary({
         objective,
         rawResponseText: parsed.response || "Task completed.",
-        todos: parsed.todos.length > 0 ? parsed.todos : plan.todos,
+        todos: finalTodos,
         toolTrace,
         proposal,
         autoApplied,
@@ -3273,7 +3327,7 @@ export class AgentRuntime {
         qualityTarget: finalAssessment?.target,
         meetsQualityTarget: finalAssessment?.meetsTarget,
       }),
-      todos: parsed.todos.length > 0 ? parsed.todos : plan.todos,
+      todos: finalTodos,
       shortcuts:
         parsed.shortcuts.length > 0 ? parsed.shortcuts : optionalShortcuts,
       proposal: autoApplied ? null : proposal,
@@ -4939,10 +4993,118 @@ export class AgentRuntime {
     return observations;
   }
 
+  private reconcileTodoProgress(
+    previous: TaskTodo[],
+    next: TaskTodo[],
+  ): TaskTodo[] {
+    const previousById = new Map(previous.map((todo) => [todo.id, todo]));
+
+    return next.map((todo) => {
+      const prior =
+        previousById.get(todo.id) ??
+        previous.find(
+          (candidate) =>
+            candidate.title.trim().toLowerCase() ===
+            todo.title.trim().toLowerCase(),
+        );
+
+      if (!prior) {
+        return todo;
+      }
+
+      // Keep todo progression monotonic to avoid regressions like
+      // done -> in-progress on later weak-model iterations.
+      if (prior.status === "done" && todo.status !== "done") {
+        return {
+          ...todo,
+          status: "done",
+          detail: todo.detail ?? prior.detail,
+        };
+      }
+
+      if (prior.status === "blocked" && todo.status === "pending") {
+        return {
+          ...todo,
+          status: "blocked",
+          detail: todo.detail ?? prior.detail,
+        };
+      }
+
+      return todo;
+    });
+  }
+
+  private applyTodoOutcomesFromToolCalls(
+    todos: TaskTodo[],
+    calls: TaskToolCall[],
+    observations: TaskToolObservation[],
+  ): void {
+    if (todos.length === 0 || calls.length === 0 || observations.length === 0) {
+      return;
+    }
+
+    const byTodoId = new Map<string, TaskToolObservation[]>();
+    for (let index = 0; index < calls.length; index += 1) {
+      const todoId = calls[index].todoId?.trim();
+      if (!todoId) {
+        continue;
+      }
+      const observation = observations[index];
+      if (!observation) {
+        continue;
+      }
+      const list = byTodoId.get(todoId) ?? [];
+      list.push(observation);
+      byTodoId.set(todoId, list);
+    }
+
+    if (byTodoId.size === 0) {
+      return;
+    }
+
+    for (const todo of todos) {
+      const todoObservations = byTodoId.get(todo.id);
+      if (!todoObservations || todoObservations.length === 0) {
+        continue;
+      }
+
+      const anyFailed = todoObservations.some((observation) => !observation.ok);
+      if (anyFailed) {
+        const failed = todoObservations.find((observation) => !observation.ok);
+        todo.status = "blocked";
+        if (!todo.detail) {
+          todo.detail = failed?.summary ?? "Tool execution failed";
+        }
+        continue;
+      }
+
+      const anySucceeded = todoObservations.some(
+        (observation) => observation.ok,
+      );
+      if (anySucceeded) {
+        todo.status = "done";
+      }
+    }
+  }
+
+  private finalizeIncompleteTodos(
+    todos: TaskTodo[],
+    iterationLimit: number,
+  ): void {
+    for (const todo of todos) {
+      if (todo.status === "pending" || todo.status === "in-progress") {
+        todo.status = "blocked";
+        if (!todo.detail) {
+          todo.detail = `Task loop ended before completion (${iterationLimit} iteration limit reached).`;
+        }
+      }
+    }
+  }
+
   /**
    * Auto-advance todo statuses based on work completed in the current iteration.
    * If tools/edits succeeded and there's a todo in-progress, mark it done.
-   * If no todo is in-progress, mark the first pending todo as in-progress.
+   * If no todo is in-progress, mark the first pending todo as done.
    */
   private advanceTodoStatuses(
     todos: TaskTodo[],

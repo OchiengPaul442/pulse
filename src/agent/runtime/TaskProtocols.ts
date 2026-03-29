@@ -11,6 +11,7 @@ export const TARGET_TASK_QUALITY_SCORE = 0.9;
 export const TASK_RESPONSE_SCHEMA: Record<string, unknown> = {
   type: "object",
   properties: {
+    activeTodoId: { type: "string" },
     response: { type: "string" },
     todos: {
       type: "array",
@@ -36,6 +37,8 @@ export const TASK_RESPONSE_SCHEMA: Record<string, unknown> = {
           tool: { type: "string" },
           args: { type: "object" },
           reason: { type: "string" },
+          todoId: { type: "string" },
+          expectedOutcome: { type: "string" },
         },
         required: ["tool", "args"],
       },
@@ -94,6 +97,8 @@ export interface TaskToolCall {
   tool: TaskToolName;
   args: Record<string, unknown>;
   reason?: string;
+  todoId?: string;
+  expectedOutcome?: string;
 }
 
 export interface TaskToolObservation {
@@ -441,7 +446,8 @@ export function normalizeToolCalls(value: unknown): TaskToolCall[] {
     value
       .map((entry) => normalizeToolCall(entry))
       .filter((entry): entry is TaskToolCall => entry !== null),
-    (call) => `${call.tool}|${stableStringify(call.args)}`,
+    (call) =>
+      `${call.tool}|${call.todoId ?? ""}|${call.expectedOutcome ?? ""}|${stableStringify(call.args)}`,
   );
 }
 
@@ -1009,6 +1015,17 @@ function normalizeToolCall(entry: unknown): TaskToolCall | null {
     tool,
     args,
     reason: firstString(candidate.reason, candidate.description),
+    todoId: firstString(
+      candidate.todoId,
+      candidate.todo_id,
+      candidate.todo,
+      candidate.taskId,
+      candidate.task_id,
+    ),
+    expectedOutcome: firstString(
+      candidate.expectedOutcome,
+      candidate.expected_outcome,
+    ),
   };
 }
 
