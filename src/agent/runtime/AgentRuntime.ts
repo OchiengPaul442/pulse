@@ -73,6 +73,7 @@ import {
   type TaskQualityAssessment,
   type TaskModelResponse,
   type TaskToolCall,
+  type TaskToolName,
   type TaskToolObservation,
   type TaskTodo,
 } from "./TaskProtocols";
@@ -200,7 +201,18 @@ export class AgentRuntime {
     webSearch: WebSearchService,
     provider?: ModelProvider,
   ) {
-    this.currentConfig = { ...config };
+    this.currentConfig = {
+      ...config,
+      openaiModels: Array.isArray(config.openaiModels)
+        ? [...config.openaiModels]
+        : [],
+      fallbackModels: Array.isArray(config.fallbackModels)
+        ? [...config.fallbackModels]
+        : [],
+      mcpServers: Array.isArray(config.mcpServers)
+        ? [...config.mcpServers]
+        : [],
+    };
     this.provider = provider ?? new OllamaProvider(config.ollamaBaseUrl);
     this.planner = new Planner(this.provider);
     this.scanner = new WorkspaceScanner();
@@ -374,6 +386,17 @@ export class AgentRuntime {
       }
     }
 
+    const activeSession = await this.sessionStore.getActiveSession();
+    if (!activeSession) {
+      const recentSession = await this.sessionStore.getMostRecentSession();
+      if (recentSession) {
+        await this.sessionStore.setActiveSession(recentSession.id);
+        this.logger.info(
+          `Restored recent session ${recentSession.id} on startup`,
+        );
+      }
+    }
+
     this.logger.info("AgentRuntime initialized");
     this.logger.debug(`Planner model: ${this.currentConfig.plannerModel}`);
     this.logger.debug(`Editor model: ${this.currentConfig.editorModel}`);
@@ -462,7 +485,7 @@ export class AgentRuntime {
   }
 
   public getConfiguredMcpServers(): McpServerConfig[] {
-    return [...this.currentConfig.mcpServers];
+    return [...(this.currentConfig.mcpServers ?? [])];
   }
 
   public async setConfiguredMcpServers(
@@ -2506,6 +2529,8 @@ export class AgentRuntime {
         "9. Use batch_edit to apply targeted changes to multiple files at once — this is more efficient than full file rewrites.",
         "10. ALWAYS read a file before editing it. Never guess file contents.",
         "11. When the task changes files or uses tools, end with a short summary of what you found, what changed, why, and how you verified it.",
+        "12. After every run_terminal call, inspect the output before moving on. If the command fails or times out, use get_terminal_output when helpful, identify the root cause, and either fix it or propose the next best options.",
+        "13. If you find an issue, say what failed and include 1-3 realistic next-step options the user can choose from.",
         "",
         "## RESPONSE FORMAT (STRICT JSON)",
         "You MUST respond with this exact JSON structure:",
@@ -2932,7 +2957,7 @@ export class AgentRuntime {
 
       const generated = this.cleanGeneratedSummary(response.text);
       if (generated) {
-        return generated;
+        return this.normalizeTaskSummaryPresentation(generated);
       }
     } catch (err) {
       this.logger.warn(
@@ -2940,7 +2965,7 @@ export class AgentRuntime {
       );
     }
 
-    return fallback;
+    return this.normalizeTaskSummaryPresentation(fallback);
   }
 
   private buildTaskCompletionFallbackSummary(
@@ -2963,17 +2988,36 @@ export class AgentRuntime {
     const intro = generic ? "Task completed." : raw;
     sections.push(`## Summary\n${intro}`);
 
-    const todoSummary = formatCompactTodos(params.todos);
-    if (todoSummary) {
-      sections.push(todoSummary);
+    const incompleteEditTask = this.summarizeIncompleteEditTask(params);
+    if (incompleteEditTask) {
+      sections.push(`## Issue\n${incompleteEditTask.issue}`);
+      sections.push(
+        `## Next steps\n${incompleteEditTask.nextSteps
+          .map((step) => `- ${step}`)
+          .join("\n")}`,
+      );
     }
 
-    const findings = this.summarizeEvidence(params.toolTrace);
+    const issueSummary = this.summarizeIssueCompact(params.toolTrace);
+    if (issueSummary) {
+      sections.push(`## Issue\n${issueSummary}`);
+      const nextSteps = this.summarizeIssueNextSteps(params.toolTrace);
+      if (nextSteps) {
+        sections.push(`## Next steps\n${nextSteps}`);
+      }
+    }
+
+    const todoSummary = this.summarizeTodosCompact(params.todos);
+    if (todoSummary) {
+      sections.push(`## TODOs\n${todoSummary}`);
+    }
+
+    const findings = this.summarizeEvidenceCompact(params.toolTrace);
     if (findings) {
       sections.push(`## What I found\n${findings}`);
     }
 
-    const changes = this.summarizeChanges(
+    const changes = this.summarizeChangesCompact(
       params.proposal,
       params.fileDiffs,
       params.autoApplied,
@@ -2982,7 +3026,7 @@ export class AgentRuntime {
       sections.push(`## What changed\n${changes}`);
     }
 
-    const verification = this.summarizeVerification(
+    const verification = this.summarizeVerificationCompact(
       params.toolTrace,
       params.qualityScore,
       params.qualityTarget,
@@ -2992,11 +3036,7 @@ export class AgentRuntime {
       sections.push(`## Verification\n${verification}`);
     }
 
-    if (!findings && !changes && !verification && !todoSummary) {
-      return intro;
-    }
-
-    return sections.join("\n\n");
+    return sections.join("\n");
   }
 
   private buildTaskSummaryContext(
@@ -3019,26 +3059,41 @@ export class AgentRuntime {
       `Agent response: ${raw}`,
     ];
 
-    const todoSummary = formatCompactTodos(params.todos);
+    const incompleteEditTask = this.summarizeIncompleteEditTask(params);
+    if (incompleteEditTask) {
+      sections.push(`Issue: ${incompleteEditTask.issue}`);
+      sections.push(`Next steps: ${incompleteEditTask.nextSteps.join("; ")}`);
+    }
+
+    const issueSummary = this.summarizeIssueCompact(params.toolTrace);
+    if (issueSummary) {
+      sections.push(`## Issue\n${issueSummary}`);
+      const nextSteps = this.summarizeIssueNextSteps(params.toolTrace);
+      if (nextSteps) {
+        sections.push(`## Next steps\n${nextSteps}`);
+      }
+    }
+
+    const todoSummary = this.summarizeTodosCompact(params.todos);
     if (todoSummary) {
-      sections.push(todoSummary);
+      sections.push(`## TODOs\n${todoSummary}`);
     }
 
-    const toolSummary = formatToolObservations(params.toolTrace);
+    const toolSummary = this.summarizeEvidenceCompact(params.toolTrace);
     if (toolSummary) {
-      sections.push(toolSummary);
+      sections.push(`## What I found\n${toolSummary}`);
     }
 
-    const changeSummary = this.summarizeChanges(
+    const changeSummary = this.summarizeChangesCompact(
       params.proposal,
       params.fileDiffs,
       params.autoApplied,
     );
     if (changeSummary) {
-      sections.push(`## Changes\n${changeSummary}`);
+      sections.push(`## What changed\n${changeSummary}`);
     }
 
-    const verificationSummary = this.summarizeVerification(
+    const verificationSummary = this.summarizeVerificationCompact(
       params.toolTrace,
       params.qualityScore,
       params.qualityTarget,
@@ -3049,10 +3104,10 @@ export class AgentRuntime {
     }
 
     sections.push(
-      "Write a concise, task-specific summary that sounds like a coding agent closing the loop.",
-      "Do not force the same headings every time. Only mention sections that matter for this task.",
-      "Be specific about the root cause, important findings, files changed, and verification outcome when present.",
-      "If there were no edits, say so naturally. If there were edits, name the key files and why they changed.",
+      "Write a concise PR-style closing summary with short sections.",
+      "Use headings like Summary, Issue, Next steps, TODOs, What I found, What changed, and Verification when relevant.",
+      "Keep each section brief, avoid code fences, and do not repeat boilerplate.",
+      "If there was a failure, a missed quality target, or no edits for a code-change task, say the requested change was not applied and include 1-3 concrete recovery options the user can choose from.",
       "Return plain markdown only.",
     );
 
@@ -3074,7 +3129,170 @@ export class AgentRuntime {
       return "";
     }
 
-    return stripped;
+    return this.normalizeTaskSummaryPresentation(stripped);
+  }
+
+  private normalizeTaskSummaryPresentation(text: string): string {
+    const lines = text
+      .replace(/\r\n/g, "\n")
+      .split("\n")
+      .map((line) => line.trim())
+      .filter(
+        (line, index, items) => line.length > 0 || items[index - 1] !== "",
+      );
+
+    const normalized: string[] = [];
+    for (const line of lines) {
+      if (!line) {
+        if (normalized[normalized.length - 1] !== "") {
+          normalized.push("");
+        }
+        continue;
+      }
+
+      const headingMatch = line.match(/^#{1,3}\s*(.+)$/);
+      if (headingMatch) {
+        normalized.push(`${headingMatch[1].trim()}:`);
+        continue;
+      }
+
+      const bulletMatch = line.match(/^[*-]\s+(.+)$/);
+      if (bulletMatch) {
+        normalized.push(`• ${bulletMatch[1].trim()}`);
+        continue;
+      }
+
+      const numberedMatch = line.match(/^\d+\.\s+(.+)$/);
+      if (numberedMatch) {
+        normalized.push(`• ${numberedMatch[1].trim()}`);
+        continue;
+      }
+
+      normalized.push(line);
+    }
+
+    return normalized
+      .join("\n")
+      .replace(/\n{3,}/g, "\n\n")
+      .trim();
+  }
+
+  private summarizeTodosCompact(todos: TaskTodo[]): string {
+    if (todos.length === 0) {
+      return "";
+    }
+
+    return todos
+      .slice(0, 5)
+      .map((todo) => {
+        const title = todo.title.trim();
+        if (title.length === 0) {
+          return "";
+        }
+        const detail = this.firstUsefulLine(todo.detail);
+        return detail ? `${title} (${detail})` : title;
+      })
+      .filter((entry) => entry.length > 0)
+      .join("; ");
+  }
+
+  private summarizeIncompleteEditTask(params: {
+    objective: string;
+    proposal: EditProposal | null;
+    fileDiffs?: FileDiffResult[];
+    qualityScore?: number;
+    qualityTarget?: number;
+    meetsQualityTarget?: boolean;
+  }): { issue: string; nextSteps: string[] } | null {
+    if (!this.isEditIntent(params.objective)) {
+      return null;
+    }
+
+    const hasEdits =
+      (params.proposal?.edits.length ?? 0) > 0 ||
+      (params.fileDiffs?.length ?? 0) > 0;
+    if (hasEdits) {
+      return null;
+    }
+
+    const qualityMissed =
+      typeof params.qualityScore === "number" &&
+      typeof params.qualityTarget === "number" &&
+      params.qualityScore < params.qualityTarget;
+
+    const issue = qualityMissed
+      ? `The requested change was not applied and the quality target was missed (${params.qualityScore?.toFixed(2)} / ${params.qualityTarget?.toFixed(2)}).`
+      : "The requested change was not applied.";
+
+    const nextSteps = qualityMissed
+      ? [
+          "narrow the task to the exact file or refactor scope",
+          "ask for one focused code change at a time",
+          "rerun the task after confirming the expected outcome",
+        ]
+      : [
+          "narrow the task to the exact file or refactor scope",
+          "ask the agent to produce a pending proposal before applying changes",
+          "rerun after confirming the intended behavior or acceptance criteria",
+        ];
+
+    return {
+      issue,
+      nextSteps,
+    };
+  }
+
+  private isEditIntent(objective: string): boolean {
+    return /\b(fix|bug|error|crash|test|build|compile|refactor|implement|add|update|remove|replace|rewrite|clean\s*up|cleanup|modify|change)\b/i.test(
+      objective,
+    );
+  }
+
+  private summarizeIssueCompact(observations: TaskToolObservation[]): string {
+    const failedObservations = observations.filter(
+      (observation) => !observation.ok,
+    );
+    if (failedObservations.length === 0) {
+      return "";
+    }
+
+    const primaryObservation =
+      failedObservations.find(
+        (observation) => observation.tool === "run_terminal",
+      ) ?? failedObservations[0];
+    const rawIssue =
+      this.firstUsefulLine(primaryObservation.detail) ??
+      primaryObservation.summary;
+    const issueText = rawIssue.replace(/^Error:\s*/i, "").trim();
+    return issueText;
+  }
+
+  private summarizeIssueNextSteps(observations: TaskToolObservation[]): string {
+    const failedObservations = observations.filter(
+      (observation) => !observation.ok,
+    );
+    if (failedObservations.length === 0) {
+      return "";
+    }
+
+    const primaryObservation =
+      failedObservations.find(
+        (observation) => observation.tool === "run_terminal",
+      ) ?? failedObservations[0];
+    const rawIssue =
+      this.firstUsefulLine(primaryObservation.detail) ??
+      primaryObservation.summary;
+    const issueText = rawIssue.replace(/^Error:\s*/i, "").trim();
+    const nextSteps = this.suggestNextStepsForIssue(
+      issueText,
+      primaryObservation.tool,
+    );
+
+    if (nextSteps.length === 0) {
+      return "";
+    }
+
+    return nextSteps.map((step) => `- ${step}`).join("\n");
   }
 
   private isGenericTaskResponse(text: string): boolean {
@@ -3089,7 +3307,9 @@ export class AgentRuntime {
     );
   }
 
-  private summarizeEvidence(observations: TaskToolObservation[]): string {
+  private summarizeEvidenceCompact(
+    observations: TaskToolObservation[],
+  ): string {
     const importantTools = new Set([
       "workspace_scan",
       "read_files",
@@ -3112,15 +3332,15 @@ export class AgentRuntime {
       .map((observation) => {
         const detail = this.firstUsefulLine(observation.detail);
         if (detail && detail !== observation.summary) {
-          return `- ${observation.summary} ${detail}`;
+          return `${observation.summary} ${detail}`;
         }
-        return `- ${observation.summary}`;
+        return observation.summary;
       });
 
-    return lines.join("\n");
+    return lines.filter((line) => line.length > 0).join("; ");
   }
 
-  private summarizeChanges(
+  private summarizeChangesCompact(
     proposal: EditProposal | null,
     fileDiffs?: FileDiffResult[],
     autoApplied = false,
@@ -3136,7 +3356,7 @@ export class AgentRuntime {
             ? "deleted"
             : "updated";
         items.push(
-          `- ${diff.fileName} (${status}, +${diff.additions}/-${diff.deletions})`,
+          `${diff.fileName} (${status}, +${diff.additions}/-${diff.deletions})`,
         );
       }
     } else if (proposal?.edits.length) {
@@ -3145,23 +3365,23 @@ export class AgentRuntime {
         const target = edit.targetPath ? ` -> ${edit.targetPath}` : "";
         const reason = edit.reason ? ` — ${edit.reason}` : "";
         items.push(
-          `- ${op}: ${this.normalizeDisplayPath(edit.filePath)}${target}${reason}`,
+          `${op}: ${this.normalizeDisplayPath(edit.filePath)}${target}${reason}`,
         );
       }
     }
 
     if (items.length === 0 && autoApplied) {
-      return "- Changes were auto-applied successfully.";
+      return "Changes were auto-applied successfully.";
     }
 
     if (items.length === 0) {
-      return "- No file changes were required.";
+      return "No file changes were required.";
     }
 
-    return items.join("\n");
+    return items.join("; ");
   }
 
-  private summarizeVerification(
+  private summarizeVerificationCompact(
     observations: TaskToolObservation[],
     qualityScore?: number,
     qualityTarget?: number,
@@ -3173,21 +3393,65 @@ export class AgentRuntime {
 
     const lines: string[] = [];
     for (const item of verification.slice(-3)) {
-      lines.push(`- ${item.summary}`);
       const detail = this.firstUsefulLine(item.detail);
-      if (detail) {
-        lines.push(`  ${detail}`);
-      }
+      lines.push(
+        detail && detail !== item.summary
+          ? `${item.summary} ${detail}`
+          : item.summary,
+      );
     }
 
     if (typeof qualityScore === "number") {
       const target = qualityTarget ?? TARGET_TASK_QUALITY_SCORE;
       lines.push(
-        `- Quality score: ${qualityScore.toFixed(2)} / ${target.toFixed(2)} (${meetsQualityTarget ? "target met" : "below target"})`,
+        `Quality score ${qualityScore.toFixed(2)} / ${target.toFixed(2)} (${meetsQualityTarget ? "target met" : "below target"})`,
       );
     }
 
-    return lines.join("\n");
+    return lines.filter((line) => line.length > 0).join("; ");
+  }
+
+  private suggestNextStepsForIssue(
+    issueText: string,
+    tool: TaskToolName,
+  ): string[] {
+    const normalized = issueText.toLowerCase();
+    const suggestions: string[] = [];
+
+    if (
+      normalized.includes("could conflict") ||
+      normalized.includes("already contains") ||
+      normalized.includes("conflict") ||
+      normalized.includes("directory")
+    ) {
+      suggestions.push("retry in an empty directory or a fresh subfolder");
+      suggestions.push("move or rename the conflicting files first");
+      suggestions.push("rerun the command after the workspace is clean");
+    } else if (
+      normalized.includes("could not determine executable") ||
+      normalized.includes("couldn't determine executable") ||
+      normalized.includes("executable")
+    ) {
+      suggestions.push("run the package binary through pnpm exec or npx");
+      suggestions.push("verify the dependency is installed locally first");
+      suggestions.push("check the command name and package version");
+    } else if (
+      normalized.includes("enoent") ||
+      normalized.includes("not found") ||
+      normalized.includes("is not recognized")
+    ) {
+      suggestions.push("confirm the command exists in the current shell");
+      suggestions.push("install the missing dependency or tool");
+      suggestions.push("rerun from the project root with the correct path");
+    } else if (tool === "run_terminal") {
+      suggestions.push(
+        "inspect the terminal output again for the failing line",
+      );
+      suggestions.push("adjust the command or working directory and retry");
+      suggestions.push("run verification again after the fix");
+    }
+
+    return Array.from(new Set(suggestions)).slice(0, 3);
   }
 
   private firstUsefulLine(value?: string): string | undefined {
@@ -4024,22 +4288,11 @@ export class AgentRuntime {
   }
 
   private shouldAutoApplyProposal(edits: ProposedEdit[]): boolean {
-    if (this.permissionPolicy.getMode() === "strict") {
-      return false;
-    }
-
     if (this.permissionPolicy.getMode() === "full") {
       return true;
     }
 
-    if (this.currentConfig.conversationMode !== "agent") {
-      return false;
-    }
-
-    return (
-      edits.length > 0 &&
-      edits.every((edit) => (edit.operation ?? "write") === "write")
-    );
+    return false;
   }
 
   private async readPackageScripts(

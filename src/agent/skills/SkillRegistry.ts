@@ -122,6 +122,35 @@ const BUILTIN_SKILLS: SkillManifest[] = [
     tools: ["terminal.execute"],
   },
   {
+    id: "terminalInvestigation",
+    name: "Terminal Investigation",
+    description:
+      "Reads terminal output, diagnoses failures, and decides whether to retry, adjust the command, or inspect logs.",
+    keywords: [
+      "failed",
+      "failure",
+      "error",
+      "output",
+      "logs",
+      "stdout",
+      "stderr",
+      "exit code",
+      "could not determine executable",
+      "couldn't determine executable",
+      "npm error",
+      "pnpm error",
+      "command failed",
+      "terminal output",
+      "inspect output",
+      "why failed",
+    ],
+    tools: [
+      "terminal.execute",
+      "get_terminal_output",
+      "verificationRunner.runDiagnostics",
+    ],
+  },
+  {
     id: "git",
     name: "Git Operations",
     description:
@@ -539,6 +568,9 @@ function shortcutForTool(tool: string): string | null {
   }
   if (tool.includes("terminal.execute")) {
     return "terminal";
+  }
+  if (tool.includes("get_terminal_output")) {
+    return "terminal-output";
   }
   if (tool.includes("gitService")) {
     return "git";

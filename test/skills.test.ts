@@ -13,4 +13,15 @@ describe("SkillRegistry", () => {
     expect(selected.primary).not.toBeNull();
     expect(selected.selected.some((skill) => skill.id === "mcp")).toBe(true);
   });
+
+  it("selects terminal investigation for failed command output", () => {
+    const registry = new SkillRegistry();
+    const selected = registry.selectForObjective(
+      "pnpm create next-app failed with terminal output and conflict errors",
+    );
+
+    expect(
+      selected.selected.some((skill) => skill.id === "terminalInvestigation"),
+    ).toBe(true);
+  });
 });

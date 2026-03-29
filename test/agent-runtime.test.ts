@@ -225,6 +225,7 @@ describe("AgentRuntime", () => {
         info: vi.fn(),
         warn: vi.fn(),
         error: vi.fn(),
+        debug: vi.fn(),
       } as any,
       {
         search: vi.fn(),
@@ -244,6 +245,97 @@ describe("AgentRuntime", () => {
     expect(result.plan.todos).toHaveLength(1);
     expect(result.responseText).toBe("Created a starter project plan.");
     expect(result.todos).toHaveLength(1);
+  });
+
+  it("restores the most recent session when no active session is stored", async () => {
+    const tempRoot = fs.mkdtempSync(
+      path.join(os.tmpdir(), "pulse-runtime-restore-session-test-"),
+    );
+    const storage: StorageState = {
+      storageDir: tempRoot,
+      dbPath: path.join(tempRoot, "db.sqlite"),
+      tracesDir: path.join(tempRoot, "traces"),
+      snapshotsDir: path.join(tempRoot, "snapshots"),
+      sessionsPath: path.join(tempRoot, "sessions.json"),
+      memoriesPath: path.join(tempRoot, "memories.json"),
+      editsPath: path.join(tempRoot, "edits.json"),
+      improvementPath: path.join(tempRoot, "improvement.json"),
+    };
+
+    fs.mkdirSync(storage.tracesDir, { recursive: true });
+    fs.mkdirSync(storage.snapshotsDir, { recursive: true });
+
+    const recentSession: MockSession = {
+      id: "session-latest",
+      objective: "Restore the latest conversation",
+      title: "Restore the latest conversation",
+      messages: [],
+      attachedFiles: [],
+      updatedAt: new Date().toISOString(),
+    };
+
+    const config: AgentConfig = {
+      ollamaBaseUrl: "http://127.0.0.1:11434",
+      plannerModel: "qwen2.5-coder:7b",
+      editorModel: "qwen2.5-coder:7b",
+      fastModel: "qwen2.5-coder:7b",
+      embeddingModel: "nomic-embed-text",
+      fallbackModels: ["qwen2.5-coder:7b"],
+      approvalMode: "balanced",
+      permissionMode: "default",
+      conversationMode: "agent",
+      persona: "software-engineer",
+      allowTerminalExecution: false,
+      autoRunVerification: false,
+      maxContextTokens: 16384,
+      memoryMode: "off",
+      indexingEnabled: false,
+      indexingMode: "light",
+      mcpServers: [],
+      telemetryOptIn: false,
+      selfLearnEnabled: false,
+      providerType: "ollama",
+      openaiBaseUrl: "",
+      openaiApiKey: "",
+      openaiModels: [],
+    };
+
+    vi.spyOn(OllamaProvider.prototype, "healthCheck").mockResolvedValue({
+      ok: true,
+      message: "Ollama reachable",
+    } as any);
+    vi.spyOn(OllamaProvider.prototype, "listModels").mockResolvedValue([]);
+
+    const sessionMethods = SessionStore.prototype as any;
+    vi.spyOn(sessionMethods, "getActiveSession").mockResolvedValue(null);
+    vi.spyOn(sessionMethods, "getMostRecentSession").mockResolvedValue(
+      recentSession,
+    );
+    const setActiveSessionSpy = vi
+      .spyOn(sessionMethods, "setActiveSession")
+      .mockResolvedValue(undefined);
+
+    const runtime = new AgentRuntime(
+      config,
+      storage,
+      {
+        info: vi.fn(),
+        warn: vi.fn(),
+        error: vi.fn(),
+        debug: vi.fn(),
+      } as any,
+      {
+        search: vi.fn(),
+        formatResult: vi.fn(),
+        setTavilyApiKey: vi.fn(),
+        clearTavilyApiKey: vi.fn(),
+        hasTavilyApiKey: vi.fn(),
+      } as any,
+    );
+
+    await runtime.initialize();
+
+    expect(setActiveSessionSpy).toHaveBeenCalledWith("session-latest");
   });
 
   it("treats short task-like prompts as agent work", async () => {
@@ -310,6 +402,9 @@ describe("AgentRuntime", () => {
     expect((runtime as any).isSimpleConversational("fix it")).toBe(false);
     expect((runtime as any).shouldAllowEdits("fix it")).toBe(true);
     expect((runtime as any).isSimpleConversational("hello")).toBe(true);
+    expect(
+      (runtime as any).shouldAutoApplyProposal([{ operation: "write" }]),
+    ).toBe(false);
   });
 
   it("builds a model-driven completion summary when evidence exists", async () => {
@@ -438,5 +533,188 @@ describe("AgentRuntime", () => {
 
     expect(chatSpy).toHaveBeenCalledTimes(1);
     expect(summary).toBe(summaryText);
+  });
+
+  it("includes issue and next-step options when terminal output fails", async () => {
+    const tempRoot = fs.mkdtempSync(
+      path.join(os.tmpdir(), "pulse-runtime-summary-issue-test-"),
+    );
+    const storage: StorageState = {
+      storageDir: tempRoot,
+      dbPath: path.join(tempRoot, "db.sqlite"),
+      tracesDir: path.join(tempRoot, "traces"),
+      snapshotsDir: path.join(tempRoot, "snapshots"),
+      sessionsPath: path.join(tempRoot, "sessions.json"),
+      memoriesPath: path.join(tempRoot, "memories.json"),
+      editsPath: path.join(tempRoot, "edits.json"),
+      improvementPath: path.join(tempRoot, "improvement.json"),
+    };
+
+    fs.mkdirSync(storage.tracesDir, { recursive: true });
+    fs.mkdirSync(storage.snapshotsDir, { recursive: true });
+
+    const config: AgentConfig = {
+      ollamaBaseUrl: "http://127.0.0.1:11434",
+      plannerModel: "qwen2.5-coder:7b",
+      editorModel: "qwen2.5-coder:7b",
+      fastModel: "qwen2.5-coder:7b",
+      embeddingModel: "nomic-embed-text",
+      fallbackModels: ["qwen2.5-coder:7b"],
+      approvalMode: "balanced",
+      permissionMode: "default",
+      conversationMode: "agent",
+      persona: "software-engineer",
+      allowTerminalExecution: false,
+      autoRunVerification: false,
+      maxContextTokens: 16384,
+      memoryMode: "off",
+      indexingEnabled: false,
+      indexingMode: "light",
+      mcpServers: [],
+      telemetryOptIn: false,
+      selfLearnEnabled: false,
+      providerType: "ollama",
+      openaiBaseUrl: "",
+      openaiApiKey: "",
+      openaiModels: [],
+    };
+
+    const runtime = new AgentRuntime(
+      config,
+      storage,
+      {
+        info: vi.fn(),
+        warn: vi.fn(),
+        error: vi.fn(),
+      } as any,
+      {
+        search: vi.fn(),
+        formatResult: vi.fn(),
+        setTavilyApiKey: vi.fn(),
+        clearTavilyApiKey: vi.fn(),
+        hasTavilyApiKey: vi.fn(),
+      } as any,
+    );
+
+    const summary = (runtime as any).buildTaskCompletionFallbackSummary(
+      {
+        objective: "Create a Next.js app",
+        rawResponseText: "Task completed.",
+        todos: [],
+        toolTrace: [
+          {
+            tool: "run_terminal",
+            ok: false,
+            summary: "Command failed.",
+            detail:
+              "The directory tests contains files that could conflict: src/",
+          },
+        ],
+        proposal: null,
+        autoApplied: false,
+        fileDiffs: [],
+        qualityScore: 0.4,
+        qualityTarget: 0.9,
+        meetsQualityTarget: false,
+      },
+      "Task completed.",
+      true,
+    );
+
+    expect(summary).toContain("## Issue");
+    expect(summary).toContain("could conflict");
+    expect(summary).toContain("## Next steps");
+    expect(summary).toContain("empty directory");
+  });
+
+  it("reports incomplete edit tasks instead of saying nothing changed was needed", async () => {
+    const tempRoot = fs.mkdtempSync(
+      path.join(os.tmpdir(), "pulse-runtime-incomplete-edit-test-"),
+    );
+    const storage: StorageState = {
+      storageDir: tempRoot,
+      dbPath: path.join(tempRoot, "db.sqlite"),
+      tracesDir: path.join(tempRoot, "traces"),
+      snapshotsDir: path.join(tempRoot, "snapshots"),
+      sessionsPath: path.join(tempRoot, "sessions.json"),
+      memoriesPath: path.join(tempRoot, "memories.json"),
+      editsPath: path.join(tempRoot, "edits.json"),
+      improvementPath: path.join(tempRoot, "improvement.json"),
+    };
+
+    fs.mkdirSync(storage.tracesDir, { recursive: true });
+    fs.mkdirSync(storage.snapshotsDir, { recursive: true });
+
+    const config: AgentConfig = {
+      ollamaBaseUrl: "http://127.0.0.1:11434",
+      plannerModel: "qwen2.5-coder:7b",
+      editorModel: "qwen2.5-coder:7b",
+      fastModel: "qwen2.5-coder:7b",
+      embeddingModel: "nomic-embed-text",
+      fallbackModels: ["qwen2.5-coder:7b"],
+      approvalMode: "balanced",
+      permissionMode: "default",
+      conversationMode: "agent",
+      persona: "software-engineer",
+      allowTerminalExecution: false,
+      autoRunVerification: false,
+      maxContextTokens: 16384,
+      memoryMode: "off",
+      indexingEnabled: false,
+      indexingMode: "light",
+      mcpServers: [],
+      telemetryOptIn: false,
+      selfLearnEnabled: false,
+      providerType: "ollama",
+      openaiBaseUrl: "",
+      openaiApiKey: "",
+      openaiModels: [],
+    };
+
+    const runtime = new AgentRuntime(
+      config,
+      storage,
+      {
+        info: vi.fn(),
+        warn: vi.fn(),
+        error: vi.fn(),
+      } as any,
+      {
+        search: vi.fn(),
+        formatResult: vi.fn(),
+        setTavilyApiKey: vi.fn(),
+        clearTavilyApiKey: vi.fn(),
+        hasTavilyApiKey: vi.fn(),
+      } as any,
+    );
+
+    const summary = (runtime as any).buildTaskCompletionFallbackSummary(
+      {
+        objective: "Refactor the home page layout",
+        rawResponseText: "Task completed.",
+        todos: [],
+        toolTrace: [
+          {
+            tool: "run_verification",
+            ok: true,
+            summary: "pnpm test exited with 0.",
+            detail: "All checks passed.",
+          },
+        ],
+        proposal: null,
+        autoApplied: false,
+        fileDiffs: [],
+        qualityScore: 0.59,
+        qualityTarget: 0.9,
+        meetsQualityTarget: false,
+      },
+      "Task completed.",
+      true,
+    );
+
+    expect(summary).toContain("## Issue");
+    expect(summary).toContain("requested change was not applied");
+    expect(summary).toContain("## Next steps");
+    expect(summary).toContain("one focused code change at a time");
   });
 });

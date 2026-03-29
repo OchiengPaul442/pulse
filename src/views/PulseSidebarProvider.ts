@@ -552,9 +552,9 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
             }
             if (workspaceFolder) {
               choices.push({
-                label: "$(search) Search workspace files\u2026",
-                description: "Filter and pick from workspace",
-                value: "search",
+                label: "$(files) Browse workspace files",
+                description: "Pick actual files from this project",
+                value: "workspace-files",
               });
               choices.push({
                 label: "$(folder) Attach entire workspace",
@@ -590,6 +590,50 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
 
             if (pickedMode.value === "current-file" && activeEditorUri) {
               attachedPaths = [activeEditorUri.fsPath];
+            } else if (
+              pickedMode.value === "workspace-files" &&
+              workspaceFolder
+            ) {
+              const files = await vscode.workspace.findFiles(
+                "**/*",
+                "**/{node_modules,dist,build,.git,out,coverage,.pulse}/**",
+                400,
+              );
+              const fileItems: Array<
+                vscode.QuickPickItem & { fsPath: string }
+              > = files
+                .map((f) => ({
+                  label: path.basename(f.fsPath),
+                  description: path.relative(workspaceFolder.fsPath, f.fsPath),
+                  fsPath: f.fsPath,
+                }))
+                .sort((a, b) =>
+                  (a.description ?? "").localeCompare(b.description ?? ""),
+                );
+
+              if (!fileItems.length) {
+                await webviewView.webview.postMessage({
+                  type: "actionResult",
+                  payload: "No workspace files found to attach.",
+                });
+                return;
+              }
+
+              const pickedFiles = await vscode.window.showQuickPick(fileItems, {
+                canPickMany: true,
+                placeHolder:
+                  "Type to filter — select one or more files (Space to toggle)",
+                title: "Attach workspace files",
+              });
+
+              if (!pickedFiles || pickedFiles.length === 0) {
+                await webviewView.webview.postMessage({
+                  type: "actionResult",
+                  payload: "Attachment canceled.",
+                });
+                return;
+              }
+              attachedPaths = pickedFiles.map((item) => item.fsPath);
             } else if (pickedMode.value === "search" && workspaceFolder) {
               const files = await vscode.workspace.findFiles(
                 "**/*.{ts,js,tsx,jsx,mts,mjs,py,go,rs,java,cs,cpp,c,h,md,json,yaml,yml,toml,sh,sql,env,txt,css,html,svelte,vue,png,jpg,jpeg,gif,bmp,webp,svg}",
@@ -641,7 +685,7 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
                 canSelectFiles: true,
                 canSelectFolders: false,
                 canSelectMany: true,
-                defaultUri: workspaceFolder ?? undefined,
+                defaultUri: activeEditorUri ?? workspaceFolder ?? undefined,
                 openLabel: "Attach Image",
                 title: "Attach images for Pulse to analyze",
                 filters: {
@@ -672,7 +716,7 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
                 canSelectFiles: true,
                 canSelectFolders: true,
                 canSelectMany: true,
-                defaultUri: workspaceFolder ?? undefined,
+                defaultUri: activeEditorUri ?? workspaceFolder ?? undefined,
                 openLabel: "Attach",
                 title: "Attach files or folders for Pulse to read",
               });
@@ -753,27 +797,26 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
 
             const workspaceFolder =
               vscode.workspace.workspaceFolders?.[0]?.uri ?? null;
-            const resolvedUris: vscode.Uri[] = [];
+            const resolvedPaths: string[] = [];
             for (const p of paths) {
               if (typeof p !== "string" || !p.trim()) continue;
               const sanitized = p.trim();
-              if (workspaceFolder) {
-                resolvedUris.push(
-                  vscode.Uri.joinPath(workspaceFolder, sanitized),
-                );
-              }
+              const resolved = this.resolveDroppedAttachmentPath(
+                sanitized,
+                workspaceFolder,
+              );
+              if (resolved) resolvedPaths.push(resolved);
             }
 
-            if (resolvedUris.length > 0) {
-              const filePaths = resolvedUris.map((u) => u.fsPath);
-              await this.runtime.attachFiles(filePaths);
+            if (resolvedPaths.length > 0) {
+              await this.runtime.attachFiles(resolvedPaths);
               await webviewView.webview.postMessage({
                 type: "sessionAttachments",
-                payload: filePaths,
+                payload: resolvedPaths,
               });
               await webviewView.webview.postMessage({
                 type: "actionResult",
-                payload: `Attached ${filePaths.length} file(s) via drop.`,
+                payload: `Attached ${resolvedPaths.length} file(s) via drop.`,
               });
             }
             return;
@@ -833,6 +876,34 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
     // Kick off an initial push from the extension host side.
     void pushState();
     setTimeout(() => void pushState(), 250);
+  }
+
+  private resolveDroppedAttachmentPath(
+    value: string,
+    workspaceFolder: vscode.Uri | null,
+  ): string | null {
+    const trimmed = value.trim();
+    if (!trimmed) return null;
+
+    if (/^file:\/\//i.test(trimmed)) {
+      try {
+        return vscode.Uri.parse(trimmed).fsPath;
+      } catch {
+        return null;
+      }
+    }
+
+    if (path.isAbsolute(trimmed)) {
+      return path.normalize(trimmed);
+    }
+
+    if (workspaceFolder) {
+      return path.normalize(
+        vscode.Uri.joinPath(workspaceFolder, trimmed).fsPath,
+      );
+    }
+
+    return null;
   }
 
   private buildHtml(
@@ -1081,11 +1152,24 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
     .popup-opt.active { font-weight: 700; }
     .popup-opt.active::after { content: '\\2713'; margin-left: auto; font-size: 10px; opacity: .5; }
 
-    .model-popup { position: absolute; bottom: calc(100% + 4px); left: 0; z-index: 200; background: var(--vscode-editorWidget-background, var(--bg2)); border: 1px solid var(--border); border-radius: var(--r); min-width: 170px; max-height: 200px; overflow-y: auto; box-shadow: 0 4px 16px rgba(0,0,0,.22); scrollbar-width: none; -ms-overflow-style: none; }
+    .model-popup { position: absolute; bottom: calc(100% + 4px); left: 0; z-index: 200; background: var(--vscode-editorWidget-background, var(--bg2)); border: 1px solid var(--border); border-radius: var(--r); min-width: 210px; max-height: 240px; overflow-y: auto; box-shadow: 0 4px 16px rgba(0,0,0,.22); scrollbar-width: none; -ms-overflow-style: none; }
     .model-popup::-webkit-scrollbar { display: none; }
     .model-popup.hidden { display: none; }
     .model-popup-title { font-size: 9px; font-weight: 700; text-transform: uppercase; letter-spacing: .5px; color: var(--fg3); padding: 6px 10px 3px; }
     .model-popup-list { display: flex; flex-direction: column; gap: 1px; padding: 2px 3px 3px; }
+    .model-item { width: 100%; border: none; background: transparent; color: var(--fg); cursor: pointer; border-radius: 5px; padding: 6px 9px; display: flex; flex-direction: column; align-items: stretch; gap: 4px; transition: background var(--spd), color var(--spd); text-align: left; }
+    .model-item:hover { background: var(--vscode-list-hoverBackground, rgba(128,128,128,.08)); }
+    .model-item.active { background: var(--accent-bg); color: var(--accent); }
+    .model-item-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+    .model-item-name { font-size: 12px; font-weight: 600; line-height: 1.2; word-break: break-word; }
+    .model-item-badges { display: flex; flex-wrap: wrap; gap: 4px; }
+    .model-badge { font-size: 8px; line-height: 1; padding: 3px 6px; border-radius: 999px; border: 1px solid var(--border); text-transform: uppercase; letter-spacing: .4px; opacity: .95; }
+    .model-badge.ready { color: var(--green); border-color: var(--green-bdr); background: var(--green-bg); }
+    .model-badge.active { color: #fff; border-color: var(--accent); background: var(--accent); }
+    .model-badge.vision { color: var(--orange); border-color: var(--orange-glow); background: rgba(194,120,3,.08); }
+    .model-badge.local { color: var(--fg2); }
+    .model-badge.running { color: var(--green); border-color: var(--green-bdr); background: rgba(22,163,74,.06); }
+    .model-badge.configured { color: var(--fg2); }
 
     /* ── Permission popup ─── */
     .perm-popup { position: absolute; bottom: calc(100% + 4px); left: 0; z-index: 200; background: var(--vscode-editorWidget-background, var(--bg2)); border: 1px solid var(--border); border-radius: var(--r); min-width: 200px; box-shadow: 0 4px 16px rgba(0,0,0,.22); padding: 3px; }
@@ -1358,8 +1442,8 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
   <div id="editsBanner">
     <span id="bannerTxt" class="banner-txt">Pending edits ready</span>
     <div class="banner-acts">
-      <button id="btnApply" class="btn primary sm">Keep</button>
-      <button id="btnRevert" class="btn danger sm">Undo</button>
+      <button id="btnApply" class="btn primary sm">Approve</button>
+      <button id="btnRevert" class="btn danger sm">Reject</button>
     </div>
   </div>
 
@@ -1460,6 +1544,7 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
   var chatHistory = [], attachedFiles = [];
   var conversationMode = 'agent', inChat = false;
   var activeModelName = '', permMode = 'default';
+  var autoRestoreSessionAttempted = false;
   var thinkingSteps = [], thinkingStartTime = null;
   var modePopupOpen = false, modelPopupOpen = false, permPopupOpen = false;
   var isBusy = false;
@@ -1642,17 +1727,50 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
     if (!models.length) { list.innerHTML = '<div style="padding:8px 10px;font-size:11px;opacity:.5">No models</div>'; }
     else { models.forEach(function(m) {
       var btn = document.createElement('button'); btn.type = 'button';
-      btn.className = 'popup-opt' + (m.name === activeModelName ? ' active' : '');
-      btn.textContent = m.name; btn.title = m.name;
+      btn.className = 'model-item' + (m.name === activeModelName ? ' active' : '');
+      btn.title = describeModelTooltip(m);
       btn.addEventListener('click', function(e) { e.stopPropagation(); activeModelName = m.name;
         if (chipModel) { chipModel.textContent = m.name.split(':')[0].slice(0,14) || '\u2013'; chipModel.title = m.name; }
         vscode.postMessage({ type: 'setModel', payload: { role: 'planner', model: m.name } });
         vscode.postMessage({ type: 'setModel', payload: { role: 'editor', model: m.name } });
         vscode.postMessage({ type: 'setModel', payload: { role: 'fast', model: m.name } });
         closeModelPopup(); });
+      var row = document.createElement('div'); row.className = 'model-item-row';
+      var name = document.createElement('span'); name.className = 'model-item-name'; name.textContent = m.name;
+      row.appendChild(name);
+      if (m.name === activeModelName) row.appendChild(createModelBadge('Active', 'active'));
+      btn.appendChild(row);
+
+      var badges = document.createElement('div'); badges.className = 'model-item-badges';
+      badges.appendChild(createModelBadge('Agent-ready', 'ready'));
+      badges.appendChild(createModelBadge(sourceLabelForModel(m), sourceBadgeClassForModel(m)));
+      if (m.supportsVision) badges.appendChild(createModelBadge('Vision', 'vision'));
+      btn.appendChild(badges);
       list.appendChild(btn);
     }); }
     popup.classList.remove('hidden'); modelPopupOpen = true;
+  }
+  function createModelBadge(label, className) {
+    var badge = document.createElement('span');
+    badge.className = 'model-badge ' + className;
+    badge.textContent = label;
+    return badge;
+  }
+  function sourceLabelForModel(model) {
+    if (!model || !model.source) return 'Compatible';
+    if (model.source === 'running') return 'Running';
+    if (model.source === 'local') return 'Local';
+    return 'Configured';
+  }
+  function sourceBadgeClassForModel(model) {
+    if (!model || !model.source) return 'configured';
+    return model.source === 'running' ? 'running' : model.source === 'local' ? 'local' : 'configured';
+  }
+  function describeModelTooltip(model) {
+    if (!model || !model.name) return 'Model';
+    var parts = [model.name, 'Usable with the current agent', 'Source: ' + sourceLabelForModel(model)];
+    if (model.supportsVision) parts.push('Supports vision/image tasks');
+    return parts.join(' — ');
   }
   function closeModelPopup() { var p = D('modelPopup'); if (p) p.classList.add('hidden'); modelPopupOpen = false; }
   function openPermPopup() { closeAllPopups(); var p = D('permPopup'); if (p) { updatePermUI(permMode); p.classList.remove('hidden'); } permPopupOpen = true; }
@@ -2179,7 +2297,7 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
     editsBanner.classList.toggle('on', Boolean(hasPending));
     if (hasPending) {
       var eCount = s && typeof s.pendingEditCount === 'number' ? s.pendingEditCount : 0;
-      bannerTxt.textContent = eCount > 0 ? eCount + ' file' + (eCount === 1 ? '' : 's') + ' changed \u2014 review before applying' : 'Pending file edits \u2014 review before applying';
+      bannerTxt.textContent = eCount > 0 ? eCount + ' file' + (eCount === 1 ? '' : 's') + ' changed \u2014 review before approving' : 'Pending file edits \u2014 review before approving';
     }
     if (learningBadge) {
       var learningPct = s && typeof s.learningProgressPercent === 'number' ? s.learningProgressPercent : 0;
@@ -2188,6 +2306,10 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
       learningBadge.style.display = learningPct > 0 ? '' : 'none';
     }
     if (s && typeof s.tokenUsagePercent === 'number') updateTokenRing(s.tokenUsagePercent);
+    if (s && s.activeSessionId && !inChat && !autoRestoreSessionAttempted) {
+      autoRestoreSessionAttempted = true;
+      vscode.postMessage({ type: 'openSession', payload: s.activeSessionId });
+    }
   }
 
   // Token ring
@@ -2204,8 +2326,22 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
     var prev = modelSelect.value;
     modelSelect.innerHTML = '';
     if (!models.length) { modelSelect.innerHTML = '<option value="">No models found</option>'; return; }
-    for (var i = 0; i < models.length; i++) { var o = document.createElement('option'); o.value = models[i].name; o.text = models[i].name; modelSelect.appendChild(o); }
+    for (var i = 0; i < models.length; i++) {
+      var model = models[i];
+      var o = document.createElement('option');
+      o.value = model.name;
+      o.text = describeModelOption(model);
+      o.title = describeModelTooltip(model);
+      modelSelect.appendChild(o);
+    }
     if (models.some(function(m) { return m.name === prev; })) modelSelect.value = prev;
+  }
+
+  function describeModelOption(model) {
+    if (!model || !model.name) return '';
+    var labels = ['Ready', sourceLabelForModel(model)];
+    if (model.supportsVision) labels.push('Vision');
+    return model.name + ' — ' + labels.join(' · ');
   }
 
   // Send task
@@ -2328,6 +2464,20 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
       if (!items || !items.length) return;
       var paths = [];
       var imageFiles = [];
+      var uriList = (e.dataTransfer && e.dataTransfer.getData('text/uri-list')) || '';
+      if (uriList && uriList.trim()) {
+        uriList.split(/\\r?\\n/).forEach(function(line) {
+          var value = line.trim();
+          if (value && value.charAt(0) !== '#') paths.push(value);
+        });
+      }
+      var plainText = (e.dataTransfer && e.dataTransfer.getData('text/plain')) || '';
+      if (plainText && plainText.trim()) {
+        plainText.split(/\\r?\\n/).forEach(function(line) {
+          var value = line.trim();
+          if (value && value.indexOf('file:') === 0) paths.push(value);
+        });
+      }
       for (var i = 0; i < items.length; i++) {
         var item = items[i];
         if (item.kind === 'file') {
@@ -2339,12 +2489,19 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
               // Read image as base64 for vision model support
               imageFiles.push(file);
             } else {
-              paths.push(file.name);
+              paths.push((file && file.path) ? file.path : file.name);
             }
           }
-        } else if (item.kind === 'string' && item.type === 'text/plain') {
+        } else if (item.kind === 'string' && (item.type === 'text/plain' || item.type === 'text/uri-list')) {
           item.getAsString(function(s) {
-            if (s && s.trim()) vscode.postMessage({ type: 'dropFiles', payload: [s.trim()] });
+            if (s && s.trim()) {
+              s.split(/\\r?\\n/).forEach(function(line) {
+                var value = line.trim();
+                if (value && value.charAt(0) !== '#') {
+                  vscode.postMessage({ type: 'dropFiles', payload: [value] });
+                }
+              });
+            }
           });
         }
       }
@@ -2408,7 +2565,7 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
   on(D('btnToolsAll'), 'click', function() { TOOL_DEFS.forEach(function(t) { enabledTools[t.id] = true; }); renderToolConfig(); vscode.postMessage({ type: 'setEnabledTools', payload: enabledTools }); });
   on(D('btnToolsNone'), 'click', function() { TOOL_DEFS.forEach(function(t) { enabledTools[t.id] = false; }); renderToolConfig(); vscode.postMessage({ type: 'setEnabledTools', payload: enabledTools }); });
 
-  on(btnNewChat, 'click', function() { chatHistory = []; attachedFiles = []; pendingRequest = null; resetComposeState(); renderAttachments(attachedFiles); renderMessages(); showChat(); vscode.postMessage({ type: 'newConversation' }); taskInput.focus(); });
+  on(btnNewChat, 'click', function() { autoRestoreSessionAttempted = true; chatHistory = []; attachedFiles = []; pendingRequest = null; resetComposeState(); renderAttachments(attachedFiles); renderMessages(); showChat(); vscode.postMessage({ type: 'newConversation' }); taskInput.focus(); });
   on(btnBack, 'click', showHome);
   on(btnAttach, 'click', function() { vscode.postMessage({ type: 'attachContext' }); });
   on(btnSettings, 'click', function() { settingsDrawer.classList.toggle('open'); });
@@ -2433,9 +2590,9 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
 
   // Edits banner
   var applyPending = false, revertPending = false;
-  function resetBannerBtns() { applyPending = false; revertPending = false; btnApply.textContent = 'Keep'; btnApply.className = 'btn primary sm'; btnRevert.textContent = 'Undo'; btnRevert.className = 'btn danger sm'; }
-  on(btnApply, 'click', function() { if (!applyPending) { applyPending = true; btnApply.textContent = 'Keep?'; return; } resetBannerBtns(); vscode.postMessage({ type: 'applyPending', payload: true }); });
-  on(btnRevert, 'click', function() { if (!revertPending) { revertPending = true; btnRevert.textContent = 'Undo?'; return; } resetBannerBtns(); vscode.postMessage({ type: 'revertLast', payload: true }); });
+  function resetBannerBtns() { applyPending = false; revertPending = false; btnApply.textContent = 'Approve'; btnApply.className = 'btn primary sm'; btnRevert.textContent = 'Reject'; btnRevert.className = 'btn danger sm'; }
+  on(btnApply, 'click', function() { if (!applyPending) { applyPending = true; btnApply.textContent = 'Approve?'; return; } resetBannerBtns(); vscode.postMessage({ type: 'applyPending', payload: true }); });
+  on(btnRevert, 'click', function() { if (!revertPending) { revertPending = true; btnRevert.textContent = 'Reject?'; return; } resetBannerBtns(); vscode.postMessage({ type: 'revertLast', payload: true }); });
 
   // Message handler
   window.addEventListener('message', function(event) {

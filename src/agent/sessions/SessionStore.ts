@@ -63,6 +63,30 @@ export class SessionStore {
     return state.sessions.find((s) => s.id === state.activeSessionId) ?? null;
   }
 
+  public async getMostRecentSession(): Promise<SessionRecord | null> {
+    const state = await this.load();
+    if (state.sessions.length === 0) {
+      return null;
+    }
+
+    return (
+      [...state.sessions].sort((left, right) => {
+        const leftStamp = Date.parse(left.updatedAt || left.createdAt || "");
+        const rightStamp = Date.parse(right.updatedAt || right.createdAt || "");
+        if (Number.isFinite(leftStamp) && Number.isFinite(rightStamp)) {
+          return rightStamp - leftStamp;
+        }
+        if (Number.isFinite(leftStamp)) {
+          return -1;
+        }
+        if (Number.isFinite(rightStamp)) {
+          return 1;
+        }
+        return 0;
+      })[0] ?? null
+    );
+  }
+
   public async getSession(sessionId: string): Promise<SessionRecord | null> {
     const state = await this.load();
     return state.sessions.find((session) => session.id === sessionId) ?? null;
