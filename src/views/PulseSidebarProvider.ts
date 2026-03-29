@@ -871,8 +871,8 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
     :root {
-      --accent: #3fb950; --accent-bg: rgba(63,185,80,0.08); --accent-bdr: rgba(63,185,80,0.22);
-      --accent-glow: rgba(63,185,80,0.12); --accent-hover: #2ea043;
+      --accent: #475569; --accent-bg: rgba(71,85,105,0.08); --accent-bdr: rgba(71,85,105,0.22);
+      --accent-glow: rgba(71,85,105,0.12); --accent-hover: #334155;
       --orange: #c27803; --orange-hover: #a36702; --orange-glow: rgba(194,120,3,0.14);
       --green: #16a34a; --green-bg: rgba(22,163,74,0.08); --green-bdr: rgba(22,163,74,0.22);
       --red: var(--vscode-errorForeground, #f87171); --red-bg: rgba(248,113,113,0.06); --red-bdr: rgba(248,113,113,0.22);
@@ -946,7 +946,7 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
 
     /* ── Chat view ─── */
     #chatView { padding: 6px 10px 4px; display: flex; flex-direction: column; gap: 6px; }
-    .back-btn { display: inline-flex; align-items: center; gap: 3px; border: none; background: none; color: var(--fg2); font: 500 11px var(--vscode-font-family); cursor: pointer; opacity: .7; padding: 2px 0; width: fit-content; transition: opacity var(--spd), color var(--spd); }
+    .back-btn { display: inline-flex; align-items: center; gap: 3px; border: none; background: none; color: var(--fg); font: 600 11px var(--vscode-font-family); cursor: pointer; opacity: .78; padding: 2px 0; width: fit-content; transition: opacity var(--spd), color var(--spd); }
     .back-btn:hover { opacity: 1; color: var(--accent); }
 
     /* ── Messages ─── */
@@ -955,8 +955,8 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
     .msg.user { align-self: flex-end; }
     .msg.agent { align-self: flex-start; width: 100%; }
     .msg.editing { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: var(--r); }
-    .bubble { padding: 8px 11px; border-radius: var(--r); line-height: 1.55; font-size: 13px; word-break: break-word; user-select: text; -webkit-user-select: text; position: relative; }
-    .msg.user .bubble { background: var(--accent); color: #fff; border-bottom-right-radius: 2px; }
+    .bubble { padding: 8px 11px; border-radius: var(--r); line-height: 1.6; font-size: 13px; font-weight: 400; word-break: break-word; user-select: text; -webkit-user-select: text; position: relative; }
+    .msg.user .bubble { background: linear-gradient(180deg, var(--accent) 0%, var(--accent-hover) 100%); color: #fff; border-bottom-right-radius: 2px; font-weight: 600; text-shadow: 0 1px 1px rgba(0,0,0,.18); }
     .msg.agent .bubble { background: transparent; border: none; padding: 6px 2px; color: var(--fg); }
     .bubble code { font-family: var(--vscode-editor-font-family, monospace); font-size: 11.5px; background: rgba(128,128,128,.12); padding: 1px 4px; border-radius: 3px; }
     .msg.user .bubble code { background: rgba(255,255,255,.18); }
@@ -967,15 +967,16 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
     .bubble p { margin: 4px 0; }
     .bubble p:first-child { margin-top: 0; }
     .bubble p:last-child { margin-bottom: 0; }
-    .bubble a { color: var(--accent); text-decoration: none; }
-    .bubble a:hover { text-decoration: underline; }
-    .bubble strong { font-weight: 600; }
+    .bubble a { color: var(--accent); text-decoration: underline; text-underline-offset: 2px; }
+    .bubble a:hover { text-decoration-thickness: 2px; }
+    .msg.user .bubble a { color: #fff; }
+    .bubble strong { font-weight: 700; }
     .bubble hr { border: none; border-top: 1px solid var(--border); margin: 8px 0; }
     .msg-footer { display: flex; align-items: center; justify-content: space-between; gap: 4px; margin-top: 1px; padding: 0 2px; opacity: 0; transition: opacity var(--spd); }
     .msg:hover .msg-footer { opacity: 1; }
     .msg.user .msg-footer { justify-content: flex-end; }
     .msg-time { font-size: 9px; color: var(--fg3); }
-    .copy-btn, .retry-btn, .edit-btn { border: none; background: transparent; color: var(--fg2); cursor: pointer; opacity: .5; transition: opacity var(--spd), color var(--spd), background var(--spd); padding: 2px; border-radius: 3px; display: flex; align-items: center; justify-content: center; width: 20px; height: 20px; line-height: 1; flex-shrink: 0; }
+    .copy-btn, .retry-btn, .edit-btn { border: none; background: transparent; color: var(--fg); cursor: pointer; opacity: .62; transition: opacity var(--spd), color var(--spd), background var(--spd); padding: 2px; border-radius: 3px; display: flex; align-items: center; justify-content: center; width: 20px; height: 20px; line-height: 1; flex-shrink: 0; }
     .copy-btn:hover, .retry-btn:hover { opacity: 1 !important; background: rgba(128,128,128,.1); }
     .retry-btn:hover { color: var(--accent); }
 
@@ -1163,19 +1164,19 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
     .composer-inner-row { display: flex; align-items: center; justify-content: space-between; padding: 2px 7px 5px; gap: 3px; }
     .chips { display: flex; gap: 3px; align-items: center; flex-wrap: wrap; }
 
-    .mode-chip { border: 1px solid var(--border); border-radius: 999px; background: transparent; color: var(--fg2); cursor: pointer; font: 700 9px var(--vscode-font-family); letter-spacing: .3px; text-transform: uppercase; padding: 2px 7px; transition: all var(--spd); white-space: nowrap; }
+    .mode-chip { border: 1px solid var(--border); border-radius: 999px; background: transparent; color: var(--fg); cursor: pointer; font: 700 9px var(--vscode-font-family); letter-spacing: .3px; text-transform: uppercase; padding: 2px 7px; transition: all var(--spd); white-space: nowrap; }
     .mode-chip:hover { border-color: var(--accent); color: var(--accent); background: var(--accent-bg); }
     .mode-chip.active { border-color: var(--accent); color: #fff; background: var(--accent); }
 
-    .chip { font-size: 9px; font-weight: 600; padding: 2px 6px; border-radius: 999px; border: 1px solid var(--border); color: var(--fg2); cursor: pointer; white-space: nowrap; max-width: 100px; overflow: hidden; text-overflow: ellipsis; transition: all var(--spd); background: transparent; }
+    .chip { font-size: 9px; font-weight: 600; padding: 2px 6px; border-radius: 999px; border: 1px solid var(--border); color: var(--fg); cursor: pointer; white-space: nowrap; max-width: 100px; overflow: hidden; text-overflow: ellipsis; transition: all var(--spd); background: transparent; }
     .chip:hover { border-color: var(--accent); color: var(--accent); background: var(--accent-bg); }
 
-    .attach-plus { width: 26px; height: 26px; min-width: 26px; border: 1px solid var(--border); border-radius: 50%; background: transparent; color: var(--fg2); cursor: pointer; font-size: 15px; font-weight: 300; display: flex; align-items: center; justify-content: center; transition: all var(--spd); flex-shrink: 0; }
+    .attach-plus { width: 26px; height: 26px; min-width: 26px; border: 1px solid var(--border); border-radius: 50%; background: transparent; color: var(--fg); cursor: pointer; font-size: 15px; font-weight: 400; display: flex; align-items: center; justify-content: center; transition: all var(--spd); flex-shrink: 0; }
     .attach-plus:hover { border-color: var(--accent); color: var(--accent); background: var(--accent-bg); }
 
     .send-btn { width: 30px; height: 30px; min-width: 30px; border: none; border-radius: 50%; background: linear-gradient(135deg, var(--accent) 0%, var(--accent-hover) 100%); color: #fff; font-size: 14px; line-height: 1; cursor: default; display: flex; align-items: center; justify-content: center; transition: opacity .15s ease, transform .15s ease, background .15s ease, box-shadow .15s ease; opacity: .25; box-shadow: none; }
     .send-btn:not([disabled]) { opacity: 1; cursor: pointer; box-shadow: 0 2px 8px rgba(63,185,80,.35); }
-    .send-btn:not([disabled]):hover { background: linear-gradient(135deg, var(--accent-hover) 0%, var(--accent) 100%); transform: scale(1.1) translateY(-1px); box-shadow: 0 4px 14px rgba(63,185,80,.45); }
+    .send-btn:not([disabled]):hover { background: linear-gradient(135deg, var(--accent-hover) 0%, var(--accent) 100%); transform: scale(1.1) translateY(-1px); box-shadow: 0 4px 14px rgba(100,116,139,.45); }
     .send-btn:not([disabled]):active { transform: scale(.95); box-shadow: 0 1px 4px rgba(63,185,80,.3); }
     .send-btn .send-arrow { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 2.2; stroke-linecap: round; stroke-linejoin: round; }
     .send-btn.stop { background: linear-gradient(135deg, #ef4444, #dc2626); opacity: 1; cursor: pointer; box-shadow: 0 2px 8px rgba(239,68,68,.35); }
@@ -1238,8 +1239,8 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
     /* ── Generic buttons ─── */
     .btn { font: 600 10px var(--vscode-font-family); padding: 3px 8px; border-radius: 5px; border: 1px solid var(--border); background: transparent; color: var(--fg); cursor: pointer; transition: all var(--spd); }
     .btn:hover { background: var(--vscode-toolbar-hoverBackground, rgba(128,128,128,.08)); }
-    .btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
-    .btn.primary:hover { background: var(--accent-hover); }
+    .btn.primary { background: linear-gradient(180deg, var(--accent) 0%, var(--accent-hover) 100%); border-color: var(--accent); color: #fff; text-shadow: 0 1px 1px rgba(0,0,0,.16); }
+    .btn.primary:hover { background: linear-gradient(180deg, var(--accent-hover) 0%, var(--accent) 100%); }
     .btn.danger { color: var(--red); border-color: var(--red-bdr); }
     .btn.danger:hover { background: var(--red-bg); }
     .btn.sm { padding: 2px 6px; font-size: 9px; }
@@ -1480,7 +1481,25 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
     return h < 24 ? h + 'h ago' : Math.round(h / 24) + 'd ago';
   }
   function autoGrow(el) { if (!el) return; el.style.height = 'auto'; el.style.height = Math.min(el.scrollHeight, 160) + 'px'; }
-  function scrollBottom() { requestAnimationFrame(function() { var el = D('main'); if (el) el.scrollTop = 999999; }); }
+  function updateScrollButton() {
+    if (!scrollBtn) return;
+    var el = D('main');
+    var show = false;
+    if (inChat && el) {
+      var overflow = el.scrollHeight > el.clientHeight + 8;
+      var atBottom = el.scrollTop + el.clientHeight >= el.scrollHeight - 24;
+      show = overflow && !atBottom;
+    }
+    scrollBtn.classList.toggle('visible', show);
+  }
+  function scheduleScrollButtonUpdate() { requestAnimationFrame(updateScrollButton); }
+  function scrollBottom() {
+    requestAnimationFrame(function() {
+      var el = D('main');
+      if (el) el.scrollTop = el.scrollHeight;
+      updateScrollButton();
+    });
+  }
   function on(el, evt, fn) { if (el) el.addEventListener(evt, fn); }
   function makeMessageId() { return 'msg_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 8); }
   function resetComposeState() { composeState = { mode: 'new', messageId: '', messageIndex: -1 }; if (taskInput) taskInput.placeholder = conversationMode === 'ask' ? 'Ask Pulse a question…' : conversationMode === 'plan' ? 'Describe the change you want planned…' : 'Ask Pulse anything about your code…'; if (btnSend) btnSend.title = 'Send (Enter)'; }
@@ -1917,6 +1936,7 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
   function renderMessages() {
     if (!chatHistory.length) {
       messages.innerHTML = '<div class="empty fadein"><div class="empty-icon">&#9889;</div><div class="empty-h">What can I help you build?</div><div class="empty-p">Describe a task, ask a question, or paste code to get started</div></div>';
+      scheduleScrollButtonUpdate();
       return;
     }
     messages.innerHTML = '';
@@ -2048,6 +2068,7 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
       })(text, div, role);
       messages.appendChild(div);
     }
+    scheduleScrollButtonUpdate();
   }
 
   function renderAttachments(files) {
@@ -2259,8 +2280,7 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
   (function() {
     var mainEl = D('main');
     if (mainEl) mainEl.addEventListener('scroll', function() {
-      var atBottom = mainEl.scrollTop + mainEl.clientHeight >= mainEl.scrollHeight - 50;
-      if (scrollBtn) scrollBtn.classList.toggle('visible', !atBottom);
+      updateScrollButton();
     });
     on(scrollBtn, 'click', scrollBottom);
   }());

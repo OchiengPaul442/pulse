@@ -2149,8 +2149,8 @@ export class AgentRuntime {
   }
 
   private shouldAllowEdits(objective: string): boolean {
-    // Simple greetings, small talk, and conversational messages don't need
-    // the full agent workflow — route them to the lighter conversation path.
+    // Pure conversation can skip the full agent workflow.
+    // Task-like prompts, even if short, should still go through tools.
     if (this.isSimpleConversational(objective)) {
       return false;
     }
@@ -2161,10 +2161,6 @@ export class AgentRuntime {
 
   private isSimpleConversational(objective: string): boolean {
     const trimmed = objective.trim();
-    // Very short messages (< 12 chars) that don't contain code-like signals
-    if (trimmed.length < 12 && !/[{}<>/\\=]/.test(trimmed)) {
-      return true;
-    }
     const lower = trimmed
       .toLowerCase()
       .replace(/[!?.]+$/, "")
@@ -2203,7 +2199,21 @@ export class AgentRuntime {
       "help",
       "help me",
     ];
-    return greetings.includes(lower);
+    if (greetings.includes(lower)) {
+      return true;
+    }
+
+    if (this.isTaskLikeObjective(lower)) {
+      return false;
+    }
+
+    return trimmed.length < 12 && !/[{}<>/\\=]/.test(trimmed);
+  }
+
+  private isTaskLikeObjective(objectiveLower: string): boolean {
+    return /\b(fix|bug|error|issue|task|tool|skill|code|project|workspace|file|edit|update|change|add|remove|implement|refactor|rename|move|test|build|run|install|debug|diagnose|search|read|scan)\b/.test(
+      objectiveLower,
+    );
   }
 
   private async collectWebResearch(
@@ -2452,6 +2462,7 @@ export class AgentRuntime {
     const optionalShortcuts =
       this.skillRegistry.buildOptionalShortcuts(selectedSkills);
     const shortcutSummary = formatShortcutHints(optionalShortcuts);
+    const primarySkillName = selectedSkills.primary?.name ?? "None";
     this.emitProgress("Building plan", plannerModel, "\u25A0");
     const plan = await this.planner.createPlan(objective, plannerModel);
 
@@ -2466,6 +2477,13 @@ export class AgentRuntime {
         ...(improvementHintsAgent ? [improvementHintsAgent] : []),
         ...(agentAwarenessAgent ? [agentAwarenessAgent] : []),
         shortcutSummary ? shortcutSummary : "",
+        "## SKILL GUIDANCE",
+        `Primary skill: ${primarySkillName}`,
+        skillsSummary
+          ? `Selected skills:\n${skillsSummary}`
+          : "Selected skills: none",
+        "Use the primary skill and selected skills as the first lens for tool choice and reasoning.",
+        "If a skill exposes a direct tool for the job, prefer it over a generic response.",
         "",
         "## PROBLEM-SOLVING METHODOLOGY (CRITICAL)",
         "You are a CRITICAL PROBLEM SOLVER. Follow this methodology for EVERY task:",
@@ -2487,6 +2505,7 @@ export class AgentRuntime {
         "8. Include a short TODO list (3-5 items) before making changes.",
         "9. Use batch_edit to apply targeted changes to multiple files at once — this is more efficient than full file rewrites.",
         "10. ALWAYS read a file before editing it. Never guess file contents.",
+        "11. When the task changes files or uses tools, end with a short summary of what you found, what changed, why, and how you verified it.",
         "",
         "## RESPONSE FORMAT (STRICT JSON)",
         "You MUST respond with this exact JSON structure:",
@@ -2804,7 +2823,18 @@ export class AgentRuntime {
         ...plan,
         todos: parsed.todos.length > 0 ? parsed.todos : plan.todos,
       },
-      responseText: parsed.response || "Task completed.",
+      responseText: await this.buildTaskCompletionSummary({
+        objective,
+        rawResponseText: parsed.response || "Task completed.",
+        todos: parsed.todos.length > 0 ? parsed.todos : plan.todos,
+        toolTrace,
+        proposal,
+        autoApplied,
+        fileDiffs: fileDiffs.length > 0 ? fileDiffs : undefined,
+        qualityScore: finalAssessment?.score,
+        qualityTarget: finalAssessment?.target,
+        meetsQualityTarget: finalAssessment?.meetsTarget,
+      }),
       todos: parsed.todos.length > 0 ? parsed.todos : plan.todos,
       shortcuts:
         parsed.shortcuts.length > 0 ? parsed.shortcuts : optionalShortcuts,
@@ -2846,6 +2876,335 @@ export class AgentRuntime {
     });
 
     return observations;
+  }
+
+  private async buildTaskCompletionSummary(params: {
+    objective: string;
+    rawResponseText: string;
+    todos: TaskTodo[];
+    toolTrace: TaskToolObservation[];
+    proposal: EditProposal | null;
+    autoApplied: boolean;
+    fileDiffs?: FileDiffResult[];
+    qualityScore?: number;
+    qualityTarget?: number;
+    meetsQualityTarget?: boolean;
+  }): Promise<string> {
+    const raw = params.rawResponseText.trim();
+    const generic = this.isGenericTaskResponse(raw);
+    const hasEvidence =
+      params.toolTrace.length > 0 ||
+      (params.proposal?.edits.length ?? 0) > 0 ||
+      (params.fileDiffs?.length ?? 0) > 0;
+
+    if (!hasEvidence) {
+      return raw;
+    }
+
+    const fallback = this.buildTaskCompletionFallbackSummary(
+      params,
+      raw,
+      generic,
+    );
+
+    try {
+      const summaryModel = await this.resolveModelOrFallback(
+        this.currentConfig.fastModel,
+      );
+      const context = this.buildTaskSummaryContext(params, raw);
+      const response = await this.provider.chat({
+        model: summaryModel,
+        temperature: 0.2,
+        maxTokens: 260,
+        messages: [
+          {
+            role: "system",
+            content:
+              "You write final task summaries for a coding agent similar to GitHub Copilot. Produce a concise, task-specific closing summary that adapts to the evidence. Do not use a fixed template unless it fits the task. If the task was research, emphasize findings; if it changed files, mention the files and why; if verification ran, mention the result. Use plain markdown only, avoid JSON, avoid code fences, avoid repeating the same boilerplate every time, and do not say 'Task completed.' unless that is the only accurate summary.",
+          },
+          {
+            role: "user",
+            content: context,
+          },
+        ],
+      });
+      this.consumeTokens(response.tokenUsage);
+
+      const generated = this.cleanGeneratedSummary(response.text);
+      if (generated) {
+        return generated;
+      }
+    } catch (err) {
+      this.logger.warn(
+        `Task summary generation failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+
+    return fallback;
+  }
+
+  private buildTaskCompletionFallbackSummary(
+    params: {
+      objective: string;
+      rawResponseText: string;
+      todos: TaskTodo[];
+      toolTrace: TaskToolObservation[];
+      proposal: EditProposal | null;
+      autoApplied: boolean;
+      fileDiffs?: FileDiffResult[];
+      qualityScore?: number;
+      qualityTarget?: number;
+      meetsQualityTarget?: boolean;
+    },
+    raw: string,
+    generic: boolean,
+  ): string {
+    const sections: string[] = [];
+    const intro = generic ? "Task completed." : raw;
+    sections.push(`## Summary\n${intro}`);
+
+    const todoSummary = formatCompactTodos(params.todos);
+    if (todoSummary) {
+      sections.push(todoSummary);
+    }
+
+    const findings = this.summarizeEvidence(params.toolTrace);
+    if (findings) {
+      sections.push(`## What I found\n${findings}`);
+    }
+
+    const changes = this.summarizeChanges(
+      params.proposal,
+      params.fileDiffs,
+      params.autoApplied,
+    );
+    if (changes) {
+      sections.push(`## What changed\n${changes}`);
+    }
+
+    const verification = this.summarizeVerification(
+      params.toolTrace,
+      params.qualityScore,
+      params.qualityTarget,
+      params.meetsQualityTarget,
+    );
+    if (verification) {
+      sections.push(`## Verification\n${verification}`);
+    }
+
+    if (!findings && !changes && !verification && !todoSummary) {
+      return intro;
+    }
+
+    return sections.join("\n\n");
+  }
+
+  private buildTaskSummaryContext(
+    params: {
+      objective: string;
+      rawResponseText: string;
+      todos: TaskTodo[];
+      toolTrace: TaskToolObservation[];
+      proposal: EditProposal | null;
+      autoApplied: boolean;
+      fileDiffs?: FileDiffResult[];
+      qualityScore?: number;
+      qualityTarget?: number;
+      meetsQualityTarget?: boolean;
+    },
+    raw: string,
+  ): string {
+    const sections: string[] = [
+      `Objective: ${params.objective}`,
+      `Agent response: ${raw}`,
+    ];
+
+    const todoSummary = formatCompactTodos(params.todos);
+    if (todoSummary) {
+      sections.push(todoSummary);
+    }
+
+    const toolSummary = formatToolObservations(params.toolTrace);
+    if (toolSummary) {
+      sections.push(toolSummary);
+    }
+
+    const changeSummary = this.summarizeChanges(
+      params.proposal,
+      params.fileDiffs,
+      params.autoApplied,
+    );
+    if (changeSummary) {
+      sections.push(`## Changes\n${changeSummary}`);
+    }
+
+    const verificationSummary = this.summarizeVerification(
+      params.toolTrace,
+      params.qualityScore,
+      params.qualityTarget,
+      params.meetsQualityTarget,
+    );
+    if (verificationSummary) {
+      sections.push(`## Verification\n${verificationSummary}`);
+    }
+
+    sections.push(
+      "Write a concise, task-specific summary that sounds like a coding agent closing the loop.",
+      "Do not force the same headings every time. Only mention sections that matter for this task.",
+      "Be specific about the root cause, important findings, files changed, and verification outcome when present.",
+      "If there were no edits, say so naturally. If there were edits, name the key files and why they changed.",
+      "Return plain markdown only.",
+    );
+
+    return sections.filter((value) => value.length > 0).join("\n\n");
+  }
+
+  private cleanGeneratedSummary(text: string): string {
+    const trimmed = text.trim();
+    if (!trimmed) {
+      return "";
+    }
+
+    const stripped = trimmed
+      .replace(/^```(?:markdown|md)?\s*/i, "")
+      .replace(/\s*```$/i, "")
+      .trim();
+
+    if (this.isGenericTaskResponse(stripped)) {
+      return "";
+    }
+
+    return stripped;
+  }
+
+  private isGenericTaskResponse(text: string): boolean {
+    const normalized = text.trim().toLowerCase();
+    return (
+      normalized.length === 0 ||
+      normalized === "task completed." ||
+      normalized === "task completed" ||
+      normalized === "completed." ||
+      normalized === "done." ||
+      normalized === "done"
+    );
+  }
+
+  private summarizeEvidence(observations: TaskToolObservation[]): string {
+    const importantTools = new Set([
+      "workspace_scan",
+      "read_files",
+      "search_files",
+      "list_dir",
+      "diagnostics",
+      "get_problems",
+      "find_references",
+      "file_search",
+      "web_search",
+      "mcp_status",
+      "get_terminal_output",
+    ]);
+
+    const lines = observations
+      .filter(
+        (observation) => observation.ok && importantTools.has(observation.tool),
+      )
+      .slice(-5)
+      .map((observation) => {
+        const detail = this.firstUsefulLine(observation.detail);
+        if (detail && detail !== observation.summary) {
+          return `- ${observation.summary} ${detail}`;
+        }
+        return `- ${observation.summary}`;
+      });
+
+    return lines.join("\n");
+  }
+
+  private summarizeChanges(
+    proposal: EditProposal | null,
+    fileDiffs?: FileDiffResult[],
+    autoApplied = false,
+  ): string {
+    const items: string[] = [];
+    const diffs = fileDiffs ?? [];
+
+    if (diffs.length > 0) {
+      for (const diff of diffs.slice(0, 5)) {
+        const status = diff.isNew
+          ? "new"
+          : diff.isDelete
+            ? "deleted"
+            : "updated";
+        items.push(
+          `- ${diff.fileName} (${status}, +${diff.additions}/-${diff.deletions})`,
+        );
+      }
+    } else if (proposal?.edits.length) {
+      for (const edit of proposal.edits.slice(0, 5)) {
+        const op = edit.operation ?? "write";
+        const target = edit.targetPath ? ` -> ${edit.targetPath}` : "";
+        const reason = edit.reason ? ` — ${edit.reason}` : "";
+        items.push(
+          `- ${op}: ${this.normalizeDisplayPath(edit.filePath)}${target}${reason}`,
+        );
+      }
+    }
+
+    if (items.length === 0 && autoApplied) {
+      return "- Changes were auto-applied successfully.";
+    }
+
+    if (items.length === 0) {
+      return "- No file changes were required.";
+    }
+
+    return items.join("\n");
+  }
+
+  private summarizeVerification(
+    observations: TaskToolObservation[],
+    qualityScore?: number,
+    qualityTarget?: number,
+    meetsQualityTarget?: boolean,
+  ): string {
+    const verification = observations.filter(
+      (observation) => observation.tool === "run_verification",
+    );
+
+    const lines: string[] = [];
+    for (const item of verification.slice(-3)) {
+      lines.push(`- ${item.summary}`);
+      const detail = this.firstUsefulLine(item.detail);
+      if (detail) {
+        lines.push(`  ${detail}`);
+      }
+    }
+
+    if (typeof qualityScore === "number") {
+      const target = qualityTarget ?? TARGET_TASK_QUALITY_SCORE;
+      lines.push(
+        `- Quality score: ${qualityScore.toFixed(2)} / ${target.toFixed(2)} (${meetsQualityTarget ? "target met" : "below target"})`,
+      );
+    }
+
+    return lines.join("\n");
+  }
+
+  private firstUsefulLine(value?: string): string | undefined {
+    if (!value) {
+      return undefined;
+    }
+
+    const line = value
+      .split(/\r?\n/)
+      .map((entry) => entry.trim())
+      .find((entry) => entry.length > 0);
+
+    if (!line) {
+      return undefined;
+    }
+
+    return line.length > 180 ? `${line.slice(0, 177)}...` : line;
   }
 
   private async executeSingleToolCall(

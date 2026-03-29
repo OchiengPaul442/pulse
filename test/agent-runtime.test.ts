@@ -245,4 +245,198 @@ describe("AgentRuntime", () => {
     expect(result.responseText).toBe("Created a starter project plan.");
     expect(result.todos).toHaveLength(1);
   });
+
+  it("treats short task-like prompts as agent work", async () => {
+    const tempRoot = fs.mkdtempSync(
+      path.join(os.tmpdir(), "pulse-runtime-routing-test-"),
+    );
+    const storage: StorageState = {
+      storageDir: tempRoot,
+      dbPath: path.join(tempRoot, "db.sqlite"),
+      tracesDir: path.join(tempRoot, "traces"),
+      snapshotsDir: path.join(tempRoot, "snapshots"),
+      sessionsPath: path.join(tempRoot, "sessions.json"),
+      memoriesPath: path.join(tempRoot, "memories.json"),
+      editsPath: path.join(tempRoot, "edits.json"),
+      improvementPath: path.join(tempRoot, "improvement.json"),
+    };
+
+    fs.mkdirSync(storage.tracesDir, { recursive: true });
+    fs.mkdirSync(storage.snapshotsDir, { recursive: true });
+
+    const config: AgentConfig = {
+      ollamaBaseUrl: "http://127.0.0.1:11434",
+      plannerModel: "qwen2.5-coder:7b",
+      editorModel: "qwen2.5-coder:7b",
+      fastModel: "qwen2.5-coder:7b",
+      embeddingModel: "nomic-embed-text",
+      fallbackModels: ["qwen2.5-coder:7b"],
+      approvalMode: "balanced",
+      permissionMode: "default",
+      conversationMode: "agent",
+      persona: "software-engineer",
+      allowTerminalExecution: false,
+      autoRunVerification: false,
+      maxContextTokens: 16384,
+      memoryMode: "off",
+      indexingEnabled: false,
+      indexingMode: "light",
+      mcpServers: [],
+      telemetryOptIn: false,
+      selfLearnEnabled: false,
+      providerType: "ollama",
+      openaiBaseUrl: "",
+      openaiApiKey: "",
+      openaiModels: [],
+    };
+
+    const runtime = new AgentRuntime(
+      config,
+      storage,
+      {
+        info: vi.fn(),
+        warn: vi.fn(),
+        error: vi.fn(),
+      } as any,
+      {
+        search: vi.fn(),
+        formatResult: vi.fn(),
+        setTavilyApiKey: vi.fn(),
+        clearTavilyApiKey: vi.fn(),
+        hasTavilyApiKey: vi.fn(),
+      } as any,
+    );
+
+    expect((runtime as any).isSimpleConversational("fix it")).toBe(false);
+    expect((runtime as any).shouldAllowEdits("fix it")).toBe(true);
+    expect((runtime as any).isSimpleConversational("hello")).toBe(true);
+  });
+
+  it("builds a model-driven completion summary when evidence exists", async () => {
+    const tempRoot = fs.mkdtempSync(
+      path.join(os.tmpdir(), "pulse-runtime-summary-test-"),
+    );
+    const storage: StorageState = {
+      storageDir: tempRoot,
+      dbPath: path.join(tempRoot, "db.sqlite"),
+      tracesDir: path.join(tempRoot, "traces"),
+      snapshotsDir: path.join(tempRoot, "snapshots"),
+      sessionsPath: path.join(tempRoot, "sessions.json"),
+      memoriesPath: path.join(tempRoot, "memories.json"),
+      editsPath: path.join(tempRoot, "edits.json"),
+      improvementPath: path.join(tempRoot, "improvement.json"),
+    };
+
+    fs.mkdirSync(storage.tracesDir, { recursive: true });
+    fs.mkdirSync(storage.snapshotsDir, { recursive: true });
+
+    const config: AgentConfig = {
+      ollamaBaseUrl: "http://127.0.0.1:11434",
+      plannerModel: "qwen2.5-coder:7b",
+      editorModel: "qwen2.5-coder:7b",
+      fastModel: "qwen2.5-coder:7b",
+      embeddingModel: "nomic-embed-text",
+      fallbackModels: ["qwen2.5-coder:7b"],
+      approvalMode: "balanced",
+      permissionMode: "default",
+      conversationMode: "agent",
+      persona: "software-engineer",
+      allowTerminalExecution: false,
+      autoRunVerification: false,
+      maxContextTokens: 16384,
+      memoryMode: "off",
+      indexingEnabled: false,
+      indexingMode: "light",
+      mcpServers: [],
+      telemetryOptIn: false,
+      selfLearnEnabled: false,
+      providerType: "ollama",
+      openaiBaseUrl: "",
+      openaiApiKey: "",
+      openaiModels: [],
+    };
+
+    const runtime = new AgentRuntime(
+      config,
+      storage,
+      {
+        info: vi.fn(),
+        warn: vi.fn(),
+        error: vi.fn(),
+      } as any,
+      {
+        search: vi.fn(),
+        formatResult: vi.fn(),
+        setTavilyApiKey: vi.fn(),
+        clearTavilyApiKey: vi.fn(),
+        hasTavilyApiKey: vi.fn(),
+      } as any,
+    );
+
+    vi.spyOn(
+      AgentRuntime.prototype as any,
+      "resolveModelOrFallback",
+    ).mockResolvedValue("qwen2.5-coder:7b");
+
+    const summaryText =
+      "The agent inspected the scroll logic, found the visibility check was too loose, updated the button state, and verified the fix with tests.";
+
+    const chatSpy = vi
+      .spyOn(OllamaProvider.prototype, "chat")
+      .mockResolvedValue({
+        text: summaryText,
+        raw: {},
+        tokenUsage: { promptTokens: 10, completionTokens: 18, totalTokens: 28 },
+      } as any);
+
+    const summary = await (runtime as any).buildTaskCompletionSummary({
+      objective: "Fix the scroll button",
+      rawResponseText: "Task completed.",
+      todos: [{ id: "todo_1", title: "Inspect scroll logic", status: "done" }],
+      toolTrace: [
+        {
+          tool: "read_files",
+          ok: true,
+          summary: "Read 2 file(s).",
+          detail: "File: src/views/PulseSidebarProvider.ts\n...",
+        },
+        {
+          tool: "run_verification",
+          ok: true,
+          summary: "npm test exited with 0.",
+          detail: "All checks passed.",
+        },
+      ],
+      proposal: {
+        id: "proposal-1",
+        objective: "Fix the scroll button",
+        createdAt: new Date().toISOString(),
+        edits: [
+          {
+            operation: "write",
+            filePath: "src/views/PulseSidebarProvider.ts",
+            reason: "Only show the scroll button when the chat overflows.",
+          },
+        ],
+      },
+      autoApplied: true,
+      fileDiffs: [
+        {
+          fileName: "PulseSidebarProvider.ts",
+          filePath: "src/views/PulseSidebarProvider.ts",
+          isNew: false,
+          isDelete: false,
+          hunks: [],
+          additions: 3,
+          deletions: 1,
+        },
+      ],
+      qualityScore: 0.94,
+      qualityTarget: 0.9,
+      meetsQualityTarget: true,
+    });
+
+    expect(chatSpy).toHaveBeenCalledTimes(1);
+    expect(summary).toBe(summaryText);
+  });
 });
