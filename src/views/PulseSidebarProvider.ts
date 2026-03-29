@@ -1636,8 +1636,8 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
   var streamRenderBuffer = '';
   var currentTodos = [];
   var currentFiles = [];
-  var todoDrawerCollapsed = false;
-  var filesDrawerCollapsed = false;
+  var todoDrawerCollapsed = true;
+  var filesDrawerCollapsed = true;
 
   // --- Drawer render functions ---
   function renderTodoDrawer(todos) {

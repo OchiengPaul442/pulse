@@ -163,6 +163,15 @@ const TOOL_ALIASES: Record<string, TaskToolName> = {
   get_terminal_output: "get_terminal_output",
   terminal_output: "get_terminal_output",
   terminal_last: "get_terminal_output",
+  // Common local model hallucinations / alternate names
+  write: "create_file",
+  create: "create_file",
+  read: "read_files",
+  delete: "delete_file",
+  remove: "delete_file",
+  install: "run_terminal",
+  test_project: "run_verification",
+  build_project: "run_verification",
 };
 
 export function parseTaskResponse(raw: string): TaskModelResponse {
@@ -308,11 +317,42 @@ function buildModelResponse(
     }
   }
 
+  // Support local model patterns: single tool call at top level
+  // e.g. {"tool":"create_file","args":{...},"response":"..."}
+  let toolCalls = normalizeToolCalls(parsed.toolCalls ?? parsed.tool_calls);
+  if (
+    toolCalls.length === 0 &&
+    typeof parsed.tool === "string" &&
+    parsed.tool.trim().length > 0
+  ) {
+    const singleCall = normalizeToolCall({
+      tool: parsed.tool,
+      args: parsed.args ?? parsed.arguments ?? {},
+      reason: parsed.reason,
+    });
+    if (singleCall) {
+      toolCalls = [singleCall];
+    }
+  }
+
+  // Support "action"/"actions" as alias for toolCalls (common local model pattern)
+  if (toolCalls.length === 0) {
+    const actionSource = parsed.action ?? parsed.actions;
+    if (actionSource) {
+      const actionCalls = normalizeToolCalls(
+        Array.isArray(actionSource) ? actionSource : [actionSource],
+      );
+      if (actionCalls.length > 0) {
+        toolCalls = actionCalls;
+      }
+    }
+  }
+
   return {
     response,
-    todos: normalizeTodos(parsed.todos),
-    toolCalls: normalizeToolCalls(parsed.toolCalls ?? parsed.tool_calls),
-    edits: normalizeEdits(parsed.edits),
+    todos: normalizeTodos(parsed.todos ?? parsed.tasks ?? parsed.steps),
+    toolCalls,
+    edits: normalizeEdits(parsed.edits ?? parsed.files ?? parsed.changes),
     shortcuts: normalizeShortcuts(parsed.shortcuts),
   };
 }
@@ -450,7 +490,7 @@ function isSafeSingleCommand(normalized: string): boolean {
     // Node.js ecosystem — build, test, run, install
     /\bnpm\s+(test|run|exec|install|ci|ls|outdated|audit|init)\b/,
     /\bnpx\s+\S/,
-    /\bpnpm\s+(test|run|install|add|exec|ls|audit|dlx|create)\b/,
+    /\bpnpm\s+(test|run|install|add|exec|ls|audit|dlx|create|init)\b/,
     /\byarn\s+(test|run|install|add|dlx|audit|create)\b/,
     // TypeScript / JavaScript tooling
     /\btsc(\s|$)/,
@@ -780,10 +820,21 @@ function normalizeTodoEntry(entry: unknown, index: number): TaskTodo | null {
   const statusRaw = firstString(candidate.status)?.toLowerCase();
   const status: TaskTodoStatus =
     statusRaw === "in-progress" ||
-    statusRaw === "blocked" ||
-    statusRaw === "done"
-      ? statusRaw
-      : "pending";
+    statusRaw === "in_progress" ||
+    statusRaw === "active" ||
+    statusRaw === "working" ||
+    statusRaw === "running"
+      ? "in-progress"
+      : statusRaw === "blocked" ||
+          statusRaw === "failed" ||
+          statusRaw === "error"
+        ? "blocked"
+        : statusRaw === "done" ||
+            statusRaw === "completed" ||
+            statusRaw === "complete" ||
+            statusRaw === "finished"
+          ? "done"
+          : "pending";
 
   return {
     id: firstString(candidate.id) ?? `todo_${index + 1}`,
@@ -822,7 +873,13 @@ function normalizeToolCall(entry: unknown): TaskToolCall | null {
   }
 
   const candidate = entry as Record<string, unknown>;
-  const rawTool = firstString(candidate.tool, candidate.name, candidate.type);
+  const rawTool = firstString(
+    candidate.tool,
+    candidate.name,
+    candidate.type,
+    candidate.function,
+    candidate.action,
+  );
   if (!rawTool) {
     return null;
   }
@@ -832,10 +889,44 @@ function normalizeToolCall(entry: unknown): TaskToolCall | null {
     return null;
   }
 
-  const args =
-    candidate.args && typeof candidate.args === "object"
-      ? (candidate.args as Record<string, unknown>)
-      : {};
+  // Support multiple argument field names local models may use
+  let args: Record<string, unknown> = {};
+  const argsSource =
+    candidate.args ??
+    candidate.arguments ??
+    candidate.params ??
+    candidate.parameters ??
+    candidate.input;
+  if (argsSource && typeof argsSource === "object") {
+    args = argsSource as Record<string, unknown>;
+  } else {
+    // If no args object, try extracting known arg names from the top level
+    // This handles: {"tool":"create_file","filePath":"...","content":"..."}
+    const knownArgNames = [
+      "filePath",
+      "path",
+      "content",
+      "command",
+      "cmd",
+      "query",
+      "paths",
+      "files",
+      "pattern",
+      "search",
+      "replace",
+      "edits",
+      "oldPath",
+      "newPath",
+      "symbol",
+      "directory",
+      "dir",
+    ];
+    for (const argName of knownArgNames) {
+      if (candidate[argName] !== undefined && argName !== "tool") {
+        args[argName] = candidate[argName];
+      }
+    }
+  }
 
   return {
     tool,

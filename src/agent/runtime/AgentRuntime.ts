@@ -1333,11 +1333,20 @@ export class AgentRuntime {
       purpose?: "tool" | "verification" | "manual";
     },
   ): Promise<TerminalExecResult | null> {
+    // Auto-fix known bad commands before execution
+    let sanitized = command;
+    // pnpm doesn't support -y flag on init
+    sanitized = sanitized.replace(/\bpnpm\s+init\s+-y\b/g, "pnpm init");
+    // Normalize quoted paths for shell compatibility
+    if (sanitized !== command) {
+      this.logger.info(`Command sanitized: "${command}" → "${sanitized}"`);
+    }
+
     const decision = this.permissionPolicy.evaluate({
       action: "terminal_exec",
-      description: `Run terminal command: ${command}`,
+      description: `Run terminal command: ${sanitized}`,
     });
-    const safeCommand = isSafeTerminalCommand(command);
+    const safeCommand = isSafeTerminalCommand(sanitized);
     // Safe commands always run in non-strict mode.
     // Unsafe commands require allowTerminalExecution or autoRunVerification.
     const mode = this.permissionPolicy.getMode();
@@ -1350,24 +1359,24 @@ export class AgentRuntime {
           this.currentConfig.allowTerminalExecution));
 
     if (!decision.allowed && !canAutoRunSafeCommand) {
-      this.logger.info(`Terminal exec blocked by policy: ${command}`);
+      this.logger.info(`Terminal exec blocked by policy: ${sanitized}`);
       return null;
     }
 
-    this.logger.info(`Executing terminal command: ${command}`);
+    this.logger.info(`Executing terminal command: ${sanitized}`);
     if (options?.visible) {
-      this.terminalExecutor.runInVisibleTerminal(command);
+      this.terminalExecutor.runInVisibleTerminal(sanitized);
       return {
         exitCode: 0,
         output: "",
-        command,
+        command: sanitized,
         durationMs: 0,
         timedOut: false,
       };
     }
     // Show agent commands in a visible terminal for user awareness
     const showInTerminal = options?.purpose === "tool";
-    return this.terminalExecutor.execute(command, {
+    return this.terminalExecutor.execute(sanitized, {
       ...options,
       showInTerminal,
     });
@@ -2523,27 +2532,46 @@ export class AgentRuntime {
         `Primary skill: ${primarySkillName}`,
         skillsSummary ? `Skills:\n${skillsSummary}` : "",
         "",
+        /next\.?js|next-app|scaffold|blog/i.test(objective)
+          ? [
+              "## SCAFFOLDING",
+              "- Use the framework's official scaffold command first.",
+              "- For Next.js, prefer `pnpm create next-app@latest . --ts --tailwind --eslint --app`.",
+              "- Do not use `pnpm init -y`; pnpm init does not support the -y flag.",
+              "- Create dummy data and blog components only after the scaffold succeeds.",
+              "",
+            ].join("\n")
+          : "",
         "## WORKFLOW",
         "1. Read/search files BEFORE editing. Never guess contents.",
-        "2. Work through todos ONE at a time: mark current 'in-progress', mark finished 'done'.",
-        "3. After run_terminal, ALWAYS check output. If non-zero exit or errors: diagnose and fix before proceeding.",
-        "4. After edits, run run_verification. If it fails, fix and re-verify.",
-        "5. On failure: analyze error → try 2-3 alternatives → never give up on first attempt.",
-        "6. Use batch_edit for targeted multi-file changes. Use edits[] for full file writes/creates.",
-        "7. Never delete files unless explicitly asked. Contain fixes — don't break other code.",
+        "2. Work through todos ONE at a time: mark current 'in-progress', execute it with tool calls, mark 'done'.",
+        "3. After run_terminal, ALWAYS check output. If errors: diagnose and fix before proceeding.",
+        "4. Use create_file tool for new files (preferred — gives immediate feedback). Use batch_edit for modifying existing files.",
+        "5. On failure: analyze error → try alternatives → never give up on first attempt.",
+        "6. Never delete files unless explicitly asked. Contain fixes — don't break other code.",
+        "7. You get MULTIPLE turns. Each turn you can make tool calls. Use them!",
         "",
         "## TODO RULES",
-        "- Create 3-5 actionable todos upfront. Update statuses every turn.",
+        "- Create 3-5 actionable todos upfront. Update statuses EVERY turn.",
         "- Statuses: 'pending' | 'in-progress' | 'done' | 'blocked'",
-        "- ONE 'in-progress' at a time. Complete and verify before moving to next.",
+        "- ONE 'in-progress' at a time. Complete it, mark 'done', then start next.",
+        "- Do NOT try to complete all todos in one turn. Focus on ONE at a time.",
         "",
         "## JSON FORMAT (STRICT)",
-        '{"response":"<plain explanation>","todos":[{"id":"todo_1","title":"...","status":"pending"}],"toolCalls":[{"tool":"<name>","args":{}}],"edits":[{"filePath":"<path>","content":"<text>","operation":"write"}],"shortcuts":[]}',
-        "- 'response': plain text explanation ONLY. No JSON/metadata/tool summaries.",
-        "- If toolCalls present: brief note in response, you get another turn with results.",
-        "- If no toolCalls: write your FINAL summary in response.",
+        '{"response":"<brief explanation>","todos":[{"id":"todo_1","title":"...","status":"pending"}],"toolCalls":[{"tool":"<name>","args":{...}}],"edits":[],"shortcuts":[]}',
+        "- 'response': brief explanation of what you're doing this turn.",
+        "- 'toolCalls': actions for THIS turn only. You'll get results and can continue.",
+        "- 'edits': use ONLY for batch file modifications. Prefer create_file tool for new files.",
+        "- If toolCalls present: you get another turn with results.",
+        "- If no toolCalls and all todos done: write final summary in response.",
         "",
-        "## TOOLS",
+        "## TOOL EXAMPLES",
+        'Create a file: {"tool":"create_file","args":{"filePath":"src/index.ts","content":"..."}}',
+        'Run command: {"tool":"run_terminal","args":{"command":"npm install"}}',
+        'Read files: {"tool":"read_files","args":{"paths":["package.json"]}}',
+        'List directory: {"tool":"list_dir","args":{"path":"."}}',
+        "",
+        "## ALL TOOLS",
         "workspace_scan, read_files {paths:[]}, create_file {filePath,content}, delete_file {filePath}",
         "search_files {query}, list_dir {path}, run_terminal {command}, run_verification",
         "web_search {query}, git_diff {filePath?}, diagnostics, get_terminal_output",
@@ -2575,18 +2603,59 @@ export class AgentRuntime {
       shortcuts: optionalShortcuts,
     };
     const toolTrace: TaskToolObservation[] = [];
+    const allAccumulatedEdits: ProposedEdit[] = [];
+    const toolCreatedFiles: Array<{
+      path: string;
+      additions: number;
+      deletions: number;
+    }> = [];
     let toolContext = "";
     let critiqueContext = "";
     let requestedVerification = false;
     let finalAssessment: TaskQualityAssessment | null = null;
 
-    // Agent loop: up to 10 iterations to allow multi-step tool workflows.
-    // The loop continues as long as the LLM requests tool calls (so it can
-    // observe results and act on them). It stops when:
-    //   - The LLM returns NO tool calls and quality meets target, OR
-    //   - Max iterations reached.
+    // Build a compact follow-up prompt for iterations > 0.
+    // This avoids resending full workspace/conversation context, saving tokens.
+    const buildCompactPrompt = (
+      toolCtx: string,
+      critiqueCtx: string,
+      currentTodos: TaskTodo[],
+    ): string =>
+      [
+        "You are an autonomous coding agent inside VS Code. Return valid JSON only.",
+        `Objective: ${objective}`,
+        "",
+        "## CURRENT TODO STATUS",
+        currentTodos.length > 0
+          ? currentTodos
+              .map(
+                (t) =>
+                  `- [${t.status === "done" ? "x" : t.status === "in-progress" ? ">" : " "}] ${t.title}`,
+              )
+              .join("\n")
+          : "No todos yet.",
+        "",
+        "## INSTRUCTIONS",
+        "- Work on the NEXT pending todo. Mark it in-progress, complete it, mark it done.",
+        "- Use create_file tool for new files. Use batch_edit for modifying existing files.",
+        "- After completing a todo, update its status to done and proceed to the next.",
+        "- When ALL todos are done, write a final summary in response with NO toolCalls.",
+        "",
+        "## JSON FORMAT",
+        '{"response":"...","todos":[...],"toolCalls":[...],"edits":[],"shortcuts":[]}',
+        "",
+        toolCtx ? `## TOOL RESULTS\n${toolCtx}` : "",
+        critiqueCtx ? `## FEEDBACK\n${critiqueCtx}` : "",
+      ]
+        .filter((v) => v.length > 0)
+        .join("\n");
+
+    // Agent loop: iterates until all todos are done, quality meets target,
+    // or max iterations reached. Each iteration can produce tool calls,
+    // file edits, or both. Edits are applied immediately so the agent
+    // can continue working on remaining todos without stopping.
     const MAX_AGENT_ITERATIONS = 10;
-    const ITERATION_TIMEOUT_MS = 90_000; // 90s per iteration to prevent stalling
+    const ITERATION_TIMEOUT_MS = 90_000;
     for (let iteration = 0; iteration < MAX_AGENT_ITERATIONS; iteration += 1) {
       this.emitProgress(
         iteration === 0 ? "Generating response" : "Continuing",
@@ -2605,6 +2674,13 @@ export class AgentRuntime {
       const onParentAbort = () => iterationAbort.abort();
       signal?.addEventListener("abort", onParentAbort, { once: true });
 
+      // Use full prompt on first iteration, compact prompt for follow-ups
+      // to reduce token usage significantly on subsequent iterations.
+      const isFollowUp = iteration > 0;
+      const promptText = isFollowUp
+        ? buildCompactPrompt(toolContext, critiqueContext, parsed.todos)
+        : buildPrompt(toolContext, critiqueContext);
+
       let response;
       try {
         response = await this.provider.chat({
@@ -2612,24 +2688,30 @@ export class AgentRuntime {
           format: "json",
           signal: iterationAbort.signal,
           onChunk: (chunk) => {
-            // Only emit reasoning chunks in agent mode — do NOT stream
-            // raw JSON tokens to the chat bubble. The parsed .response
-            // field is shown after the full response is received.
             this.emitReasoningChunk(chunk);
           },
-          messages: [
-            {
-              role: "system",
-              content:
-                "You are a coding agent. You MUST return ONLY valid JSON with these fields: response, todos, toolCalls, edits, shortcuts. No markdown fences. No text outside the JSON object. Start your response with { and end with }.",
-            },
-            ...conversationHistory,
-            this.buildUserMessage(
-              buildPrompt(toolContext, critiqueContext),
-              iteration === 0 ? images : undefined,
-            ),
-          ],
-          maxTokens: 3072,
+          messages: isFollowUp
+            ? [
+                {
+                  role: "system",
+                  content:
+                    "You are a coding agent. Return ONLY valid JSON: {response, todos, toolCalls, edits, shortcuts}. No markdown. Start with { end with }.",
+                },
+                this.buildUserMessage(promptText),
+              ]
+            : [
+                {
+                  role: "system",
+                  content:
+                    "You are a coding agent. You MUST return ONLY valid JSON with these fields: response, todos, toolCalls, edits, shortcuts. No markdown fences. No text outside the JSON object. Start your response with { and end with }.",
+                },
+                ...conversationHistory,
+                this.buildUserMessage(
+                  promptText,
+                  iteration === 0 ? images : undefined,
+                ),
+              ],
+          maxTokens: isFollowUp ? 2048 : 3072,
         });
       } catch (err: unknown) {
         if (iterationAbort.signal.aborted && !signal?.aborted) {
@@ -2681,6 +2763,41 @@ export class AgentRuntime {
           ? await this.executeTaskToolCalls(parsed.toolCalls, objective, signal)
           : [];
 
+      // Track files created/modified via tool calls (create_file, batch_edit)
+      for (const obs of observations) {
+        if (
+          obs.ok &&
+          (obs.tool === "create_file" || obs.tool === "batch_edit")
+        ) {
+          const createdPath = obs.detail ?? obs.summary;
+          const pathMatch = createdPath.match(
+            /(?:Created|Edited|Modified)\s+(?:file:\s*)?(.+)/i,
+          );
+          if (pathMatch) {
+            toolCreatedFiles.push({
+              path: pathMatch[1].trim(),
+              additions: 1,
+              deletions: 0,
+            });
+          }
+        }
+      }
+
+      // Apply edits[] immediately during the loop so the agent can
+      // continue working on remaining todos without stopping.
+      if (parsed.edits.length > 0) {
+        const editResults = await this.applyIterationEdits(
+          parsed.edits,
+          objective,
+        );
+        observations.push(...editResults);
+        allAccumulatedEdits.push(...parsed.edits);
+        parsed.edits = []; // Clear so they aren't re-processed after loop
+      }
+
+      // Auto-advance todo statuses based on completed work
+      this.advanceTodoStatuses(parsed.todos, observations);
+
       // Error recovery: if tool calls failed, inject failure context so LLM
       // can diagnose and try alternatives on the next iteration
       const failedObs = observations.filter((o) => !o.ok);
@@ -2720,20 +2837,39 @@ export class AgentRuntime {
         isEditTask: this.isLikelyEditTaskObjective(objective),
       });
 
-      // If tool calls were executed this iteration, always continue so the
-      // LLM sees tool results and can produce an informed final response.
+      // Check if all todos are completed
+      const pendingTodos = parsed.todos.filter(
+        (t) => t.status === "pending" || t.status === "in-progress",
+      );
+      const allTodosDone = parsed.todos.length > 0 && pendingTodos.length === 0;
+
+      // If work was done this iteration (tool calls or edits), continue
+      // so the LLM can observe results and proceed to next todo.
       if (observations.length > 0) {
-        // Preserve failure critique so LLM can diagnose; only clear if all succeeded
         if (failedObs.length === 0) {
           critiqueContext = "";
+        }
+        // If all todos done after this iteration's work, we can stop
+        if (allTodosDone) {
+          break;
         }
         continue;
       }
 
-      // No tool calls this iteration — the LLM is done acting.
-      // Break if quality is sufficient or we've used enough iterations.
-      if (finalAssessment.meetsTarget || iteration >= 2) {
+      // No tool calls AND no edits this iteration — LLM is done acting.
+      // Break if all todos complete, quality sufficient, or enough iterations.
+      if (allTodosDone || finalAssessment.meetsTarget || iteration >= 2) {
         break;
+      }
+
+      // Still have pending todos but LLM didn't produce actions — nudge it
+      if (pendingTodos.length > 0) {
+        critiqueContext =
+          "You have pending todos that are NOT complete. " +
+          "Pick the next pending todo, mark it in-progress, and use tool calls to complete it. " +
+          "Do NOT stop until all todos are done.\n" +
+          `Pending: ${pendingTodos.map((t) => t.title).join(", ")}`;
+        continue;
       }
 
       critiqueContext = buildTaskRefinementPrompt(
@@ -2742,63 +2878,98 @@ export class AgentRuntime {
         finalAssessment,
         observations,
       );
+      const recoveryNextSteps = this.summarizeIssueNextSteps(observations);
+      if (recoveryNextSteps) {
+        critiqueContext += "\n\n## RECOVERY GUIDANCE\n" + recoveryNextSteps;
+      }
     }
 
-    const normalizedEdits = parsed.edits
+    // Combine any remaining parsed.edits with edits accumulated during the loop
+    const combinedEdits = [...allAccumulatedEdits, ...parsed.edits];
+    const normalizedEdits = combinedEdits
       .map((edit) =>
         normalizeEditPath(edit, vscode.workspace.workspaceFolders ?? []),
       )
       .filter((edit): edit is ProposedEdit => edit !== null);
 
-    // ── Compute file diffs before applying ────────────────────
+    // Deduplicate by filePath (keep last version of each file)
+    const editsByPath = new Map<string, ProposedEdit>();
+    for (const edit of normalizedEdits) {
+      editsByPath.set(edit.filePath, edit);
+    }
+    const dedupedEdits = Array.from(editsByPath.values());
+
+    // ── Compute file diffs ────────────────────
+    // For edits applied during the loop, files are already on disk.
+    // Read current content for diff display.
     const fileDiffs: FileDiffResult[] = [];
-    if (normalizedEdits.length > 0) {
-      for (const edit of normalizedEdits) {
-        const basename = path.basename(edit.filePath);
-        const lineCount = (edit.content ?? "").split("\n").length;
-        this.emitFilePatch(basename, lineCount);
+    for (const edit of dedupedEdits) {
+      const basename = path.basename(edit.filePath);
+      const lineCount = (edit.content ?? "").split("\n").length;
+      this.emitFilePatch(basename, lineCount);
 
-        // Read old content for diff computation
-        let oldContent: string | null = null;
-        try {
-          const uri = vscode.Uri.file(edit.filePath);
-          const raw = await vscode.workspace.fs.readFile(uri);
-          oldContent = Buffer.from(raw).toString("utf8");
-        } catch {
-          // File doesn't exist yet → new file
-        }
-        const newContent =
-          (edit.operation ?? "write") === "delete"
-            ? null
-            : (edit.content ?? "");
-        fileDiffs.push(computeFileDiff(edit.filePath, oldContent, newContent));
+      // Read current file content (may have been written during loop)
+      let currentContent: string | null = null;
+      try {
+        const uri = vscode.Uri.file(edit.filePath);
+        const raw = await vscode.workspace.fs.readFile(uri);
+        currentContent = Buffer.from(raw).toString("utf8");
+      } catch {
+        // File doesn't exist — may have been deleted or never created
       }
-
-      // Emit files-changed summary so the UI can show the drawer
-      this.emitFilesChanged(
-        fileDiffs.map((d) => ({
-          path: d.filePath ?? d.fileName ?? "",
-          additions: d.additions ?? 0,
-          deletions: d.deletions ?? 0,
-        })),
-      );
+      const newContent =
+        (edit.operation ?? "write") === "delete"
+          ? null
+          : (edit.content ?? currentContent ?? "");
+      // For files written during loop, old content is empty (new file)
+      const oldContent = allAccumulatedEdits.some(
+        (e) => e.filePath === edit.filePath,
+      )
+        ? null
+        : currentContent;
+      fileDiffs.push(computeFileDiff(edit.filePath, oldContent, newContent));
     }
 
+    // Also include files created via tool calls (create_file) in the
+    // files-changed list for UI consistency
+    const allFileChanges = [
+      ...fileDiffs.map((d) => ({
+        path: d.filePath ?? d.fileName ?? "",
+        additions: d.additions ?? 0,
+        deletions: d.deletions ?? 0,
+      })),
+      ...toolCreatedFiles.filter(
+        (f) => !fileDiffs.some((d) => (d.filePath ?? d.fileName) === f.path),
+      ),
+    ];
+
+    if (allFileChanges.length > 0) {
+      this.emitFilesChanged(allFileChanges);
+    }
+
+    // Only create proposals for edits NOT yet applied during the loop
+    const unappliedEdits = parsed.edits
+      .map((edit) =>
+        normalizeEditPath(edit, vscode.workspace.workspaceFolders ?? []),
+      )
+      .filter((edit): edit is ProposedEdit => edit !== null);
+
     const proposal =
-      normalizedEdits.length > 0
-        ? await this.editManager.setPendingProposal(objective, normalizedEdits)
+      unappliedEdits.length > 0
+        ? await this.editManager.setPendingProposal(objective, unappliedEdits)
         : null;
 
     if (proposal) {
-      for (const edit of normalizedEdits) {
+      for (const edit of unappliedEdits) {
         const basename = path.basename(edit.filePath);
         const linesAdded = (edit.content ?? "").split("\n").length;
         this.emitFilePatched(basename, linesAdded);
       }
     }
 
-    let autoApplied = false;
-    if (proposal && this.shouldAutoApplyProposal(normalizedEdits)) {
+    // Edits applied during the loop are already on disk
+    let autoApplied = allAccumulatedEdits.length > 0;
+    if (proposal && this.shouldAutoApplyProposal(unappliedEdits)) {
       this.emitProgress(
         "Auto-applying edits",
         "Safe workspace edits",
@@ -3421,6 +3592,32 @@ export class AgentRuntime {
       suggestions.push("run the package binary through pnpm exec or npx");
       suggestions.push("verify the dependency is installed locally first");
       suggestions.push("check the command name and package version");
+    } else if (
+      normalized.includes("pnpm init -y") ||
+      normalized.includes("unknown option 'y'") ||
+      (normalized.includes("unknown option") && normalized.includes("init"))
+    ) {
+      suggestions.push(
+        "use pnpm init without -y, or npm init -y if npm is the target",
+      );
+      suggestions.push(
+        "for Next.js scaffolds, use create-next-app instead of init",
+      );
+      suggestions.push("verify the scaffold command before retrying");
+    } else if (
+      normalized.includes("next-app") ||
+      normalized.includes("next.js") ||
+      normalized.includes("nextjs") ||
+      normalized.includes("scaffold") ||
+      normalized.includes("create a blog")
+    ) {
+      suggestions.push("use create-next-app to scaffold the project first");
+      suggestions.push(
+        "create dummy data only after the app scaffold succeeds",
+      );
+      suggestions.push(
+        "confirm the project root and package manager before retrying",
+      );
     } else if (
       normalized.includes("enoent") ||
       normalized.includes("not found") ||
@@ -4271,6 +4468,106 @@ export class AgentRuntime {
     }
 
     return [];
+  }
+
+  /**
+   * Apply edits from the current loop iteration immediately to disk.
+   * Returns observations so the loop treats them as completed work.
+   */
+  private async applyIterationEdits(
+    edits: ProposedEdit[],
+    objective: string,
+  ): Promise<TaskToolObservation[]> {
+    const observations: TaskToolObservation[] = [];
+    const workspaceFolders = vscode.workspace.workspaceFolders ?? [];
+
+    for (const edit of edits) {
+      const normalized = normalizeEditPath(edit, workspaceFolders);
+      if (!normalized) {
+        observations.push({
+          tool: "create_file",
+          ok: false,
+          summary: `Invalid edit path: ${edit.filePath}`,
+        });
+        continue;
+      }
+
+      const op = normalized.operation ?? "write";
+      try {
+        if (op === "write") {
+          const uri = vscode.Uri.file(normalized.filePath);
+          // Ensure parent directory exists
+          const dir = path.dirname(normalized.filePath);
+          try {
+            await vscode.workspace.fs.createDirectory(vscode.Uri.file(dir));
+          } catch {
+            /* directory may already exist */
+          }
+          await vscode.workspace.fs.writeFile(
+            uri,
+            Buffer.from(normalized.content ?? "", "utf8"),
+          );
+          const basename = path.basename(normalized.filePath);
+          this.emitFilePatched(
+            basename,
+            (normalized.content ?? "").split("\n").length,
+          );
+          observations.push({
+            tool: "create_file",
+            ok: true,
+            summary: `Created file: ${this.normalizeDisplayPath(normalized.filePath)}`,
+          });
+        } else if (op === "delete") {
+          const uri = vscode.Uri.file(normalized.filePath);
+          await vscode.workspace.fs.delete(uri, { useTrash: true });
+          observations.push({
+            tool: "delete_file",
+            ok: true,
+            summary: `Deleted file: ${this.normalizeDisplayPath(normalized.filePath)}`,
+          });
+        }
+      } catch (err) {
+        observations.push({
+          tool: "create_file",
+          ok: false,
+          summary: `Failed to write ${edit.filePath}: ${stringifyError(err)}`,
+        });
+      }
+    }
+
+    return observations;
+  }
+
+  /**
+   * Auto-advance todo statuses based on work completed in the current iteration.
+   * If tools/edits succeeded and there's a todo in-progress, mark it done.
+   * If no todo is in-progress, mark the first pending todo as in-progress.
+   */
+  private advanceTodoStatuses(
+    todos: TaskTodo[],
+    observations: TaskToolObservation[],
+  ): void {
+    if (todos.length === 0) return;
+
+    const hasSuccessfulWork = observations.some((o) => o.ok);
+    const inProgressTodo = todos.find((t) => t.status === "in-progress");
+
+    if (hasSuccessfulWork && inProgressTodo) {
+      // Mark in-progress todo as done since work succeeded
+      inProgressTodo.status = "done";
+    }
+
+    // Ensure there's always one in-progress todo if pending ones remain
+    const stillPending = todos.filter((t) => t.status === "pending");
+    if (
+      stillPending.length > 0 &&
+      !todos.some((t) => t.status === "in-progress")
+    ) {
+      stillPending[0].status = "in-progress";
+    }
+
+    // Emit updated statuses
+    this.emitTodoUpdate(todos);
   }
 
   private shouldAutoApplyProposal(edits: ProposedEdit[]): boolean {
