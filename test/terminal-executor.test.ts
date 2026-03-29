@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { TerminalExecutor } from "../src/agent/terminal/TerminalExecutor";
 
@@ -27,5 +27,23 @@ describe("TerminalExecutor", () => {
 
     expect(result.exitCode).toBe(127);
     expect(result.output.toLowerCase()).toContain("executable not found");
+  });
+
+  it("falls back to cmd for chained commands on Windows shells", async () => {
+    if (process.platform !== "win32") {
+      return;
+    }
+
+    const executor = new TerminalExecutor();
+    vi.spyOn(executor as any, "findWindowsShell").mockReturnValue(
+      "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+    );
+
+    const shell = (executor as any).resolveShellCommand(
+      "node --version && npm --version",
+    );
+
+    expect(shell.executable.toLowerCase()).toContain("cmd.exe");
+    expect(shell.args).toContain("/c");
   });
 });

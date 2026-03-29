@@ -2755,7 +2755,8 @@ export class AgentRuntime {
         "- You have full read/write/delete/move access inside the current workspace root.",
         "- Prefer workspace-relative paths unless an absolute path is needed for a specific tool.",
         "- Inspect first with workspace_scan, list_dir, read_files, search_files, and file_search.",
-        "- Create new files with create_file, modify existing files with batch_edit, move or rename with rename_file, and remove files with delete_file.",
+        "- Create folders with create_directory, create new files with create_file, modify existing files with batch_edit, move or rename with rename_file, and remove files with delete_file.",
+        "- Never create empty placeholder files when you intend to write code; include the actual file content in create_file.",
         "- Attached files are already available as context; read them before duplicating work.",
         "",
         ...(styleHintAgent ? [styleHintAgent] : []),
@@ -2779,7 +2780,7 @@ export class AgentRuntime {
         "1. Read/search files BEFORE editing. Never guess contents.",
         "2. Work through todos ONE at a time: mark current 'in-progress', execute it with tool calls, mark 'done'.",
         "3. After run_terminal, ALWAYS check output. If errors: diagnose and fix before proceeding.",
-        "4. Use create_file tool for new files (preferred — gives immediate feedback). Use batch_edit for modifying existing files.",
+        "4. Use create_directory for folders, create_file for new files with real content, and batch_edit for modifying existing files.",
         "5. On failure: analyze error → try alternatives → never give up on first attempt.",
         "6. Never delete files unless explicitly asked. Contain fixes — don't break other code.",
         "7. You get MULTIPLE turns. Each turn you can make tool calls. Use them!",
@@ -2803,13 +2804,14 @@ export class AgentRuntime {
         "- If no toolCalls and all todos done: write final summary in response.",
         "",
         "## TOOL EXAMPLES",
+        'Create a directory: {"tool":"create_directory","args":{"path":"src/components"}}',
         'Create a file: {"tool":"create_file","args":{"filePath":"src/index.ts","content":"..."}}',
         'Run command: {"tool":"run_terminal","args":{"command":"npm install"}}',
         'Read files: {"tool":"read_files","args":{"paths":["package.json"]}}',
         'List directory: {"tool":"list_dir","args":{"path":"."}}',
         "",
         "## ALL TOOLS",
-        "workspace_scan, read_files {paths:[]}, create_file {filePath,content}, delete_file {filePath}",
+        "workspace_scan, read_files {paths:[]}, create_directory {path}, create_file {filePath,content}, delete_file {filePath}",
         "search_files {query}, list_dir {path}, run_terminal {command}, run_verification",
         "web_search {query}, git_diff {filePath?}, diagnostics, get_terminal_output",
         "batch_edit {edits:[{filePath,search,replace}]}, rename_file {oldPath,newPath}",
@@ -4159,8 +4161,22 @@ export class AgentRuntime {
           },
         ];
       }
+      if (content.trim().length === 0) {
+        return [
+          {
+            tool: call.tool,
+            ok: false,
+            summary: "create_file requires non-empty content.",
+            detail:
+              "Use create_directory for folders, then provide the actual file contents for code files.",
+          },
+        ];
+      }
       try {
         const uri = vscode.Uri.file(resolved);
+        await vscode.workspace.fs.createDirectory(
+          vscode.Uri.file(path.dirname(resolved)),
+        );
         await vscode.workspace.fs.writeFile(uri, Buffer.from(content, "utf8"));
         return [
           {
@@ -4175,6 +4191,47 @@ export class AgentRuntime {
             tool: call.tool,
             ok: false,
             summary: `Failed to create file: ${stringifyError(err)}`,
+          },
+        ];
+      }
+    }
+
+    if (call.tool === "create_directory") {
+      const dirPath = this.firstString(call.args.path, call.args.filePath);
+      if (!dirPath) {
+        return [
+          {
+            tool: call.tool,
+            ok: false,
+            summary: "No directory path was provided for create_directory.",
+          },
+        ];
+      }
+      const resolved = this.resolveWorkspacePath(dirPath);
+      if (!resolved) {
+        return [
+          {
+            tool: call.tool,
+            ok: false,
+            summary: `Path "${dirPath}" is outside the workspace.`,
+          },
+        ];
+      }
+      try {
+        await vscode.workspace.fs.createDirectory(vscode.Uri.file(resolved));
+        return [
+          {
+            tool: call.tool,
+            ok: true,
+            summary: `Created directory: ${this.normalizeDisplayPath(resolved)}`,
+          },
+        ];
+      } catch (err) {
+        return [
+          {
+            tool: call.tool,
+            ok: false,
+            summary: `Failed to create directory: ${stringifyError(err)}`,
           },
         ];
       }

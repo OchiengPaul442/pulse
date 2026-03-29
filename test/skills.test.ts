@@ -65,5 +65,10 @@ Design the architecture and plan the implementation.
     expect(
       selected.selected.some((skill) => skill.tools.includes("create_file")),
     ).toBe(true);
+    expect(
+      selected.selected.some((skill) =>
+        skill.tools.includes("create_directory"),
+      ),
+    ).toBe(true);
   });
 });

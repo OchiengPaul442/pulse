@@ -334,6 +334,124 @@ describe("AgentRuntime", () => {
     expect(provider.listModels).toHaveBeenCalledTimes(1);
   });
 
+  it("creates directories and nested files with filesystem tools", async () => {
+    const tempRoot = fs.mkdtempSync(
+      path.join(os.tmpdir(), "pulse-runtime-filesystem-tools-test-"),
+    );
+    const storage: StorageState = {
+      storageDir: tempRoot,
+      dbPath: path.join(tempRoot, "db.sqlite"),
+      tracesDir: path.join(tempRoot, "traces"),
+      snapshotsDir: path.join(tempRoot, "snapshots"),
+      sessionsPath: path.join(tempRoot, "sessions.json"),
+      memoriesPath: path.join(tempRoot, "memories.json"),
+      editsPath: path.join(tempRoot, "edits.json"),
+      improvementPath: path.join(tempRoot, "improvement.json"),
+    };
+
+    fs.mkdirSync(storage.tracesDir, { recursive: true });
+    fs.mkdirSync(storage.snapshotsDir, { recursive: true });
+
+    const vscodeApi = await import("vscode");
+    const previousWorkspaceFolders = vscodeApi.workspace.workspaceFolders;
+    vscodeApi.workspace.workspaceFolders = [
+      { uri: { fsPath: tempRoot } },
+    ] as any;
+    const createDirectory = vi.mocked(vscodeApi.workspace.fs.createDirectory);
+    const writeFile = vi.mocked(vscodeApi.workspace.fs.writeFile);
+
+    try {
+      const runtime = new AgentRuntime(
+        {
+          ollamaBaseUrl: "http://127.0.0.1:11434",
+          plannerModel: "qwen2.5-coder:7b",
+          editorModel: "qwen2.5-coder:7b",
+          fastModel: "qwen2.5-coder:7b",
+          embeddingModel: "nomic-embed-text",
+          fallbackModels: ["qwen2.5-coder:7b"],
+          approvalMode: "balanced",
+          permissionMode: "default",
+          conversationMode: "agent",
+          persona: "software-engineer",
+          allowTerminalExecution: false,
+          autoRunVerification: false,
+          maxContextTokens: 16384,
+          memoryMode: "off",
+          indexingEnabled: false,
+          indexingMode: "light",
+          mcpServers: [],
+          telemetryOptIn: false,
+          selfLearnEnabled: false,
+          providerType: "ollama",
+          openaiBaseUrl: "",
+          openaiApiKey: "",
+          openaiModels: [],
+          performanceProfile: "auto",
+          qualityTargetScore: 0.9,
+        },
+        storage,
+        {
+          info: vi.fn(),
+          warn: vi.fn(),
+          error: vi.fn(),
+        } as any,
+        {
+          search: vi.fn(),
+          formatResult: vi.fn(),
+          setTavilyApiKey: vi.fn(),
+          clearTavilyApiKey: vi.fn(),
+          hasTavilyApiKey: vi.fn(),
+        } as any,
+      );
+
+      const createDirResult = await (runtime as any).executeSingleToolCall(
+        { tool: "create_directory", args: { path: "backend/src" } },
+        "Build from scratch",
+      );
+      expect(createDirResult[0]?.ok).toBe(true);
+      expect(createDirectory).toHaveBeenCalledWith({
+        fsPath: path.join(tempRoot, "backend", "src"),
+      });
+
+      const createFileResult = await (runtime as any).executeSingleToolCall(
+        {
+          tool: "create_file",
+          args: {
+            filePath: "backend/src/app.py",
+            content: "print('hello world')",
+          },
+        },
+        "Build from scratch",
+      );
+      expect(createFileResult[0]?.ok).toBe(true);
+      expect(createDirectory).toHaveBeenCalledWith({
+        fsPath: path.join(tempRoot, "backend", "src"),
+      });
+      expect(writeFile).toHaveBeenCalledWith(
+        { fsPath: path.join(tempRoot, "backend", "src", "app.py") },
+        Buffer.from("print('hello world')", "utf8"),
+      );
+
+      const emptyFileResult = await (runtime as any).executeSingleToolCall(
+        {
+          tool: "create_file",
+          args: {
+            filePath: "backend/src/empty.py",
+            content: "",
+          },
+        },
+        "Build from scratch",
+      );
+      expect(emptyFileResult[0]?.ok).toBe(false);
+      expect(emptyFileResult[0]?.summary).toContain(
+        "create_file requires non-empty content",
+      );
+      expect(writeFile).toHaveBeenCalledTimes(1);
+    } finally {
+      vscodeApi.workspace.workspaceFolders = previousWorkspaceFolders;
+    }
+  });
+
   it("preserves token accounting during explainText", async () => {
     const tempRoot = fs.mkdtempSync(
       path.join(os.tmpdir(), "pulse-runtime-explain-token-test-"),

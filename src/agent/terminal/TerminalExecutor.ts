@@ -179,6 +179,17 @@ export class TerminalExecutor {
   } {
     if (process.platform === "win32") {
       const shell = this.findWindowsShell();
+      const chainOperator = /(^|\s)(?:&&|\|\|)(\s|$)/.test(command);
+      if (
+        chainOperator &&
+        (shell.toLowerCase().endsWith("pwsh.exe") ||
+          shell.toLowerCase().endsWith("powershell.exe"))
+      ) {
+        return {
+          executable: this.findCmdShell(),
+          args: ["/d", "/s", "/c", command],
+        };
+      }
       if (
         shell.toLowerCase().endsWith("pwsh.exe") ||
         shell.toLowerCase().endsWith("powershell.exe")
@@ -239,6 +250,23 @@ export class TerminalExecutor {
       if (!candidate) {
         continue;
       }
+      if (candidate.toLowerCase() === "cmd.exe") {
+        return candidate;
+      }
+      if (existsSync(candidate)) {
+        return candidate;
+      }
+    }
+
+    return "cmd.exe";
+  }
+
+  private findCmdShell(): string {
+    const candidates = [process.env.COMSPEC, "cmd.exe"].filter(
+      (value): value is string => Boolean(value),
+    );
+
+    for (const candidate of candidates) {
       if (candidate.toLowerCase() === "cmd.exe") {
         return candidate;
       }

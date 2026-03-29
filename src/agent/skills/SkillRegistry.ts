@@ -244,6 +244,9 @@ const BUILTIN_SKILLS: SkillManifest[] = [
       "touch",
       "new file",
       "new folder",
+      "create directory",
+      "mkdir",
+      "make directory",
     ],
     tools: [
       "workspace_scan",
@@ -251,6 +254,7 @@ const BUILTIN_SKILLS: SkillManifest[] = [
       "search_files",
       "file_search",
       "list_dir",
+      "create_directory",
       "create_file",
       "batch_edit",
       "rename_file",
@@ -658,6 +662,7 @@ function shortcutForTool(tool: string): string | null {
   }
   if (
     tool.includes("create_file") ||
+    tool.includes("create_directory") ||
     tool.includes("delete_file") ||
     tool.includes("list_dir") ||
     tool.includes("rename_file")

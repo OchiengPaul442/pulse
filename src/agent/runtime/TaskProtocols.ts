@@ -77,6 +77,7 @@ export type TaskToolName =
   | "workspace_scan"
   | "read_files"
   | "create_file"
+  | "create_directory"
   | "delete_file"
   | "search_files"
   | "list_dir"
@@ -154,6 +155,12 @@ const TOOL_ALIASES: Record<string, TaskToolName> = {
   file_create: "create_file",
   edit_file: "create_file",
   update_file: "create_file",
+  create_directory: "create_directory",
+  mkdir: "create_directory",
+  md: "create_directory",
+  new_folder: "create_directory",
+  make_dir: "create_directory",
+  create_folder: "create_directory",
   delete_file: "delete_file",
   remove_file: "delete_file",
   rm: "delete_file",
@@ -1147,6 +1154,7 @@ function normalizeToolCall(entry: unknown): TaskToolCall | null {
       "symbol",
       "directory",
       "dir",
+      "destination",
     ];
     for (const argName of knownArgNames) {
       if (candidate[argName] !== undefined && argName !== "tool") {
