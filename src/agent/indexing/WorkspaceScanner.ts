@@ -140,7 +140,12 @@ export class WorkspaceScanner {
     query: string,
     limit = 10,
     maxCharsPerFile = 3000,
+    signal?: AbortSignal,
   ): Promise<Array<{ path: string; matches: string[] }>> {
+    if (signal?.aborted) {
+      return [];
+    }
+
     const files = await vscode.workspace.findFiles(
       "**/*.{ts,tsx,js,jsx,py,java,rs,go,cs,cpp,c,rb,vue,svelte,json,yaml,yml,toml,md}",
       "**/{node_modules,dist,.git,out,coverage,.pulse,.next,__pycache__,build,target}/**",
@@ -163,45 +168,66 @@ export class WorkspaceScanner {
       score: number;
     }> = [];
 
-    for (const file of files) {
-      try {
-        const bytes = await vscode.workspace.fs.readFile(file);
-        const text = Buffer.from(bytes)
-          .toString("utf8")
-          .slice(0, maxCharsPerFile);
-        const lower = text.toLowerCase();
+    const batchSize = 24;
+    for (let start = 0; start < files.length; start += batchSize) {
+      if (signal?.aborted) {
+        break;
+      }
 
-        const matchingLines: string[] = [];
-        let score = 0;
+      const batch = files.slice(start, start + batchSize);
+      const batchResults = await Promise.all(
+        batch.map(async (file) => {
+          if (signal?.aborted) {
+            return null;
+          }
 
-        for (const kw of keywords) {
-          if (lower.includes(kw)) {
-            score += 1;
-            // Find the line containing the keyword and include context
-            const lines = text.split("\n");
-            for (let i = 0; i < lines.length; i++) {
-              if (
-                lines[i].toLowerCase().includes(kw) &&
-                matchingLines.length < 5
-              ) {
-                const start = Math.max(0, i - 1);
-                const end = Math.min(lines.length, i + 2);
-                matchingLines.push(
-                  lines
-                    .slice(start, end)
-                    .map((l, idx) => `${start + idx + 1}: ${l}`)
-                    .join("\n"),
-                );
+          try {
+            const bytes = await vscode.workspace.fs.readFile(file);
+            const text = Buffer.from(bytes)
+              .toString("utf8")
+              .slice(0, maxCharsPerFile);
+            const lower = text.toLowerCase();
+
+            const matchingLines: string[] = [];
+            let score = 0;
+
+            for (const kw of keywords) {
+              if (lower.includes(kw)) {
+                score += 1;
+                // Find the line containing the keyword and include context
+                const lines = text.split("\n");
+                for (let i = 0; i < lines.length; i++) {
+                  if (
+                    lines[i].toLowerCase().includes(kw) &&
+                    matchingLines.length < 5
+                  ) {
+                    const startLine = Math.max(0, i - 1);
+                    const endLine = Math.min(lines.length, i + 2);
+                    matchingLines.push(
+                      lines
+                        .slice(startLine, endLine)
+                        .map((l, idx) => `${startLine + idx + 1}: ${l}`)
+                        .join("\n"),
+                    );
+                  }
+                }
               }
             }
-          }
-        }
 
-        if (score > 0) {
-          results.push({ path: file.fsPath, matches: matchingLines, score });
+            return score > 0
+              ? { path: file.fsPath, matches: matchingLines, score }
+              : null;
+          } catch {
+            // Skip unreadable files
+            return null;
+          }
+        }),
+      );
+
+      for (const result of batchResults) {
+        if (result) {
+          results.push(result);
         }
-      } catch {
-        // Skip unreadable files
       }
     }
 
@@ -215,23 +241,37 @@ export class WorkspaceScanner {
   public async readContextSnippets(
     paths: string[],
     maxChars = 4000,
+    signal?: AbortSignal,
   ): Promise<Array<{ path: string; content: string }>> {
-    const snippets: Array<{ path: string; content: string }> = [];
-
-    for (const path of paths) {
-      try {
-        const bytes = await vscode.workspace.fs.readFile(vscode.Uri.file(path));
-        const text = Buffer.from(bytes).toString("utf8");
-        snippets.push({
-          path,
-          content: text.slice(0, maxChars),
-        });
-      } catch {
-        // Skip unreadable files.
-      }
+    if (signal?.aborted) {
+      return [];
     }
 
-    return snippets;
+    const snippets = await Promise.all(
+      paths.map(async (filePath) => {
+        if (signal?.aborted) {
+          return null;
+        }
+
+        try {
+          const bytes = await vscode.workspace.fs.readFile(
+            vscode.Uri.file(filePath),
+          );
+          const text = Buffer.from(bytes).toString("utf8");
+          return {
+            path: filePath,
+            content: text.slice(0, maxChars),
+          };
+        } catch {
+          return null;
+        }
+      }),
+    );
+
+    return snippets.filter(
+      (snippet): snippet is { path: string; content: string } =>
+        snippet !== null,
+    );
   }
 }
 

@@ -5,6 +5,7 @@ import type { Logger } from "../../platform/vscode/Logger";
 const TAVILY_SECRET_KEY = "pulse.tavily.apiKey";
 const TAVILY_SEARCH_URL = "https://api.tavily.com/search";
 const DUCKDUCKGO_SEARCH_URL = "https://api.duckduckgo.com/";
+const WEB_SEARCH_TIMEOUT_MS = 12_000;
 
 export interface WebSearchResult {
   title: string;
@@ -141,21 +142,25 @@ export class WebSearchService {
     apiKey: string,
     maxResults: number,
   ): Promise<WebSearchResponse> {
-    const response = await fetch(TAVILY_SEARCH_URL, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        "content-type": "application/json",
+    const response = await fetchWithTimeout(
+      TAVILY_SEARCH_URL,
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({
+          query,
+          search_depth: "basic",
+          include_answer: true,
+          include_raw_content: false,
+          include_images: false,
+          max_results: maxResults,
+        }),
       },
-      body: JSON.stringify({
-        query,
-        search_depth: "basic",
-        include_answer: true,
-        include_raw_content: false,
-        include_images: false,
-        max_results: maxResults,
-      }),
-    });
+      WEB_SEARCH_TIMEOUT_MS,
+    );
 
     if (!response.ok) {
       throw new Error(`Tavily search failed (HTTP ${response.status})`);
@@ -188,12 +193,16 @@ export class WebSearchService {
     url.searchParams.set("skip_disambig", "1");
     url.searchParams.set("no_redirect", "1");
 
-    const response = await fetch(url.toString(), {
-      method: "GET",
-      headers: {
-        accept: "application/json",
+    const response = await fetchWithTimeout(
+      url.toString(),
+      {
+        method: "GET",
+        headers: {
+          accept: "application/json",
+        },
       },
-    });
+      WEB_SEARCH_TIMEOUT_MS,
+    );
 
     if (!response.ok) {
       throw new Error(`DuckDuckGo search failed (HTTP ${response.status})`);
@@ -219,6 +228,34 @@ export class WebSearchService {
         data.Heading?.trim() ||
         "DuckDuckGo Instant Answer API is a lightweight fallback, not full web search.",
     };
+  }
+}
+
+async function fetchWithTimeout(
+  url: string,
+  init: RequestInit,
+  timeoutMs: number,
+): Promise<Response> {
+  const controller = new AbortController();
+  const timeoutHandle = setTimeout(() => controller.abort(), timeoutMs);
+  const onAbort = (): void => controller.abort();
+
+  if (init.signal) {
+    if (init.signal.aborted) {
+      controller.abort();
+    } else {
+      init.signal.addEventListener("abort", onAbort, { once: true });
+    }
+  }
+
+  try {
+    return await fetch(url, {
+      ...init,
+      signal: controller.signal,
+    });
+  } finally {
+    clearTimeout(timeoutHandle);
+    init.signal?.removeEventListener("abort", onAbort);
   }
 }
 

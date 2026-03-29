@@ -177,7 +177,10 @@ export class AgentRuntime {
   );
 
   /** AbortController for the currently running task. */
-  private abortController: AbortController | null = null;
+  private activeTaskController: AbortController | null = null;
+
+  /** AbortControllers for queued tasks that have not started yet. */
+  private pendingTaskControllers = new Set<AbortController>();
 
   /** Self-learn background loop timer. */
   private selfLearnTimer: ReturnType<typeof setInterval> | null = null;
@@ -622,30 +625,35 @@ export class AgentRuntime {
   }
 
   public async explainText(input: string): Promise<ExplainResult> {
-    this.resetTokenUsage();
+    const tokenSnapshot = this.tokensConsumed;
+    const activeSessionSnapshot = this.activeTokenSessionId;
     const model = await this.resolveModelOrFallback(
       this.currentConfig.fastModel,
     );
-    const response = await this.provider.chat({
-      model,
-      messages: [
-        {
-          role: "system",
-          content:
-            "You are Pulse, a senior coding assistant. Explain code accurately and concisely with practical details.",
-        },
-        {
-          role: "user",
-          content: input,
-        },
-      ],
-    });
-    this.consumeTokens(response.tokenUsage);
+    try {
+      const response = await this.provider.chat({
+        model,
+        messages: [
+          {
+            role: "system",
+            content:
+              "You are Pulse, a senior coding assistant. Explain code accurately and concisely with practical details.",
+          },
+          {
+            role: "user",
+            content: input,
+          },
+        ],
+      });
 
-    return {
-      text: response.text,
-      model,
-    };
+      return {
+        text: response.text,
+        model,
+      };
+    } finally {
+      this.tokensConsumed = tokenSnapshot;
+      this.activeTokenSessionId = activeSessionSnapshot;
+    }
   }
 
   private classifyObjective(objective: string): string {
@@ -761,8 +769,11 @@ export class AgentRuntime {
 
   /** Cancel the currently running task, if any. */
   public cancelTask(): void {
-    this.abortController?.abort();
-    this.abortController = null;
+    this.activeTaskController?.abort();
+    for (const controller of this.pendingTaskControllers) {
+      controller.abort();
+    }
+    this.pendingTaskControllers.clear();
   }
 
   /** Enable or disable the background self-learn loop. */
@@ -809,19 +820,24 @@ export class AgentRuntime {
     const normalizedRequest =
       typeof request === "string" ? { objective: request } : request;
     const controller = new AbortController();
-    this.abortController = controller;
+    this.pendingTaskControllers.add(controller);
     this.taskQueue = this.taskQueue
       .catch(() => {})
       .then(() => {
+        this.pendingTaskControllers.delete(controller);
         if (controller.signal.aborted) {
           return this.makeCancelledResult(normalizedRequest.objective);
         }
         this.lastReasoningPulseAt = 0;
         this.lastReasoningPulseMessage = "";
+        this.activeTaskController = controller;
         return this.executeTask(normalizedRequest, controller.signal);
       })
       .finally(() => {
-        if (this.abortController === controller) this.abortController = null;
+        if (this.activeTaskController === controller) {
+          this.activeTaskController = null;
+        }
+        this.pendingTaskControllers.delete(controller);
       });
     return this.taskQueue;
   }
@@ -934,7 +950,10 @@ export class AgentRuntime {
     const mode = this.currentConfig.conversationMode;
     const allowEdits = mode === "agent" && this.shouldAllowEdits(objective);
     const attachedFiles = session.attachedFiles ?? [];
-    const attachedContext = await this.loadAttachedFileContext(attachedFiles);
+    const attachedContext = await this.loadAttachedFileContext(
+      attachedFiles,
+      signal,
+    );
     const conversationHistory = await this.buildConversationHistory(
       session.messages,
     );
@@ -1594,6 +1613,7 @@ export class AgentRuntime {
       return null;
     }
 
+    this.cancelTask();
     await this.editManager.clearPendingProposal();
     await this.sessionStore.setActiveSession(sessionId);
     this.activeTokenSessionId = sessionId;
@@ -1662,6 +1682,7 @@ export class AgentRuntime {
     const deleted = await this.sessionStore.deleteSession(sessionId);
 
     if (deleted && wasActive) {
+      this.cancelTask();
       await this.sessionStore.clearActiveSession();
       await this.editManager.clearPendingProposal();
       this.activeTokenSessionId = null;
@@ -1672,6 +1693,7 @@ export class AgentRuntime {
   }
 
   public async startNewConversation(): Promise<void> {
+    this.cancelTask();
     await this.sessionStore.clearActiveSession();
     await this.editManager.clearPendingProposal();
     this.activeTokenSessionId = null;
@@ -2160,46 +2182,65 @@ export class AgentRuntime {
 
   private async loadAttachedFileContext(
     paths: string[],
+    signal?: AbortSignal,
   ): Promise<Array<{ path: string; content: string }>> {
     if (paths.length === 0) {
       return [];
     }
 
-    const expandedPaths = await this.expandAttachmentPaths(paths.slice(0, 8));
-    return this.scanner.readContextSnippets(expandedPaths.slice(0, 8), 4000);
+    const expandedPaths = await this.expandAttachmentPaths(
+      paths.slice(0, 8),
+      signal,
+    );
+    return this.scanner.readContextSnippets(
+      expandedPaths.slice(0, 8),
+      4000,
+      signal,
+    );
   }
 
-  private async expandAttachmentPaths(paths: string[]): Promise<string[]> {
-    const expanded: string[] = [];
-
-    for (const item of paths) {
-      const absolutePath = this.resolveAttachmentPath(item);
-      if (!absolutePath) {
-        continue;
-      }
-
-      try {
-        const stats = await vscode.workspace.fs.stat(
-          vscode.Uri.file(absolutePath),
-        );
-        if (stats.type === vscode.FileType.Directory) {
-          const folderUri = vscode.Uri.file(absolutePath);
-          const files = await vscode.workspace.findFiles(
-            new vscode.RelativePattern(folderUri, "**/*"),
-            "**/{node_modules,dist,.git}/**",
-            20,
-          );
-          expanded.push(...files.map((file) => file.fsPath));
-          continue;
-        }
-
-        expanded.push(absolutePath);
-      } catch {
-        // Skip unreadable attachments.
-      }
+  private async expandAttachmentPaths(
+    paths: string[],
+    signal?: AbortSignal,
+  ): Promise<string[]> {
+    if (signal?.aborted) {
+      return [];
     }
 
-    return Array.from(new Set(expanded));
+    const expanded = await Promise.all(
+      paths.map(async (item) => {
+        if (signal?.aborted) {
+          return [] as string[];
+        }
+
+        const absolutePath = this.resolveAttachmentPath(item);
+        if (!absolutePath) {
+          return [] as string[];
+        }
+
+        try {
+          const stats = await vscode.workspace.fs.stat(
+            vscode.Uri.file(absolutePath),
+          );
+          if (stats.type === vscode.FileType.Directory) {
+            const folderUri = vscode.Uri.file(absolutePath);
+            const files = await vscode.workspace.findFiles(
+              new vscode.RelativePattern(folderUri, "**/*"),
+              "**/{node_modules,dist,.git}/**",
+              20,
+            );
+            return files.map((file) => file.fsPath);
+          }
+
+          return [absolutePath];
+        } catch {
+          // Skip unreadable attachments.
+          return [] as string[];
+        }
+      }),
+    );
+
+    return Array.from(new Set(expanded.flat()));
   }
 
   private resolveAttachmentPath(value: string): string | null {
@@ -2664,8 +2705,12 @@ export class AgentRuntime {
     const session = await sessionPromise;
     const [rawContextSnippets, attachedContext, conversationHistory] =
       await Promise.all([
-        this.scanner.readContextSnippets(candidateFiles.slice(0, 6), 4000),
-        this.loadAttachedFileContext(session?.attachedFiles ?? []),
+        this.scanner.readContextSnippets(
+          candidateFiles.slice(0, 6),
+          4000,
+          signal,
+        ),
+        this.loadAttachedFileContext(session?.attachedFiles ?? [], signal),
         this.buildConversationHistory(session?.messages ?? []),
       ]);
 
@@ -4077,6 +4122,7 @@ export class AgentRuntime {
       const snippets = await this.scanner.readContextSnippets(
         resolvedPaths.slice(0, 8),
         6000,
+        signal,
       );
       return [
         {
@@ -4198,7 +4244,12 @@ export class AgentRuntime {
           },
         ];
       }
-      const results = await this.scanner.searchFileContents(query, 8);
+      const results = await this.scanner.searchFileContents(
+        query,
+        8,
+        3000,
+        signal,
+      );
       return [
         {
           tool: call.tool,
@@ -4552,7 +4603,12 @@ export class AgentRuntime {
       }
 
       // Use workspace text search to find references
-      const searchResults = await this.scanner.searchFileContents(symbol, 30);
+      const searchResults = await this.scanner.searchFileContents(
+        symbol,
+        30,
+        3000,
+        signal,
+      );
       if (!searchResults || searchResults.length === 0) {
         return [
           {

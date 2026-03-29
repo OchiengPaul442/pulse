@@ -249,6 +249,406 @@ describe("AgentRuntime", () => {
     expect(result.todos).toHaveLength(1);
   });
 
+  it("deduplicates model discovery refreshes", async () => {
+    const tempRoot = fs.mkdtempSync(
+      path.join(os.tmpdir(), "pulse-runtime-model-cache-test-"),
+    );
+    const storage: StorageState = {
+      storageDir: tempRoot,
+      dbPath: path.join(tempRoot, "db.sqlite"),
+      tracesDir: path.join(tempRoot, "traces"),
+      snapshotsDir: path.join(tempRoot, "snapshots"),
+      sessionsPath: path.join(tempRoot, "sessions.json"),
+      memoriesPath: path.join(tempRoot, "memories.json"),
+      editsPath: path.join(tempRoot, "edits.json"),
+      improvementPath: path.join(tempRoot, "improvement.json"),
+    };
+
+    fs.mkdirSync(storage.tracesDir, { recursive: true });
+    fs.mkdirSync(storage.snapshotsDir, { recursive: true });
+
+    const config: AgentConfig = {
+      ollamaBaseUrl: "http://127.0.0.1:11434",
+      plannerModel: "qwen2.5-coder:7b",
+      editorModel: "qwen2.5-coder:7b",
+      fastModel: "qwen2.5-coder:7b",
+      embeddingModel: "nomic-embed-text",
+      fallbackModels: ["qwen2.5-coder:7b"],
+      approvalMode: "balanced",
+      permissionMode: "default",
+      conversationMode: "agent",
+      persona: "software-engineer",
+      allowTerminalExecution: false,
+      autoRunVerification: false,
+      maxContextTokens: 16384,
+      memoryMode: "off",
+      indexingEnabled: false,
+      indexingMode: "light",
+      mcpServers: [],
+      telemetryOptIn: false,
+      selfLearnEnabled: false,
+      providerType: "ollama",
+      openaiBaseUrl: "",
+      openaiApiKey: "",
+      openaiModels: [],
+      performanceProfile: "auto",
+      qualityTargetScore: 0.9,
+    };
+
+    const provider = {
+      providerType: "ollama",
+      healthCheck: vi.fn().mockResolvedValue({ ok: true, message: "ok" }),
+      listModels: vi
+        .fn()
+        .mockResolvedValue([{ name: "qwen2.5-coder:7b", source: "local" }]),
+      chat: vi.fn(),
+    } as any;
+
+    const runtime = new AgentRuntime(
+      config,
+      storage,
+      {
+        info: vi.fn(),
+        warn: vi.fn(),
+        error: vi.fn(),
+      } as any,
+      {
+        search: vi.fn(),
+        formatResult: vi.fn(),
+        setTavilyApiKey: vi.fn(),
+        clearTavilyApiKey: vi.fn(),
+        hasTavilyApiKey: vi.fn(),
+      } as any,
+      provider,
+    );
+
+    await Promise.all([
+      runtime.refreshProviderState(true),
+      runtime.refreshProviderState(true),
+    ]);
+
+    expect(provider.healthCheck).toHaveBeenCalledTimes(1);
+    expect(provider.listModels).toHaveBeenCalledTimes(1);
+
+    await runtime.listAvailableModels();
+    expect(provider.listModels).toHaveBeenCalledTimes(1);
+  });
+
+  it("preserves token accounting during explainText", async () => {
+    const tempRoot = fs.mkdtempSync(
+      path.join(os.tmpdir(), "pulse-runtime-explain-token-test-"),
+    );
+    const storage: StorageState = {
+      storageDir: tempRoot,
+      dbPath: path.join(tempRoot, "db.sqlite"),
+      tracesDir: path.join(tempRoot, "traces"),
+      snapshotsDir: path.join(tempRoot, "snapshots"),
+      sessionsPath: path.join(tempRoot, "sessions.json"),
+      memoriesPath: path.join(tempRoot, "memories.json"),
+      editsPath: path.join(tempRoot, "edits.json"),
+      improvementPath: path.join(tempRoot, "improvement.json"),
+    };
+
+    fs.mkdirSync(storage.tracesDir, { recursive: true });
+    fs.mkdirSync(storage.snapshotsDir, { recursive: true });
+
+    const config: AgentConfig = {
+      ollamaBaseUrl: "http://127.0.0.1:11434",
+      plannerModel: "qwen2.5-coder:7b",
+      editorModel: "qwen2.5-coder:7b",
+      fastModel: "qwen2.5-coder:7b",
+      embeddingModel: "nomic-embed-text",
+      fallbackModels: ["qwen2.5-coder:7b"],
+      approvalMode: "balanced",
+      permissionMode: "default",
+      conversationMode: "agent",
+      persona: "software-engineer",
+      allowTerminalExecution: false,
+      autoRunVerification: false,
+      maxContextTokens: 16384,
+      memoryMode: "off",
+      indexingEnabled: false,
+      indexingMode: "light",
+      mcpServers: [],
+      telemetryOptIn: false,
+      selfLearnEnabled: false,
+      providerType: "ollama",
+      openaiBaseUrl: "",
+      openaiApiKey: "",
+      openaiModels: [],
+      performanceProfile: "auto",
+      qualityTargetScore: 0.9,
+    };
+
+    const provider = {
+      providerType: "ollama",
+      healthCheck: vi.fn(),
+      listModels: vi.fn(),
+      chat: vi.fn().mockResolvedValue({
+        text: "Explanation text.",
+        tokenUsage: {
+          promptTokens: 25,
+          completionTokens: 10,
+          totalTokens: 35,
+        },
+      }),
+    } as any;
+
+    const runtime = new AgentRuntime(
+      config,
+      storage,
+      {
+        info: vi.fn(),
+        warn: vi.fn(),
+        error: vi.fn(),
+      } as any,
+      {
+        search: vi.fn(),
+        formatResult: vi.fn(),
+        setTavilyApiKey: vi.fn(),
+        clearTavilyApiKey: vi.fn(),
+        hasTavilyApiKey: vi.fn(),
+      } as any,
+      provider,
+    );
+
+    (runtime as any).availableModels = [
+      { name: config.fastModel, source: "local" },
+    ];
+    (runtime as any).availableModelsCheckedAt = Date.now();
+    (runtime as any).tokensConsumed = 480;
+    (runtime as any).activeTokenSessionId = "session-a";
+
+    const tokenUpdates: Array<{
+      consumed: number;
+      budget: number;
+      percent: number;
+    }> = [];
+    runtime.setTokenCallback((snapshot) => tokenUpdates.push(snapshot));
+
+    const result = await runtime.explainText("const value = 1;");
+
+    expect(result.text).toBe("Explanation text.");
+    expect((runtime as any).tokensConsumed).toBe(480);
+    expect((runtime as any).activeTokenSessionId).toBe("session-a");
+    expect(tokenUpdates).toHaveLength(0);
+    expect(provider.chat).toHaveBeenCalledTimes(1);
+  });
+
+  it("cancels queued tasks instead of starting them after abort", async () => {
+    const tempRoot = fs.mkdtempSync(
+      path.join(os.tmpdir(), "pulse-runtime-cancel-queue-test-"),
+    );
+    const storage: StorageState = {
+      storageDir: tempRoot,
+      dbPath: path.join(tempRoot, "db.sqlite"),
+      tracesDir: path.join(tempRoot, "traces"),
+      snapshotsDir: path.join(tempRoot, "snapshots"),
+      sessionsPath: path.join(tempRoot, "sessions.json"),
+      memoriesPath: path.join(tempRoot, "memories.json"),
+      editsPath: path.join(tempRoot, "edits.json"),
+      improvementPath: path.join(tempRoot, "improvement.json"),
+    };
+
+    fs.mkdirSync(storage.tracesDir, { recursive: true });
+    fs.mkdirSync(storage.snapshotsDir, { recursive: true });
+
+    const config: AgentConfig = {
+      ollamaBaseUrl: "http://127.0.0.1:11434",
+      plannerModel: "qwen2.5-coder:7b",
+      editorModel: "qwen2.5-coder:7b",
+      fastModel: "qwen2.5-coder:7b",
+      embeddingModel: "nomic-embed-text",
+      fallbackModels: ["qwen2.5-coder:7b"],
+      approvalMode: "balanced",
+      permissionMode: "default",
+      conversationMode: "agent",
+      persona: "software-engineer",
+      allowTerminalExecution: false,
+      autoRunVerification: false,
+      maxContextTokens: 16384,
+      memoryMode: "off",
+      indexingEnabled: false,
+      indexingMode: "light",
+      mcpServers: [],
+      telemetryOptIn: false,
+      selfLearnEnabled: false,
+      providerType: "ollama",
+      openaiBaseUrl: "",
+      openaiApiKey: "",
+      openaiModels: [],
+      performanceProfile: "auto",
+      qualityTargetScore: 0.9,
+    };
+
+    const executeTaskSpy = vi
+      .spyOn(AgentRuntime.prototype as any, "executeTask")
+      .mockImplementation(async (_request: unknown, signal?: any) => {
+        await new Promise<void>((resolve, reject) => {
+          signal?.addEventListener(
+            "abort",
+            () => reject(new Error("__TASK_CANCELLED__")),
+            { once: true },
+          );
+        });
+        return {
+          sessionId: "session",
+          objective: "queued task",
+          plan: {
+            objective: "queued task",
+            assumptions: [],
+            acceptanceCriteria: [],
+            todos: [],
+            steps: [],
+            taskSlices: [],
+            verification: [],
+          },
+          todos: [],
+          responseText: "Task cancelled.",
+          proposal: null,
+        } as any;
+      });
+
+    const runtime = new AgentRuntime(
+      config,
+      storage,
+      {
+        info: vi.fn(),
+        warn: vi.fn(),
+        error: vi.fn(),
+        debug: vi.fn(),
+      } as any,
+      {
+        search: vi.fn(),
+        formatResult: vi.fn(),
+        setTavilyApiKey: vi.fn(),
+        clearTavilyApiKey: vi.fn(),
+        hasTavilyApiKey: vi.fn(),
+      } as any,
+    );
+
+    const first = runtime.runTask({ objective: "first", action: "new" });
+    await vi.waitFor(() => expect(executeTaskSpy).toHaveBeenCalledTimes(1));
+    const second = runtime.runTask({ objective: "second", action: "new" });
+
+    runtime.cancelTask();
+
+    await expect(first).rejects.toThrow("__TASK_CANCELLED__");
+    const secondResult = await second;
+    expect(secondResult.responseText).toBe("Task cancelled.");
+    expect(executeTaskSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it("cancels an active task when opening a different session", async () => {
+    const tempRoot = fs.mkdtempSync(
+      path.join(os.tmpdir(), "pulse-runtime-open-session-cancel-test-"),
+    );
+    const storage: StorageState = {
+      storageDir: tempRoot,
+      dbPath: path.join(tempRoot, "db.sqlite"),
+      tracesDir: path.join(tempRoot, "traces"),
+      snapshotsDir: path.join(tempRoot, "snapshots"),
+      sessionsPath: path.join(tempRoot, "sessions.json"),
+      memoriesPath: path.join(tempRoot, "memories.json"),
+      editsPath: path.join(tempRoot, "edits.json"),
+      improvementPath: path.join(tempRoot, "improvement.json"),
+    };
+
+    fs.mkdirSync(storage.tracesDir, { recursive: true });
+    fs.mkdirSync(storage.snapshotsDir, { recursive: true });
+
+    const config: AgentConfig = {
+      ollamaBaseUrl: "http://127.0.0.1:11434",
+      plannerModel: "qwen2.5-coder:7b",
+      editorModel: "qwen2.5-coder:7b",
+      fastModel: "qwen2.5-coder:7b",
+      embeddingModel: "nomic-embed-text",
+      fallbackModels: ["qwen2.5-coder:7b"],
+      approvalMode: "balanced",
+      permissionMode: "default",
+      conversationMode: "agent",
+      persona: "software-engineer",
+      allowTerminalExecution: false,
+      autoRunVerification: false,
+      maxContextTokens: 16384,
+      memoryMode: "off",
+      indexingEnabled: false,
+      indexingMode: "light",
+      mcpServers: [],
+      telemetryOptIn: false,
+      selfLearnEnabled: false,
+      providerType: "ollama",
+      openaiBaseUrl: "",
+      openaiApiKey: "",
+      openaiModels: [],
+      performanceProfile: "auto",
+      qualityTargetScore: 0.9,
+    };
+
+    const executeTaskSpy = vi
+      .spyOn(AgentRuntime.prototype as any, "executeTask")
+      .mockImplementation(async (_request: unknown, signal?: any) => {
+        await new Promise<void>((resolve, reject) => {
+          signal?.addEventListener(
+            "abort",
+            () => reject(new Error("__TASK_CANCELLED__")),
+            { once: true },
+          );
+        });
+        return {
+          sessionId: "session",
+          objective: "session switch",
+          plan: {
+            objective: "session switch",
+            assumptions: [],
+            acceptanceCriteria: [],
+            todos: [],
+            steps: [],
+            taskSlices: [],
+            verification: [],
+          },
+          todos: [],
+          responseText: "Task cancelled.",
+          proposal: null,
+        } as any;
+      });
+
+    const runtime = new AgentRuntime(
+      config,
+      storage,
+      {
+        info: vi.fn(),
+        warn: vi.fn(),
+        error: vi.fn(),
+        debug: vi.fn(),
+      } as any,
+      {
+        search: vi.fn(),
+        formatResult: vi.fn(),
+        setTavilyApiKey: vi.fn(),
+        clearTavilyApiKey: vi.fn(),
+        hasTavilyApiKey: vi.fn(),
+      } as any,
+    );
+
+    const firstTask = runtime.runTask({ objective: "first", action: "new" });
+    await vi.waitFor(() => expect(executeTaskSpy).toHaveBeenCalledTimes(1));
+
+    const secondSession = await (runtime as any).sessionStore.createSession(
+      "second session",
+      {
+        planner: config.plannerModel,
+        editor: config.editorModel,
+        fast: config.fastModel,
+      },
+    );
+
+    await runtime.openSession(secondSession.id);
+
+    await expect(firstTask).rejects.toThrow("__TASK_CANCELLED__");
+    expect(executeTaskSpy).toHaveBeenCalledTimes(1);
+  });
+
   it("restores the most recent session when no active session is stored", async () => {
     const tempRoot = fs.mkdtempSync(
       path.join(os.tmpdir(), "pulse-runtime-restore-session-test-"),

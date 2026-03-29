@@ -121,4 +121,47 @@ describe("WebSearchService", () => {
     expect(result.results).toHaveLength(1);
     expect(result.results[0]?.source).toBe("duckduckgo");
   });
+
+  it("times out hanging search requests", async () => {
+    vi.useFakeTimers();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((input: Parameters<typeof fetch>[0], init?: RequestInit) => {
+        return new Promise<Response>((resolve, reject) => {
+          init?.signal?.addEventListener(
+            "abort",
+            () => reject(new Error("Aborted by timeout")),
+            { once: true },
+          );
+        });
+      }),
+    );
+
+    const service = new WebSearchService(createSecretStorage(), {
+      info: () => undefined,
+      warn: () => undefined,
+      error: () => undefined,
+      debug: () => undefined,
+      dispose: () => undefined,
+    });
+
+    try {
+      const searchPromise = service
+        .search("timeout test", { maxResults: 2 })
+        .then(
+          () => ({ ok: true as const }),
+          (error) => ({ ok: false as const, error }),
+        );
+      await vi.advanceTimersByTimeAsync(12_100);
+      await Promise.resolve();
+
+      const result = await searchPromise;
+      expect(result.ok).toBe(false);
+      expect(String((result as { ok: false; error: unknown }).error)).toContain(
+        "Aborted by timeout",
+      );
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
