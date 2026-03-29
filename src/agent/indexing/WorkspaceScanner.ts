@@ -5,6 +5,13 @@ export interface WorkspaceStats {
   indexedAt: string;
 }
 
+export interface WorkspaceInventory {
+  totalFiles: number;
+  listedFiles: string[];
+  truncated: boolean;
+  indexedAt: string;
+}
+
 export class WorkspaceScanner {
   public async scanWorkspace(): Promise<WorkspaceStats> {
     const files = await vscode.workspace.findFiles(
@@ -26,6 +33,25 @@ export class WorkspaceScanner {
     );
 
     return files.map((file) => file.fsPath);
+  }
+
+  public async collectWorkspaceInventory(
+    limit = 250,
+  ): Promise<WorkspaceInventory> {
+    const files = await vscode.workspace.findFiles(
+      "**/*",
+      "**/{node_modules,dist,.git,out,coverage,.pulse}/**",
+      5000,
+    );
+
+    const listedFiles = files.slice(0, limit).map((file) => file.fsPath);
+
+    return {
+      totalFiles: files.length,
+      listedFiles,
+      truncated: files.length > listedFiles.length,
+      indexedAt: new Date().toISOString(),
+    };
   }
 
   public async findRelevantFiles(query: string, limit = 12): Promise<string[]> {

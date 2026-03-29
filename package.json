@@ -2,7 +2,7 @@
   "name": "pulse-agent",
   "displayName": "Pulse Agent",
   "description": "Local offline AI coding agent for VS Code powered by Ollama.",
-  "version": "0.0.85",
+  "version": "0.0.88",
   "publisher": "local",
   "license": "MIT",
   "keywords": [
@@ -211,7 +211,7 @@
             "strict"
           ],
           "default": "default",
-          "description": "Permission mode: full (auto-approve all), default (prompt for writes), strict (prompt for everything)."
+          "description": "Permission mode: full (auto-approve all), default (auto-approve safe local actions; prompt for sensitive actions), strict (prompt for everything)."
         },
         "pulse.behavior.conversationMode": {
           "type": "string",

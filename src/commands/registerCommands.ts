@@ -295,7 +295,7 @@ async function setApprovalMode(runtime: AgentRuntime): Promise<void> {
       { label: "full", description: "Auto-approve everything (Autopilot)" },
       {
         label: "default",
-        description: "Auto-approve reads, prompt for writes",
+        description: "Auto-approve safe local actions, prompt for sensitive",
       },
       { label: "strict", description: "Prompt for every action" },
     ],

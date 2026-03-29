@@ -410,6 +410,14 @@ describe("AgentRuntime", () => {
     expect((runtime as any).isSimpleConversational("hello")).toBe(true);
     expect(
       (runtime as any).shouldAutoApplyProposal([{ operation: "write" }]),
+    ).toBe(true);
+    expect(
+      (runtime as any).shouldAutoApplyProposal([{ operation: "delete" }]),
+    ).toBe(false);
+
+    (runtime as any).permissionPolicy.setMode("strict");
+    expect(
+      (runtime as any).shouldAutoApplyProposal([{ operation: "write" }]),
     ).toBe(false);
   });
 

@@ -167,7 +167,7 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
           }
 
           if (message.type === "refreshModels") {
-            await this.runtime.refreshProviderState();
+            await this.runtime.refreshProviderState(true);
             const models = await this.runtime.listAvailableModels();
             await webviewView.webview.postMessage({
               type: "models",
@@ -2012,9 +2012,19 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
       if (active) {
         var rt = active.querySelector('.step-reasoning-text');
         if (rt) {
-          // Append new tokens; keep only the last 800 chars to avoid DOM bloat
+          var incoming = String(step.detail || '');
+          if (!incoming.trim()) { scrollBottom(); return; }
+          // Avoid endlessly duplicating placeholder pulse text.
           var current = rt.textContent || '';
-          var appended = current + (step.detail || '');
+          var normalizedIncoming = incoming.replace(/\s+/g, ' ').trim();
+          var normalizedTail = current.slice(Math.max(0, current.length - normalizedIncoming.length - 4)).replace(/\s+/g, ' ').trim();
+          var isPlaceholder = /^(Reasoning through tools and code changes|Thinking through the next action)\.\.\.$/i.test(normalizedIncoming);
+          if ((normalizedIncoming && normalizedTail === normalizedIncoming) || (isPlaceholder && current.indexOf(incoming) >= 0)) {
+            scrollBottom(); return;
+          }
+          // Append new tokens; keep only the last 800 chars to avoid DOM bloat
+          var joiner = current && !/\s$/.test(current) && !/^\s/.test(incoming) ? ' ' : '';
+          var appended = current + joiner + incoming;
           rt.textContent = appended.length > 800 ? appended.slice(appended.length - 800) : appended;
         }
         scrollBottom(); return;
@@ -2792,10 +2802,9 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
   on(btnSaveMcp, 'click', function() { try { vscode.postMessage({ type: 'saveMcpServers', payload: collectMcpServers() }); } catch(e) {} });
 
   // Edits banner
-  var applyPending = false, revertPending = false;
-  function resetBannerBtns() { applyPending = false; revertPending = false; btnApply.textContent = 'Approve'; btnApply.className = 'btn primary sm'; btnRevert.textContent = 'Reject'; btnRevert.className = 'btn danger sm'; }
-  on(btnApply, 'click', function() { if (!applyPending) { applyPending = true; btnApply.textContent = 'Approve?'; return; } resetBannerBtns(); vscode.postMessage({ type: 'applyPending', payload: true }); });
-  on(btnRevert, 'click', function() { if (!revertPending) { revertPending = true; btnRevert.textContent = 'Reject?'; return; } resetBannerBtns(); vscode.postMessage({ type: 'revertLast', payload: true }); });
+  function resetBannerBtns() { btnApply.textContent = 'Approve'; btnApply.className = 'btn primary sm'; btnRevert.textContent = 'Reject'; btnRevert.className = 'btn danger sm'; }
+  on(btnApply, 'click', function() { resetBannerBtns(); vscode.postMessage({ type: 'applyPending', payload: true }); });
+  on(btnRevert, 'click', function() { resetBannerBtns(); vscode.postMessage({ type: 'revertLast', payload: true }); });
 
   // Message handler
   window.addEventListener('message', function(event) {

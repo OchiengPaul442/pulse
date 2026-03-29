@@ -157,6 +157,9 @@ export class AgentRuntime {
   private health: ProviderHealth = { ok: false, message: "Not checked" };
 
   private availableModels: ModelSummary[] = [];
+  private availableModelsCheckedAt = 0;
+  private availableModelsRefreshPromise: Promise<void> | null = null;
+  private static readonly MODEL_DISCOVERY_TTL_MS = 60_000;
 
   private tokensConsumed = 0;
 
@@ -199,6 +202,7 @@ export class AgentRuntime {
 
   /** Throttle marker for reasoning pulse updates in the progress UI. */
   private lastReasoningPulseAt = 0;
+  private lastReasoningPulseMessage = "";
 
   public constructor(
     config: AgentConfig,
@@ -330,16 +334,24 @@ export class AgentRuntime {
   private emitReasoningPulse(
     message = "Thinking through the next action...",
   ): void {
+    const cleaned = this.sanitizeReasoningChunk(message);
+    if (!cleaned) {
+      return;
+    }
+
     const now = Date.now();
-    if (now - this.lastReasoningPulseAt < 1200) {
+    const repeated = cleaned === this.lastReasoningPulseMessage;
+    const minIntervalMs = repeated ? 6000 : 1200;
+    if (now - this.lastReasoningPulseAt < minIntervalMs) {
       return;
     }
     this.lastReasoningPulseAt = now;
+    this.lastReasoningPulseMessage = cleaned;
 
     this.progressCallback?.({
       icon: "\u25B8",
       step: "Reasoning",
-      detail: message,
+      detail: cleaned,
       kind: "reasoning",
     });
   }
@@ -491,31 +503,58 @@ export class AgentRuntime {
     }
   }
 
-  public async refreshProviderState(): Promise<void> {
-    this.health = await this.provider.healthCheck();
-    if (this.health.ok) {
-      try {
-        this.availableModels = await this.provider.listModels();
-        this.availableModels = this.mergeConfiguredModels(this.availableModels);
-        await this.alignConfiguredModelsToAvailableModels();
-      } catch (error) {
-        this.logger.warn(
-          `Failed to refresh Ollama models: ${stringifyError(error)}`,
-        );
-        this.availableModels = this.mergeConfiguredModels([]);
-        this.health = {
-          ok: true,
-          message: `Ollama reachable (model discovery failed: ${stringifyError(error)})`,
-        };
-      }
+  public async refreshProviderState(force = false): Promise<void> {
+    const now = Date.now();
+    if (
+      !force &&
+      this.availableModels.length > 0 &&
+      now - this.availableModelsCheckedAt < AgentRuntime.MODEL_DISCOVERY_TTL_MS
+    ) {
       return;
     }
 
-    this.availableModels = this.mergeConfiguredModels([]);
+    if (this.availableModelsRefreshPromise) {
+      await this.availableModelsRefreshPromise;
+      return;
+    }
+
+    this.availableModelsRefreshPromise = (async () => {
+      this.health = await this.provider.healthCheck();
+      if (this.health.ok) {
+        try {
+          this.availableModels = await this.provider.listModels();
+          this.availableModels = this.mergeConfiguredModels(
+            this.availableModels,
+          );
+          await this.alignConfiguredModelsToAvailableModels();
+        } catch (error) {
+          this.logger.warn(
+            `Failed to refresh Ollama models: ${stringifyError(error)}`,
+          );
+          this.availableModels = this.mergeConfiguredModels([]);
+          this.health = {
+            ok: true,
+            message: `Ollama reachable (model discovery failed: ${stringifyError(error)})`,
+          };
+        }
+      } else {
+        this.availableModels = this.mergeConfiguredModels([]);
+      }
+
+      this.availableModelsCheckedAt = Date.now();
+    })().finally(() => {
+      this.availableModelsRefreshPromise = null;
+    });
+
+    await this.availableModelsRefreshPromise;
   }
 
   public async listAvailableModels(): Promise<ModelSummary[]> {
-    if (this.availableModels.length === 0) {
+    if (
+      this.availableModels.length === 0 ||
+      Date.now() - this.availableModelsCheckedAt >=
+        AgentRuntime.MODEL_DISCOVERY_TTL_MS
+    ) {
       await this.refreshProviderState();
     }
     return this.availableModels;
@@ -681,17 +720,16 @@ export class AgentRuntime {
     listedFiles: string[];
     truncated: boolean;
   }> {
-    const stats = await this.scanner.scanWorkspace();
     const root = this.workspaceRoot?.fsPath ?? null;
-    const absoluteFiles = await this.scanner.listWorkspaceFiles(limit);
-    const listedFiles = absoluteFiles.map((filePath) =>
+    const inventory = await this.scanner.collectWorkspaceInventory(limit);
+    const listedFiles = inventory.listedFiles.map((filePath) =>
       root ? path.relative(root, filePath).replace(/\\/g, "/") : filePath,
     );
 
     return {
-      totalFiles: stats.totalFiles,
+      totalFiles: inventory.totalFiles,
       listedFiles,
-      truncated: stats.totalFiles > listedFiles.length,
+      truncated: inventory.truncated,
     };
   }
 
@@ -779,6 +817,7 @@ export class AgentRuntime {
           return this.makeCancelledResult(normalizedRequest.objective);
         }
         this.lastReasoningPulseAt = 0;
+        this.lastReasoningPulseMessage = "";
         return this.executeTask(normalizedRequest, controller.signal);
       })
       .finally(() => {
@@ -3683,6 +3722,7 @@ export class AgentRuntime {
 
   private summarizeIncompleteEditTask(params: {
     objective: string;
+    rawResponseText: string;
     proposal: EditProposal | null;
     fileDiffs?: FileDiffResult[];
     qualityScore?: number;
@@ -3690,6 +3730,10 @@ export class AgentRuntime {
     meetsQualityTarget?: boolean;
   }): { issue: string; nextSteps: string[] } | null {
     if (!this.isEditIntent(params.objective)) {
+      return null;
+    }
+
+    if (!this.isGenericTaskResponse(params.rawResponseText)) {
       return null;
     }
 
@@ -5140,11 +5184,30 @@ export class AgentRuntime {
   }
 
   private shouldAutoApplyProposal(edits: ProposedEdit[]): boolean {
+    if (edits.length === 0) {
+      return false;
+    }
+
     if (this.permissionPolicy.getMode() === "full") {
       return true;
     }
 
-    return false;
+    const includesDelete = edits.some(
+      (edit) => (edit.operation ?? "write") === "delete",
+    );
+    if (includesDelete) {
+      const deleteDecision = this.permissionPolicy.evaluate({
+        action: "file_delete",
+        description: "Apply pending edit proposal with file deletions",
+      });
+      return deleteDecision.allowed;
+    }
+
+    const decision = this.permissionPolicy.evaluate({
+      action: "multi_file_edit",
+      description: "Apply pending edit proposal",
+    });
+    return decision.allowed;
   }
 
   private async readPackageScripts(

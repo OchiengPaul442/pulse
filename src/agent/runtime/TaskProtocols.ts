@@ -251,9 +251,18 @@ export function parseTaskResponse(raw: string): TaskModelResponse {
     return buildModelResponse(extracted, raw);
   }
 
+  const trimmedRaw = raw.trim();
+  const looseResponse = extractLooseResponseText(trimmedRaw);
+
   // Final fallback: treat the entire raw text as a plain response
   return {
-    response: raw.trim().length > 0 ? raw.trim() : "Task completed.",
+    response:
+      looseResponse ??
+      (looksStructuredTaskPayloadText(trimmedRaw)
+        ? "Task response received."
+        : trimmedRaw.length > 0
+          ? trimmedRaw
+          : "Task completed."),
     todos: [],
     toolCalls: [],
     edits: [],
@@ -266,13 +275,14 @@ function tryParseJson(text: string): Record<string, unknown> | null {
   if (!trimmed.startsWith("{")) {
     return null;
   }
+  const escapedNewlines = escapeNewlinesInJsonStrings(trimmed);
   try {
-    return JSON.parse(trimmed) as Record<string, unknown>;
+    return JSON.parse(escapedNewlines) as Record<string, unknown>;
   } catch {
     // Try fixing common local-model JSON issues:
     // trailing commas, single quotes, unquoted keys, control chars
     try {
-      const fixed = trimmed
+      const fixed = escapedNewlines
         // Strip control characters that break JSON (keep newlines/tabs)
         .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f]/g, "")
         // Remove trailing commas before } or ]
@@ -287,7 +297,7 @@ function tryParseJson(text: string): Record<string, unknown> | null {
     } catch {
       // Last resort: aggressive sanitization
       try {
-        const sanitized = trimmed
+        const sanitized = escapedNewlines
           .replace(/[\r\n]+/g, " ")
           .replace(/,\s*([\]}])/g, "$1")
           .replace(/(['"])?(\w+)(['"])?\s*:/g, '"$2":')
@@ -298,6 +308,45 @@ function tryParseJson(text: string): Record<string, unknown> | null {
       }
     }
   }
+}
+
+function escapeNewlinesInJsonStrings(input: string): string {
+  let output = "";
+  let inString = false;
+  let escaped = false;
+
+  for (const char of input) {
+    if (escaped) {
+      output += char;
+      escaped = false;
+      continue;
+    }
+
+    if (char === "\\") {
+      output += char;
+      escaped = true;
+      continue;
+    }
+
+    if (char === '"') {
+      inString = !inString;
+      output += char;
+      continue;
+    }
+
+    if (inString && char === "\n") {
+      output += "\\n";
+      continue;
+    }
+
+    if (inString && char === "\r") {
+      continue;
+    }
+
+    output += char;
+  }
+
+  return output;
 }
 
 function extractJsonFromText(text: string): Record<string, unknown> | null {
@@ -316,6 +365,17 @@ function extractJsonFromText(text: string): Record<string, unknown> | null {
   if (firstBrace >= 0 && lastBrace > firstBrace) {
     const candidate = text.slice(firstBrace, lastBrace + 1);
     const parsed = tryParseJson(candidate);
+    if (parsed && hasTaskPayloadShape(parsed)) {
+      return parsed;
+    }
+  }
+
+  // Some local models emit top-level key/value JSON fragments without
+  // outer braces, e.g. "response": "...", "toolCalls": [...].
+  // Wrap and parse so tool calls are still executed.
+  const wrappedFragment = wrapTopLevelJsonFragment(text);
+  if (wrappedFragment) {
+    const parsed = tryParseJson(wrappedFragment);
     if (parsed) {
       return parsed;
     }
@@ -337,6 +397,90 @@ function extractJsonFromText(text: string): Record<string, unknown> | null {
   }
 
   return null;
+}
+
+function wrapTopLevelJsonFragment(text: string): string | null {
+  const trimmed = text.trim();
+  if (!trimmed || trimmed.startsWith("{")) {
+    return null;
+  }
+
+  const hasStructuredKeys =
+    /["']?(response|todos|toolCalls|tool_calls|edits|shortcuts)["']?\s*:/i.test(
+      trimmed,
+    );
+  if (!hasStructuredKeys) {
+    return null;
+  }
+
+  const normalized = trimmed.replace(/^[\s,]+/, "").replace(/[\s,]+$/, "");
+  if (!normalized) {
+    return null;
+  }
+
+  return `{${normalized}}`;
+}
+
+function hasTaskPayloadShape(parsed: Record<string, unknown>): boolean {
+  const expectedKeys = [
+    "response",
+    "todos",
+    "toolCalls",
+    "tool_calls",
+    "edits",
+    "shortcuts",
+    "message",
+    "text",
+    "answer",
+    "summary",
+    "action",
+    "actions",
+  ];
+  return expectedKeys.some((key) =>
+    Object.prototype.hasOwnProperty.call(parsed, key),
+  );
+}
+
+function looksStructuredTaskPayloadText(text: string): boolean {
+  const trimmed = text.trim();
+  if (!trimmed) {
+    return false;
+  }
+
+  return /["']?(response|todos|toolCalls|tool_calls|edits|shortcuts)["']?\s*:/i.test(
+    trimmed,
+  );
+}
+
+function extractLooseResponseText(text: string): string | null {
+  if (!text) {
+    return null;
+  }
+
+  const quotedMatch = text.match(/["']response["']\s*:\s*"((?:\\.|[^"\\])*)"/i);
+  if (quotedMatch?.[1]) {
+    return decodeJsonLikeString(quotedMatch[1]);
+  }
+
+  const singleQuotedMatch = text.match(
+    /["']response["']\s*:\s*'((?:\\.|[^'\\])*)'/i,
+  );
+  if (singleQuotedMatch?.[1]) {
+    return decodeJsonLikeString(singleQuotedMatch[1]);
+  }
+
+  return null;
+}
+
+function decodeJsonLikeString(value: string): string {
+  return value
+    .replace(/\\n/g, "\n")
+    .replace(/\\r/g, "")
+    .replace(/\\t/g, "\t")
+    .replace(/\\"/g, '"')
+    .replace(/\\'/g, "'")
+    .replace(/\\\\/g, "\\")
+    .trim();
 }
 
 function buildModelResponse(

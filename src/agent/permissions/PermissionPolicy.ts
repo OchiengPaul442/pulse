@@ -3,7 +3,7 @@
  *
  * Three modes mirror modern coding-agent patterns:
  *  - "full"     → auto-approve everything (like Copilot "Autopilot" / bypass)
- *  - "default"  → auto-approve safe reads, prompt for writes/sensitive ops
+ *  - "default"  → auto-approve safe local actions, prompt for sensitive ops
  *  - "strict"   → prompt for every action including reads
  *
  * Session-level overrides and per-action trust-once are supported.

@@ -30,6 +30,33 @@ That should work.`;
     expect(parsed.response).toBe("Fixed the bug");
   });
 
+  it("recovers top-level JSON fragments without outer braces", () => {
+    const raw =
+      '"response": "Scanned project", "toolCalls": [{"tool": "list_dir", "args": {"path": "."}}], "todos": []';
+    const parsed = parseTaskResponse(raw);
+    expect(parsed.response).toBe("Scanned project");
+    expect(parsed.toolCalls).toHaveLength(1);
+    expect(parsed.toolCalls[0]?.tool).toBe("list_dir");
+  });
+
+  it("handles malformed JSON strings with embedded newlines in content", () => {
+    const raw = `{"response":"Setting up files","toolCalls":[{"name":"create_file","arguments":{"path":".env.example","content":"LINE_ONE
+LINE_TWO"}}]}`;
+    const parsed = parseTaskResponse(raw);
+    expect(parsed.response).toBe("Setting up files");
+    expect(parsed.toolCalls).toHaveLength(1);
+    expect(parsed.toolCalls[0]?.tool).toBe("create_file");
+    expect(parsed.toolCalls[0]?.args.content).toContain("LINE_ONE");
+    expect(parsed.toolCalls[0]?.args.content).toContain("LINE_TWO");
+  });
+
+  it("extracts response text from malformed structured payload fallback", () => {
+    const raw =
+      '{"response":"Setting up Django structure","todos":[{"id":"1","content":"Create files"}],"toolCalls":[{"name":"create_file","arguments":{"path":"manage.py","content":"print(1)"}}], Issue: quality target missed';
+    const parsed = parseTaskResponse(raw);
+    expect(parsed.response).toBe("Setting up Django structure");
+  });
+
   it("handles trailing commas in JSON", () => {
     const raw = '{"response": "ok", "todos": ["fix it",], }';
     const parsed = parseTaskResponse(raw);
