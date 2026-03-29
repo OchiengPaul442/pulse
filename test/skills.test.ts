@@ -40,4 +40,27 @@ describe("SkillRegistry", () => {
       }
     }
   });
+
+  it("selects filesystem and scaffold skills for a from-scratch project prompt", () => {
+    const registry = new SkillRegistry();
+    const objective = `
+You are an autonomous AI coding agent operating in an EMPTY project workspace.
+
+Build a FULLSTACK BLOG PLATFORM from scratch.
+Design the architecture and plan the implementation.
+  Create the project structure, install dependencies, run tests, read files before editing, write new files, move or rename files when needed, and delete generated junk if necessary.
+`;
+
+    const selected = registry.selectForObjective(objective, 6);
+    const selectedIds = new Set(selected.selected.map((skill) => skill.id));
+    const shortcuts = registry.buildOptionalShortcuts(selected);
+
+    expect(selectedIds.has("editing")).toBe(true);
+    expect(selectedIds.has("planning")).toBe(true);
+    expect(selectedIds.has("fileManagement")).toBe(true);
+    expect(selectedIds.has("terminal")).toBe(true);
+    expect(shortcuts).toContain("files");
+    expect(shortcuts).toContain("read");
+    expect(shortcuts).toContain("edit");
+  });
 });

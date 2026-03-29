@@ -1080,11 +1080,16 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
     .thinking-panel { align-self: flex-start; width: 100%; overflow: hidden; font-size: 12px; margin: 2px 0; }
     .thinking-panel.hidden { display: none; }
     .thinking-header { display: flex; align-items: center; gap: 6px; padding: 5px 2px; cursor: default; }
-    .thinking-shimmer { display: block; width: 36px; height: 6px; flex-shrink: 0; border-radius: 999px; background: linear-gradient(90deg, rgba(160,160,160,0.1) 0%, rgba(160,160,160,0.4) 50%, rgba(160,160,160,0.1) 100%); background-size: 200% 100%; animation: shimmer 1.4s ease-in-out infinite; }
-    .thinking-panel.done .thinking-shimmer { display: none; }
-    .thinking-done-icon { flex-shrink: 0; font-size: 10px; font-weight: 700; color: var(--green); display: none; }
-    .thinking-panel.done .thinking-done-icon { display: block; }
-    @keyframes shimmer { 0% { background-position: 200% 0; } 50% { background-position: -200% 0; } 100% { background-position: -200% 0; } }
+    #thinkingTitle { flex: 1; font-size: 11px; font-weight: 600; color: var(--fg2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .thinking-panel:not(.done) #thinkingTitle {
+      color: transparent;
+      background: linear-gradient(90deg, var(--fg3) 0%, var(--fg) 50%, var(--fg3) 100%);
+      background-size: 200% 100%;
+      -webkit-background-clip: text;
+      background-clip: text;
+      animation: title-shimmer 1.5s linear infinite;
+    }
+    @keyframes title-shimmer { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }
 
     /* ── Streaming text (typewriter + text shimmer) ─── */
     .streaming-active .stream-bubble { position: relative; }
@@ -1117,8 +1122,6 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
     .terminal-chat-output { margin: 0; padding: 8px 10px; font-family: var(--vscode-editor-font-family, monospace); font-size: 11px; line-height: 1.5; max-height: 300px; overflow: auto; background: rgba(0,0,0,.15); border-top: 1px solid var(--border); white-space: pre-wrap; word-break: break-all; }
     .terminal-chat-output.hidden { display: none; }
     .msg.terminal { padding: 0; }
-    #thinkingTitle { flex: 1; font-size: 11px; font-weight: 600; color: var(--fg2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-    .thinking-panel:not(.done) #thinkingTitle { color: var(--fg); }
     .thinking-elapsed { font-size: 9px; color: var(--fg3); flex-shrink: 0; font-variant-numeric: tabular-nums; }
     .steps-toggle-btn { border: none; background: transparent; color: var(--fg2); cursor: pointer; font-size: 9px; opacity: .45; padding: 1px 3px; border-radius: 3px; transition: opacity var(--spd), transform var(--spd); flex-shrink: 0; line-height: 1; }
     .steps-toggle-btn:hover { opacity: 1; background: rgba(128,128,128,.08); }
@@ -1497,8 +1500,6 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
       <div id="messages"></div>
       <div id="thinkingPanel" class="thinking-panel hidden">
         <div class="thinking-header" id="thinkingToggle">
-          <span class="thinking-shimmer"></span>
-          <span class="thinking-done-icon">&#10003;</span>
           <span id="thinkingTitle">Thinking\u2026</span>
           <span id="thinkingElapsed" class="thinking-elapsed"></span>
           <button class="steps-toggle-btn" id="stepsToggleBtn" title="Show/hide steps">&#9660;</button>

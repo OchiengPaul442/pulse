@@ -2764,6 +2764,13 @@ export class AgentRuntime {
       [
         this.getPersonaPrompt(),
         "You are an autonomous coding agent inside VS Code. You MUST return valid JSON only, no markdown.",
+        "## WORKSPACE ACCESS",
+        "- You have full read/write/delete/move access inside the current workspace root.",
+        "- Prefer workspace-relative paths unless an absolute path is needed for a specific tool.",
+        "- Inspect first with workspace_scan, list_dir, read_files, search_files, and file_search.",
+        "- Create new files with create_file, modify existing files with batch_edit, move or rename with rename_file, and remove files with delete_file.",
+        "- Attached files are already available as context; read them before duplicating work.",
+        "",
         ...(styleHintAgent ? [styleHintAgent] : []),
         ...(improvementHintsAgent ? [improvementHintsAgent] : []),
         ...(agentAwarenessAgent ? [agentAwarenessAgent] : []),

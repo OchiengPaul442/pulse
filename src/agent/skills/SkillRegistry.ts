@@ -29,6 +29,14 @@ const BUILTIN_SKILLS: SkillManifest[] = [
       "strategy",
       "approach",
       "architect",
+      "build",
+      "project",
+      "app",
+      "from scratch",
+      "fullstack",
+      "implementation",
+      "implement",
+      "architecture",
     ],
     tools: ["planner.createPlan"],
   },
@@ -207,23 +215,47 @@ const BUILTIN_SKILLS: SkillManifest[] = [
     id: "fileManagement",
     name: "File Management",
     description:
-      "Creates, deletes, moves, and renames files and folders within the workspace.",
+      "Reads, creates, edits, deletes, moves, and renames files and folders within the workspace.",
     keywords: [
+      "workspace",
       "file",
+      "files",
       "folder",
+      "folders",
       "directory",
+      "structure",
+      "filesystem",
+      "file system",
+      "path",
+      "project structure",
+      "workspace root",
+      "attach",
+      "embed",
       "create",
+      "read",
+      "read files",
+      "list",
+      "inspect",
       "delete",
       "move",
       "rename",
       "copy",
-      "path",
       "mkdir",
       "touch",
       "new file",
       "new folder",
     ],
-    tools: ["create_file", "delete_file", "list_dir"],
+    tools: [
+      "workspace_scan",
+      "read_files",
+      "search_files",
+      "file_search",
+      "list_dir",
+      "create_file",
+      "batch_edit",
+      "rename_file",
+      "delete_file",
+    ],
   },
   {
     id: "codeGeneration",
@@ -231,8 +263,15 @@ const BUILTIN_SKILLS: SkillManifest[] = [
     description:
       "Generates boilerplate, scaffolds components, writes functions, and produces code from descriptions.",
     keywords: [
-      "generate",
+      "build",
+      "project",
+      "app",
+      "fullstack",
+      "full-stack",
+      "from scratch",
       "scaffold",
+      "scaffolding",
+      "generate",
       "boilerplate",
       "template",
       "component",
@@ -259,13 +298,11 @@ const BUILTIN_SKILLS: SkillManifest[] = [
     keywords: [
       "test",
       "unit test",
-      "integration",
       "coverage",
       "jest",
       "mocha",
       "vitest",
       "assert",
-      "expect",
       "describe",
       "it",
       "spec",
@@ -463,11 +500,17 @@ export class SkillRegistry {
     const highConfidence = scored.filter((row) => row.score >= 0.9);
     const fallback = scored.filter((row) => row.score >= 0.45);
     const picked =
-      highConfidence.length > 0
-        ? highConfidence
-        : fallback.length > 0
-          ? fallback
-          : scored;
+      highConfidence.length > 0 || fallback.length > 0
+        ? [
+            ...highConfidence,
+            ...fallback.filter(
+              (row) =>
+                !highConfidence.some(
+                  (candidate) => candidate.skill.id === row.skill.id,
+                ),
+            ),
+          ]
+        : scored;
 
     const selected: SkillManifest[] = [];
     const coveredTools = new Set<string>();
@@ -575,16 +618,24 @@ function shortcutForTool(tool: string): string | null {
   if (tool.includes("planner.createPlan")) {
     return "plan";
   }
-  if (tool.includes("editManager")) {
+  if (tool.includes("editManager") || tool.includes("batch_edit")) {
     return "edit";
   }
   if (tool.includes("verificationRunner")) {
     return "verify";
   }
-  if (tool.includes("scanner.readContextSnippets")) {
+  if (
+    tool.includes("scanner.readContextSnippets") ||
+    tool.includes("read_files") ||
+    tool.includes("search_files") ||
+    tool.includes("file_search")
+  ) {
     return "read";
   }
-  if (tool.includes("scanner.findRelevantFiles")) {
+  if (
+    tool.includes("scanner.findRelevantFiles") ||
+    tool.includes("workspace_scan")
+  ) {
     return "scan";
   }
   if (tool.includes("terminal.execute")) {
@@ -608,7 +659,8 @@ function shortcutForTool(tool: string): string | null {
   if (
     tool.includes("create_file") ||
     tool.includes("delete_file") ||
-    tool.includes("list_dir")
+    tool.includes("list_dir") ||
+    tool.includes("rename_file")
   ) {
     return "files";
   }
