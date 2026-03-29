@@ -2437,6 +2437,10 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
     if (!session) return;
     pendingRequest = null;
     resetComposeState();
+    resetDrawers();
+    resetBannerBtns();
+    if (editsBanner) editsBanner.classList.remove('on');
+    if (bannerTxt) bannerTxt.textContent = 'Pending edits ready';
     attachedFiles = session.attachedFiles || [];
     renderAttachments(attachedFiles);
     if (Array.isArray(session.messages) && session.messages.length > 0) {
@@ -2449,7 +2453,7 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
   }
 
   function handleSessionDeleted(payload) {
-    if (payload && payload.wasActive) { chatHistory = []; attachedFiles = []; resetComposeState(); renderAttachments(attachedFiles); renderMessages(); showHome(); }
+    if (payload && payload.wasActive) { chatHistory = []; attachedFiles = []; resetComposeState(); resetDrawers(); resetBannerBtns(); if (editsBanner) editsBanner.classList.remove('on'); if (bannerTxt) bannerTxt.textContent = 'Pending edits ready'; renderAttachments(attachedFiles); renderMessages(); showHome(); }
   }
 
   // Render summary
@@ -2738,7 +2742,7 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
   on(D('btnToolsAll'), 'click', function() { TOOL_DEFS.forEach(function(t) { enabledTools[t.id] = true; }); renderToolConfig(); vscode.postMessage({ type: 'setEnabledTools', payload: enabledTools }); });
   on(D('btnToolsNone'), 'click', function() { TOOL_DEFS.forEach(function(t) { enabledTools[t.id] = false; }); renderToolConfig(); vscode.postMessage({ type: 'setEnabledTools', payload: enabledTools }); });
 
-  on(btnNewChat, 'click', function() { autoRestoreSessionAttempted = true; chatHistory = []; attachedFiles = []; pendingRequest = null; resetComposeState(); renderAttachments(attachedFiles); renderMessages(); showChat(); vscode.postMessage({ type: 'newConversation' }); taskInput.focus(); });
+  on(btnNewChat, 'click', function() { autoRestoreSessionAttempted = true; chatHistory = []; attachedFiles = []; pendingRequest = null; resetComposeState(); resetDrawers(); resetBannerBtns(); if (editsBanner) editsBanner.classList.remove('on'); if (bannerTxt) bannerTxt.textContent = 'Pending edits ready'; renderAttachments(attachedFiles); renderMessages(); showChat(); vscode.postMessage({ type: 'newConversation' }); taskInput.focus(); });
   on(btnBack, 'click', showHome);
   on(btnAttach, 'click', function() { vscode.postMessage({ type: 'attachContext' }); });
   on(btnSettings, 'click', function() { settingsDrawer.classList.toggle('open'); });

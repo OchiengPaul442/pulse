@@ -1438,7 +1438,10 @@ export class AgentRuntime {
       return null;
     }
 
+    await this.editManager.clearPendingProposal();
     await this.sessionStore.setActiveSession(sessionId);
+    this.activeTokenSessionId = sessionId;
+    this.resetTokenUsage();
     return session;
   }
 
