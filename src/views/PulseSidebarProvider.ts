@@ -1056,11 +1056,11 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
     .msg.agent .bubble { background: transparent; border: none; padding: 6px 2px; color: var(--fg); }
     .bubble code { font-family: var(--vscode-editor-font-family, monospace); font-size: 11.5px; background: rgba(128,128,128,.12); padding: 1px 4px; border-radius: 3px; }
     .msg.user .bubble code { background: rgba(255,255,255,.18); }
-    .bubble h1, .bubble h2, .bubble h3 { margin: 10px 0 4px; font-size: 13px; font-weight: 700; }
-    .bubble h1:first-child, .bubble h2:first-child, .bubble h3:first-child { margin-top: 2px; }
-    .bubble ul, .bubble ol { margin: 4px 0; padding-left: 18px; }
-    .bubble li { margin: 2px 0; }
-    .bubble p { margin: 4px 0; }
+    .bubble h1, .bubble h2, .bubble h3 { margin: 8px 0 3px; font-size: 13px; font-weight: 700; }
+    .bubble h1:first-child, .bubble h2:first-child, .bubble h3:first-child { margin-top: 1px; }
+    .bubble ul, .bubble ol { margin: 2px 0; padding-left: 18px; }
+    .bubble li { margin: 1px 0; }
+    .bubble p { margin: 2px 0; }
     .bubble p:first-child { margin-top: 0; }
     .bubble p:last-child { margin-bottom: 0; }
     .bubble a { color: var(--accent); text-decoration: underline; text-underline-offset: 2px; }

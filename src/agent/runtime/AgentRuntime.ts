@@ -1125,20 +1125,7 @@ export class AgentRuntime {
         webResearch
           ? "Latest web research was included in the plan artifact."
           : "",
-        "",
-        `**Objective:** ${plan.objective || objective}`,
-        plan.assumptions.length > 0
-          ? `\n**Assumptions:**\n${plan.assumptions.map((a: string) => `- ${a}`).join("\n")}`
-          : "",
-        plan.steps.length > 0
-          ? `\n**Steps:**\n${plan.steps.map((s, i) => `${i + 1}. ${s.goal}`).join("\n")}`
-          : "",
-        plan.todos.length > 0
-          ? `\n**Todos:**\n${plan.todos.map((t) => `- [${t.status === "done" ? "x" : " "}] ${t.title}`).join("\n")}`
-          : "",
-        plan.acceptanceCriteria.length > 0
-          ? `\n**Acceptance criteria:**\n${plan.acceptanceCriteria.map((c: string) => `- ${c}`).join("\n")}`
-          : "",
+        "Detailed steps, todos, assumptions, and acceptance criteria are in the plan artifact.",
       ]
         .filter(Boolean)
         .join("\n");

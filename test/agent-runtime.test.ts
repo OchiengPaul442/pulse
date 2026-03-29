@@ -1045,6 +1045,123 @@ describe("AgentRuntime", () => {
     expect(summary).toContain("empty directory");
   });
 
+  it("keeps plan mode chat output concise instead of duplicating the full plan", async () => {
+    const tempRoot = fs.mkdtempSync(
+      path.join(os.tmpdir(), "pulse-runtime-plan-mode-test-"),
+    );
+    const storage: StorageState = {
+      storageDir: tempRoot,
+      dbPath: path.join(tempRoot, "db.sqlite"),
+      tracesDir: path.join(tempRoot, "traces"),
+      snapshotsDir: path.join(tempRoot, "snapshots"),
+      sessionsPath: path.join(tempRoot, "sessions.json"),
+      memoriesPath: path.join(tempRoot, "memories.json"),
+      editsPath: path.join(tempRoot, "edits.json"),
+      improvementPath: path.join(tempRoot, "improvement.json"),
+    };
+
+    fs.mkdirSync(storage.tracesDir, { recursive: true });
+    fs.mkdirSync(storage.snapshotsDir, { recursive: true });
+
+    const config: AgentConfig = {
+      ollamaBaseUrl: "http://127.0.0.1:11434",
+      plannerModel: "qwen2.5-coder:7b",
+      editorModel: "qwen2.5-coder:7b",
+      fastModel: "qwen2.5-coder:7b",
+      embeddingModel: "nomic-embed-text",
+      fallbackModels: ["qwen2.5-coder:7b"],
+      approvalMode: "balanced",
+      permissionMode: "default",
+      conversationMode: "plan",
+      persona: "software-engineer",
+      allowTerminalExecution: false,
+      autoRunVerification: false,
+      maxContextTokens: 16384,
+      memoryMode: "off",
+      indexingEnabled: false,
+      indexingMode: "light",
+      mcpServers: [],
+      telemetryOptIn: false,
+      selfLearnEnabled: false,
+      providerType: "ollama",
+      openaiBaseUrl: "",
+      openaiApiKey: "",
+      openaiModels: [],
+      performanceProfile: "auto",
+      qualityTargetScore: 0.9,
+    };
+
+    const plannerSpy = vi
+      .spyOn(Planner.prototype, "createPlan")
+      .mockResolvedValue({
+        objective: "Build a blog platform",
+        assumptions: ["Use a clean workspace."],
+        acceptanceCriteria: ["Project is scaffolded."],
+        todos: [
+          {
+            id: "todo-1",
+            title: "Scaffold the app",
+            status: "done",
+          },
+        ],
+        steps: [
+          {
+            goal: "Create the project structure",
+            tools: ["create_file"],
+            expectedOutput: "A scaffolded app.",
+          },
+        ],
+        taskSlices: [],
+        verification: [],
+      } as any);
+
+    const writePlanSpy = vi
+      .spyOn(AgentRuntime.prototype as any, "writePlanArtifact")
+      .mockResolvedValue(null);
+    const collectResearchSpy = vi
+      .spyOn(AgentRuntime.prototype as any, "collectWebResearch")
+      .mockResolvedValue(null);
+    const persistSpy = vi
+      .spyOn(AgentRuntime.prototype as any, "persistTaskResult")
+      .mockResolvedValue(undefined);
+    vi.spyOn(
+      AgentRuntime.prototype as any,
+      "resolveModelOrFallback",
+    ).mockResolvedValue("qwen2.5-coder:7b");
+
+    const runtime = new AgentRuntime(
+      config,
+      storage,
+      {
+        info: vi.fn(),
+        warn: vi.fn(),
+        error: vi.fn(),
+      } as any,
+      {
+        search: vi.fn(),
+        formatResult: vi.fn(),
+        setTavilyApiKey: vi.fn(),
+        clearTavilyApiKey: vi.fn(),
+        hasTavilyApiKey: vi.fn(),
+      } as any,
+    );
+
+    const result = await runtime.runTask({
+      objective: "Build a blog platform",
+      action: "new",
+    });
+
+    expect(plannerSpy).toHaveBeenCalledTimes(1);
+    expect(writePlanSpy).toHaveBeenCalledTimes(1);
+    expect(collectResearchSpy).toHaveBeenCalledTimes(1);
+    expect(persistSpy).toHaveBeenCalledTimes(1);
+    expect(result.responseText).toContain("Plan mode active.");
+    expect(result.responseText).not.toContain("**Objective:**");
+    expect(result.responseText).not.toContain("**Steps:**");
+    expect(result.responseText).not.toContain("**Todos:**");
+    expect(result.responseText).not.toContain("**Acceptance criteria:**");
+  });
+
   it("reports incomplete edit tasks instead of saying nothing changed was needed", async () => {
     const tempRoot = fs.mkdtempSync(
       path.join(os.tmpdir(), "pulse-runtime-incomplete-edit-test-"),

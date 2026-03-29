@@ -62,5 +62,8 @@ Design the architecture and plan the implementation.
     expect(shortcuts).toContain("files");
     expect(shortcuts).toContain("read");
     expect(shortcuts).toContain("edit");
+    expect(
+      selected.selected.some((skill) => skill.tools.includes("create_file")),
+    ).toBe(true);
   });
 });
