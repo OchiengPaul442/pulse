@@ -32,4 +32,7 @@ tsconfig.json
 .eslintrc*
 .prettierrc*
 package-lock.json
+versions/**
+evals/**
+deep-research-report*
 *.vsix

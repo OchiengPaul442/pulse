@@ -296,7 +296,17 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
             message.payload.length > 0
           ) {
             try {
-              const filePath = message.payload;
+              let filePath = message.payload;
+              // Resolve relative paths against workspace root
+              if (
+                !path.isAbsolute(filePath) &&
+                vscode.workspace.workspaceFolders?.[0]
+              ) {
+                filePath = path.join(
+                  vscode.workspace.workspaceFolders[0].uri.fsPath,
+                  filePath,
+                );
+              }
               const uri = vscode.Uri.file(filePath);
               await vscode.window.showTextDocument(uri, { preview: true });
             } catch {

@@ -1345,16 +1345,20 @@ export class AgentRuntime {
       this.logger.info(`Command sanitized: "${command}" → "${sanitized}"`);
     }
 
+    const action = classifyAction(sanitized);
     const decision = this.permissionPolicy.evaluate({
-      action: "terminal_exec",
+      action,
       description: `Run terminal command: ${sanitized}`,
     });
     const safeCommand = isSafeTerminalCommand(sanitized);
     // Safe commands always run in non-strict mode.
     // Unsafe commands require allowTerminalExecution or autoRunVerification.
+    // Package installs require explicit approval even if safe otherwise.
     const mode = this.permissionPolicy.getMode();
+    const isInstall = action === "package_install";
     const canAutoRunSafeCommand =
       mode !== "strict" &&
+      !isInstall &&
       (safeCommand ||
         (options?.purpose === "verification" &&
           this.currentConfig.autoRunVerification) ||
@@ -2509,12 +2513,23 @@ export class AgentRuntime {
     }
 
     const session = await sessionPromise;
-    const [contextSnippets, attachedContext, conversationHistory] =
+    const [rawContextSnippets, attachedContext, conversationHistory] =
       await Promise.all([
         this.scanner.readContextSnippets(candidateFiles.slice(0, 6), 4000),
         this.loadAttachedFileContext(session?.attachedFiles ?? []),
         this.buildConversationHistory(session?.messages ?? []),
       ]);
+
+    const profileDefaults = resolveProfileDefaults(this.currentConfig);
+
+    // Budget-aware context trimming for low-VRAM profiles
+    const maxSnippets =
+      profileDefaults.numCtx <= 4096
+        ? 3
+        : profileDefaults.numCtx <= 8192
+          ? 5
+          : 6;
+    const contextSnippets = rawContextSnippets.slice(0, maxSnippets);
     const selectedSkills = this.skillRegistry.selectForObjective(objective);
     const skillsSummary = this.skillRegistry.summarizeSelection(selectedSkills);
     const optionalShortcuts =
@@ -2522,7 +2537,6 @@ export class AgentRuntime {
     const shortcutSummary = formatShortcutHints(optionalShortcuts);
     const primarySkillName = selectedSkills.primary?.name ?? "None";
     this.emitProgress("Building plan", plannerModel, "\u25A0");
-    const profileDefaults = resolveProfileDefaults(this.currentConfig);
     const plan = await this.planner.createPlan(objective, plannerModel, {
       keepAlive: profileDefaults.plannerKeepAlive,
       numCtx: profileDefaults.numCtx,
@@ -2553,7 +2567,7 @@ export class AgentRuntime {
         `Primary skill: ${primarySkillName}`,
         skillsSummary ? `Skills:\n${skillsSummary}` : "",
         "",
-        /next\.?js|next-app|scaffold|blog/i.test(objective)
+        /next\.?js|next-app/i.test(objective)
           ? [
               "## SCAFFOLDING",
               "- Use the framework's official scaffold command first.",
@@ -2573,6 +2587,8 @@ export class AgentRuntime {
         "7. You get MULTIPLE turns. Each turn you can make tool calls. Use them!",
         "8. Do not repeat the same tool call, edit, todo text, or summary wording unless the inputs changed or you are intentionally retrying after a new error.",
         "9. Prefer the smallest fresh next action. One successful step is better than repeating the same plan.",
+        "10. Do NOT assume the tech stack. Detect it from workspace evidence (package.json → Node, pyproject.toml/requirements.txt/manage.py → Python, Cargo.toml → Rust, go.mod → Go). Never run npm/pnpm/yarn in non-Node projects.",
+        "11. If a terminal command fails with ENOENT / not recognized, propose a non-terminal fallback (direct file creation/edits) whenever possible.",
         "",
         "## TODO RULES",
         "- Create 3-5 actionable todos upfront. Update statuses EVERY turn.",
@@ -2681,6 +2697,7 @@ export class AgentRuntime {
     // can continue working on remaining todos without stopping.
     const MAX_AGENT_ITERATIONS = profileDefaults.maxAgentIterations;
     let noActionCount = 0;
+    let retried = false;
     for (let iteration = 0; iteration < MAX_AGENT_ITERATIONS; iteration += 1) {
       this.emitProgress(
         iteration === 0 ? "Generating response" : "Continuing",
@@ -2761,6 +2778,34 @@ export class AgentRuntime {
             "⚠️",
           );
           break;
+        }
+        // Adaptive context fallback for Ollama memory/context errors
+        const errMsg =
+          err instanceof Error ? err.message.toLowerCase() : String(err);
+        if (
+          this.provider.providerType === "ollama" &&
+          /out of memory|context.*too|num_ctx|oom|alloc/i.test(errMsg) &&
+          !retried
+        ) {
+          retried = true;
+          profileDefaults.numCtx = Math.max(
+            2048,
+            Math.floor(profileDefaults.numCtx * 0.6),
+          );
+          profileDefaults.firstIterationMaxTokens = Math.max(
+            1024,
+            Math.floor(profileDefaults.firstIterationMaxTokens * 0.6),
+          );
+          profileDefaults.followUpMaxTokens = Math.max(
+            768,
+            Math.floor(profileDefaults.followUpMaxTokens * 0.6),
+          );
+          this.emitProgress(
+            "Reducing context",
+            `Retrying with num_ctx=${profileDefaults.numCtx}`,
+            "\u21BB",
+          );
+          continue;
         }
         throw err;
       } finally {
@@ -2857,7 +2902,8 @@ export class AgentRuntime {
 
       if (observations.length > 0) {
         toolTrace.push(...observations);
-        toolContext = formatToolObservations(toolTrace.slice(-5));
+        const maxObs = profileDefaults.numCtx <= 4096 ? 3 : 5;
+        toolContext = formatToolObservations(toolTrace.slice(-maxObs));
         this.emitProgress(
           "Tool results",
           `${observations.length} observation(s) collected`,
@@ -2932,7 +2978,8 @@ export class AgentRuntime {
         );
         if (bootstrapObs.length > 0) {
           toolTrace.push(...bootstrapObs);
-          toolContext = formatToolObservations(toolTrace.slice(-5));
+          const maxObs = profileDefaults.numCtx <= 4096 ? 3 : 5;
+          toolContext = formatToolObservations(toolTrace.slice(-maxObs));
         }
         critiqueContext =
           "You have pending todos that are NOT complete. " +
@@ -4522,38 +4569,39 @@ export class AgentRuntime {
       return explicit;
     }
 
-    const packageJsonPath = this.workspaceRoot
-      ? path.join(this.workspaceRoot.fsPath, "package.json")
-      : null;
-    const scripts = packageJsonPath
-      ? await this.readPackageScripts(packageJsonPath)
-      : null;
-
-    const candidateScripts = [
-      "test",
-      "lint",
-      "typecheck",
-      "build",
-      "compile",
-    ].filter((name) => Boolean(scripts?.[name]));
-
-    if (candidateScripts.length > 0) {
-      return candidateScripts.map((script) => {
-        const manager = this.detectPackageManager();
-        if (manager === "pnpm") {
-          return `pnpm run ${script}`;
-        }
-        if (manager === "yarn") {
-          return `yarn run ${script}`;
-        }
-        return `npm run ${script}`;
-      });
+    const root = this.workspaceRoot?.fsPath;
+    if (!root) {
+      return [];
     }
 
-    const lowered = objective.toLowerCase();
-    if (
-      /\b(test|bug|fix|error|fail|diagnos|compile|build|lint)\b/.test(lowered)
-    ) {
+    // Detect project type from workspace evidence
+    const projectType = await this.detectProjectType(root);
+
+    if (projectType === "node") {
+      const packageJsonPath = path.join(root, "package.json");
+      const scripts = await this.readPackageScripts(packageJsonPath);
+      const candidateScripts = [
+        "test",
+        "lint",
+        "typecheck",
+        "build",
+        "compile",
+      ].filter((name) => Boolean(scripts?.[name]));
+
+      if (candidateScripts.length > 0) {
+        return candidateScripts.map((script) => {
+          const manager = this.detectPackageManager();
+          if (manager === "pnpm") {
+            return `pnpm run ${script}`;
+          }
+          if (manager === "yarn") {
+            return `yarn run ${script}`;
+          }
+          return `npm run ${script}`;
+        });
+      }
+
+      // Node project exists but no matching scripts — use defaults
       const manager = this.detectPackageManager();
       if (manager === "pnpm") {
         return ["pnpm test", "pnpm run build"];
@@ -4564,7 +4612,60 @@ export class AgentRuntime {
       return ["npm test", "npm run build"];
     }
 
+    if (projectType === "python") {
+      const commands: string[] = [];
+      const hasDjangoManage = await this.fileExists(
+        path.join(root, "manage.py"),
+      );
+      if (hasDjangoManage) {
+        commands.push("python manage.py test");
+      } else {
+        commands.push("python -m pytest");
+      }
+      return commands;
+    }
+
+    if (projectType === "rust") {
+      return ["cargo test", "cargo build"];
+    }
+
+    if (projectType === "go") {
+      return ["go test ./...", "go build ./..."];
+    }
+
+    // Unknown project type — rely on diagnostics only
     return [];
+  }
+
+  /**
+   * Detect the primary project type from workspace marker files.
+   */
+  private async detectProjectType(
+    root: string,
+  ): Promise<"node" | "python" | "rust" | "go" | "unknown"> {
+    const checks = await Promise.all([
+      this.fileExists(path.join(root, "package.json")),
+      this.fileExists(path.join(root, "pyproject.toml")),
+      this.fileExists(path.join(root, "requirements.txt")),
+      this.fileExists(path.join(root, "manage.py")),
+      this.fileExists(path.join(root, "Cargo.toml")),
+      this.fileExists(path.join(root, "go.mod")),
+    ]);
+
+    if (checks[0]) return "node";
+    if (checks[1] || checks[2] || checks[3]) return "python";
+    if (checks[4]) return "rust";
+    if (checks[5]) return "go";
+    return "unknown";
+  }
+
+  private async fileExists(filePath: string): Promise<boolean> {
+    try {
+      await vscode.workspace.fs.stat(vscode.Uri.file(filePath));
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   /**
@@ -4648,10 +4749,16 @@ export class AgentRuntime {
 
     const hasSuccessfulWork = observations.some((o) => o.ok);
     const inProgressTodo = todos.find((t) => t.status === "in-progress");
+    const pending = todos.filter((t) => t.status === "pending");
 
-    if (hasSuccessfulWork && inProgressTodo) {
-      // Mark in-progress todo as done since work succeeded
-      inProgressTodo.status = "done";
+    if (hasSuccessfulWork) {
+      if (inProgressTodo) {
+        // Mark in-progress todo as done since work succeeded
+        inProgressTodo.status = "done";
+      } else if (pending.length > 0) {
+        // Model never set in-progress — assume first pending was executed
+        pending[0].status = "done";
+      }
     }
 
     // Ensure there's always one in-progress todo if pending ones remain

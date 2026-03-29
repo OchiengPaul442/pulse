@@ -1,6 +1,7 @@
 import * as https from "https";
 import * as http from "http";
 import type {
+  ChatMessage,
   ChatRequest,
   ChatResponse,
   ModelProvider,
@@ -51,6 +52,39 @@ interface RequestOptions extends RequestInit {
 
 const DEFAULT_TIMEOUT_MS = 5_000;
 const CHAT_TIMEOUT_MS = 300_000;
+
+/**
+ * Transform OpenAI-style multi-part messages into Ollama's format.
+ * Ollama expects vision images in `messages[].images` as base64 strings,
+ * not as OpenAI `image_url` content blocks.
+ */
+function toOllamaMessages(
+  messages: ChatMessage[],
+): Array<Record<string, unknown>> {
+  return messages.map((m) => {
+    if (typeof m.content === "string") {
+      return { role: m.role, content: m.content };
+    }
+
+    const parts = m.content;
+    const text = parts
+      .filter((p) => p.type === "text")
+      .map((p) => p.text ?? "")
+      .join("\n");
+    const images = parts
+      .filter((p) => p.type === "image_url")
+      .map((p) => p.image_url?.url ?? "")
+      .filter(Boolean)
+      .map((url) => (url.startsWith("data:") ? (url.split(",")[1] ?? "") : url))
+      .filter(Boolean);
+
+    return {
+      role: m.role,
+      content: text,
+      ...(images.length > 0 ? { images } : {}),
+    };
+  });
+}
 
 export class OllamaProvider implements ModelProvider {
   public readonly providerType = "ollama" as const;
@@ -117,7 +151,7 @@ export class OllamaProvider implements ModelProvider {
 
       const body: Record<string, unknown> = {
         model: request.model,
-        messages: request.messages,
+        messages: toOllamaMessages(request.messages),
         stream: true,
         options: ollamaOptions,
         format: request.format,
