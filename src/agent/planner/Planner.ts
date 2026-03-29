@@ -30,7 +30,11 @@ export interface TaskPlan {
 export class Planner {
   public constructor(private readonly provider: ModelProvider) {}
 
-  public async createPlan(objective: string, model: string): Promise<TaskPlan> {
+  public async createPlan(
+    objective: string,
+    model: string,
+    options?: { keepAlive?: number; numCtx?: number },
+  ): Promise<TaskPlan> {
     const prompt = [
       "Create a rigorous JSON plan for a coding agent task.",
       "Return valid JSON only with fields: objective, assumptions, acceptanceCriteria, todos, steps, taskSlices, verification.",
@@ -48,6 +52,8 @@ export class Planner {
       const response = await this.provider.chat({
         model,
         format: "json",
+        keepAlive: options?.keepAlive,
+        numCtx: options?.numCtx,
         messages: [
           {
             role: "system",

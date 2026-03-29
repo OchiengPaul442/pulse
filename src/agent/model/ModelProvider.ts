@@ -16,10 +16,14 @@ export interface ChatRequest {
   stream?: boolean;
   temperature?: number;
   maxTokens?: number;
-  format?: "json";
+  format?: "json" | Record<string, unknown>;
   signal?: AbortSignal;
   /** Streaming callback: called with each text delta as it arrives. */
   onChunk?: (text: string) => void;
+  /** Ollama keep_alive: seconds to keep model loaded. 0 = unload immediately, -1 = keep forever. */
+  keepAlive?: number;
+  /** Ollama num_ctx: context window size in tokens. */
+  numCtx?: number;
 }
 
 export interface ChatResponse {

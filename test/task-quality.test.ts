@@ -66,4 +66,40 @@ describe("Task quality assessment", () => {
     expect(assessment.meetsTarget).toBe(false);
     expect(assessment.score).toBeLessThan(TARGET_TASK_QUALITY_SCORE);
   });
+
+  it("uses a custom quality target when provided", () => {
+    const response: TaskModelResponse = {
+      response: "Done.",
+      todos: [{ id: "1", title: "Task", status: "done" }],
+      shortcuts: [],
+      toolCalls: [{ tool: "workspace_scan", args: {} }],
+      edits: [],
+    };
+
+    // With the default target this would fail
+    const defaultAssessment = assessTaskQuality(response, {
+      objective: "Check something",
+      toolTrace: [{ tool: "workspace_scan", ok: true, summary: "scanned" }],
+      editCount: 0,
+      verificationRan: false,
+      isEditTask: false,
+    });
+    expect(defaultAssessment.meetsTarget).toBe(false);
+    expect(defaultAssessment.target).toBe(TARGET_TASK_QUALITY_SCORE);
+
+    // With a low_vram style target of 0.5 it should pass
+    const lowVramAssessment = assessTaskQuality(
+      response,
+      {
+        objective: "Check something",
+        toolTrace: [{ tool: "workspace_scan", ok: true, summary: "scanned" }],
+        editCount: 0,
+        verificationRan: false,
+        isEditTask: false,
+      },
+      0.5,
+    );
+    expect(lowVramAssessment.meetsTarget).toBe(true);
+    expect(lowVramAssessment.target).toBe(0.5);
+  });
 });

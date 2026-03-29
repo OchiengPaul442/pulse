@@ -80,9 +80,33 @@ Recommended models:
   "pulse.behavior.selfLearn": true,
   "pulse.behavior.maxContextTokens": 32768,
   "pulse.behavior.memoryMode": "workspace+episodic",
+  "pulse.performance.profile": "auto",
+  "pulse.behavior.qualityTargetScore": 0.9,
   "pulse.search.maxResults": 5,
 }
 ```
+
+### Performance Profiles
+
+Pulse includes a performance profile system that adapts the agent to your hardware. Set `pulse.performance.profile` to one of:
+
+| Profile     | VRAM     | Description                                                                                                   |
+| ----------- | -------- | ------------------------------------------------------------------------------------------------------------- |
+| `auto`      | —        | Detects provider and uses conservative defaults for Ollama, balanced for cloud APIs.                          |
+| `low_vram`  | ≤ 8 GB   | Smaller context window (4K), planner unloaded before editor runs, longer timeouts, lower quality gate (0.75). |
+| `balanced`  | 12–16 GB | 8K context, planner kept briefly, standard timeouts.                                                          |
+| `high_vram` | ≥ 24 GB  | 16K context, all models kept loaded, aggressive timeouts.                                                     |
+
+For best results on 8 GB VRAM machines:
+
+1. Set profile to `low_vram` (or leave on `auto` with Ollama).
+2. Set Ollama environment variables:
+   ```
+   OLLAMA_MAX_LOADED_MODELS=1
+   OLLAMA_NUM_PARALLEL=1
+   ```
+3. Use 7B parameter models (e.g., `deepseek-r1:7b`, `qwen2.5-coder:7b`).
+4. Consider using the same model for planner and editor to avoid VRAM swapping.
 
 The sidebar settings drawer also includes model selection, MCP server management, self-learn, and tool enable or disable controls.
 

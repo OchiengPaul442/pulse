@@ -9,6 +9,8 @@ import type {
   McpServerConfig,
   PermissionMode,
 } from "../../config/AgentConfig";
+import { resolveProfileDefaults } from "../../config/AgentConfig";
+import type { ProfileDefaults } from "../../config/AgentConfig";
 import type { StorageState } from "../../db/StorageBootstrap";
 import type { Logger } from "../../platform/vscode/Logger";
 import {
@@ -70,6 +72,7 @@ import {
   isSafeTerminalCommand,
   parseTaskResponse,
   TARGET_TASK_QUALITY_SCORE,
+  TASK_RESPONSE_SCHEMA,
   type TaskQualityAssessment,
   type TaskModelResponse,
   type TaskToolCall,
@@ -319,7 +322,7 @@ export class AgentRuntime {
   private emitTodoUpdate(todos: TaskTodo[]): void {
     this.progressCallback?.({
       icon: "\u2611",
-      step: "Updating tasks",
+      step: "Updating TODOs",
       kind: "todo_update",
       todos,
     });
@@ -2519,7 +2522,22 @@ export class AgentRuntime {
     const shortcutSummary = formatShortcutHints(optionalShortcuts);
     const primarySkillName = selectedSkills.primary?.name ?? "None";
     this.emitProgress("Building plan", plannerModel, "\u25A0");
-    const plan = await this.planner.createPlan(objective, plannerModel);
+    const profileDefaults = resolveProfileDefaults(this.currentConfig);
+    const plan = await this.planner.createPlan(objective, plannerModel, {
+      keepAlive: profileDefaults.plannerKeepAlive,
+      numCtx: profileDefaults.numCtx,
+    });
+
+    // On low-VRAM profiles, unload the planner model before starting the
+    // editor loop to avoid VRAM contention between two loaded models.
+    if (
+      profileDefaults.plannerKeepAlive === 0 &&
+      plannerModel !== editorModel &&
+      this.provider.providerType === "ollama"
+    ) {
+      this.emitProgress("Freeing VRAM", `Unloading ${plannerModel}`, "\u21BB");
+      await (this.provider as OllamaProvider).unloadModel(plannerModel);
+    }
 
     const buildPrompt = (
       toolContext: string,
@@ -2661,8 +2679,8 @@ export class AgentRuntime {
     // or max iterations reached. Each iteration can produce tool calls,
     // file edits, or both. Edits are applied immediately so the agent
     // can continue working on remaining todos without stopping.
-    const MAX_AGENT_ITERATIONS = 10;
-    const ITERATION_TIMEOUT_MS = 90_000;
+    const MAX_AGENT_ITERATIONS = profileDefaults.maxAgentIterations;
+    let noActionCount = 0;
     for (let iteration = 0; iteration < MAX_AGENT_ITERATIONS; iteration += 1) {
       this.emitProgress(
         iteration === 0 ? "Generating response" : "Continuing",
@@ -2671,11 +2689,16 @@ export class AgentRuntime {
       );
       checkAborted();
 
-      // Per-iteration timeout to prevent stalling
+      // Per-iteration timeout — give iteration 0 extra time for cold model load
+      const iterationTimeoutMs =
+        iteration === 0
+          ? profileDefaults.iterationTimeoutMs +
+            profileDefaults.coldStartBonusMs
+          : profileDefaults.iterationTimeoutMs;
       const iterationAbort = new AbortController();
       const timeoutId = setTimeout(
         () => iterationAbort.abort(),
-        ITERATION_TIMEOUT_MS,
+        iterationTimeoutMs,
       );
       // Forward parent abort to iteration controller
       const onParentAbort = () => iterationAbort.abort();
@@ -2690,9 +2713,16 @@ export class AgentRuntime {
 
       let response;
       try {
+        // Use JSON schema structured output for Ollama to constrain model output
+        const chatFormat: "json" | Record<string, unknown> =
+          this.provider.providerType === "ollama"
+            ? TASK_RESPONSE_SCHEMA
+            : "json";
         response = await this.provider.chat({
           model: editorModel,
-          format: "json",
+          format: chatFormat,
+          keepAlive: profileDefaults.editorKeepAlive,
+          numCtx: profileDefaults.numCtx,
           signal: iterationAbort.signal,
           onChunk: (chunk) => {
             this.emitReasoningChunk(chunk);
@@ -2718,7 +2748,9 @@ export class AgentRuntime {
                   iteration === 0 ? images : undefined,
                 ),
               ],
-          maxTokens: isFollowUp ? 2048 : 3072,
+          maxTokens: isFollowUp
+            ? profileDefaults.followUpMaxTokens
+            : profileDefaults.firstIterationMaxTokens,
         });
       } catch (err: unknown) {
         if (iterationAbort.signal.aborted && !signal?.aborted) {
@@ -2833,16 +2865,20 @@ export class AgentRuntime {
         );
       }
 
-      finalAssessment = assessTaskQuality(parsed, {
-        objective,
-        toolTrace: observations,
-        editCount: parsed.edits.length,
-        verificationRan: observations.some(
-          (observation) =>
-            observation.tool === "run_verification" && observation.ok,
-        ),
-        isEditTask: this.isLikelyEditTaskObjective(objective),
-      });
+      finalAssessment = assessTaskQuality(
+        parsed,
+        {
+          objective,
+          toolTrace: observations,
+          editCount: parsed.edits.length,
+          verificationRan: observations.some(
+            (observation) =>
+              observation.tool === "run_verification" && observation.ok,
+          ),
+          isEditTask: this.isLikelyEditTaskObjective(objective),
+        },
+        profileDefaults.qualityTarget,
+      );
 
       // Check if all todos are completed
       const pendingTodos = parsed.todos.filter(
@@ -2853,21 +2889,59 @@ export class AgentRuntime {
       // If work was done this iteration (tool calls or edits), continue
       // so the LLM can observe results and proceed to next todo.
       if (observations.length > 0) {
+        noActionCount = 0;
         if (failedObs.length === 0) {
           critiqueContext = "";
         }
-        // Low-end models can mark everything done too early; require at
-        // least a couple of iterations before accepting completion.
+        // Only break on all-done if at least a few iterations have passed
+        // AND no pending todos remain (low-end models may mark done too early).
         if (allTodosDone && iteration >= 2) {
           break;
         }
         continue;
       }
 
-      // No tool calls AND no edits this iteration — LLM is done acting.
-      // Break if all todos complete, quality sufficient, or enough iterations.
-      if (allTodosDone || finalAssessment.meetsTarget || iteration >= 2) {
+      // No tool calls AND no edits this iteration — LLM didn't act.
+      noActionCount += 1;
+
+      // Break if genuinely complete: all todos done OR quality target met.
+      // Do NOT break on iteration count alone while pending todos remain.
+      if (
+        allTodosDone ||
+        (finalAssessment.meetsTarget && pendingTodos.length === 0)
+      ) {
         break;
+      }
+
+      // Deterministic bootstrap: if the model has stalled for too many
+      // consecutive no-action iterations but work remains, auto-inject
+      // workspace scan results so the model can observe the codebase.
+      if (
+        pendingTodos.length > 0 &&
+        noActionCount >= profileDefaults.noActionThreshold
+      ) {
+        this.emitProgress(
+          "Auto-bootstrap",
+          "Model stalled — injecting workspace context",
+          "\u21BB",
+        );
+        const bootstrapObs = await this.executeTaskToolCalls(
+          [{ tool: "workspace_scan", args: {} }],
+          objective,
+          signal,
+        );
+        if (bootstrapObs.length > 0) {
+          toolTrace.push(...bootstrapObs);
+          toolContext = formatToolObservations(toolTrace.slice(-5));
+        }
+        critiqueContext =
+          "You have pending todos that are NOT complete. " +
+          "I have auto-scanned the workspace for you. Use the results above. " +
+          "Pick the next pending todo, mark it in-progress, and use tool calls to complete it. " +
+          "Do NOT stop until all todos are done.\n" +
+          `Pending: ${pendingTodos.map((t) => t.title).join(", ")}`;
+        noActionCount = 0;
+        continue;
       }
 
       // Still have pending todos but LLM didn't produce actions — nudge it
@@ -4384,13 +4458,19 @@ export class AgentRuntime {
     args?: Record<string, unknown>,
   ): Promise<TaskToolObservation[]> {
     const observations: TaskToolObservation[] = [];
+
+    // Always start with VS Code diagnostics — fast, no process spawn, no ENOENT risk
+    const diagnostics = this.verifier.runDiagnostics();
+    observations.push({
+      tool: "run_verification",
+      ok: !diagnostics.hasErrors,
+      summary: `Diagnostics: ${diagnostics.summary}`,
+      detail: JSON.stringify(diagnostics, null, 2),
+    });
+
     const commands = await this.collectVerificationCommands(objective, args);
     if (commands.length === 0) {
-      observations.push({
-        tool: "run_verification",
-        ok: false,
-        summary: "No safe verification command could be inferred.",
-      });
+      // Diagnostics only — no terminal commands available
       return observations;
     }
 

@@ -2,7 +2,7 @@
   "name": "pulse-agent",
   "displayName": "Pulse Agent",
   "description": "Local offline AI coding agent for VS Code powered by Ollama.",
-  "version": "0.0.82",
+  "version": "0.0.83",
   "publisher": "local",
   "license": "MIT",
   "keywords": [
@@ -300,6 +300,24 @@
           "type": "boolean",
           "default": false,
           "description": "Opt-in telemetry for local diagnostics and quality metrics."
+        },
+        "pulse.performance.profile": {
+          "type": "string",
+          "enum": [
+            "auto",
+            "low_vram",
+            "balanced",
+            "high_vram"
+          ],
+          "default": "auto",
+          "description": "Performance profile for model execution. 'auto' detects the best setting (conservative for local Ollama). 'low_vram' enforces one model at a time, small context, longer timeouts. 'balanced' allows two models with moderate context. 'high_vram' uses large context and keeps models loaded."
+        },
+        "pulse.behavior.qualityTargetScore": {
+          "type": "number",
+          "default": 0.9,
+          "minimum": 0.1,
+          "maximum": 1,
+          "description": "Quality score target for agent task completion. Lower values are more forgiving for local models. Automatically adjusted by performance profile."
         }
       }
     }

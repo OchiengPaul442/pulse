@@ -105,6 +105,29 @@ export class OllamaProvider implements ModelProvider {
       CHAT_TIMEOUT_MS,
     );
     try {
+      const ollamaOptions: Record<string, unknown> = {
+        temperature: request.temperature ?? 0.1,
+        ...(typeof request.maxTokens === "number"
+          ? { num_predict: request.maxTokens }
+          : {}),
+        ...(typeof request.numCtx === "number"
+          ? { num_ctx: request.numCtx }
+          : {}),
+      };
+
+      const body: Record<string, unknown> = {
+        model: request.model,
+        messages: request.messages,
+        stream: true,
+        options: ollamaOptions,
+        format: request.format,
+      };
+
+      // Ollama keep_alive control: 0 = unload immediately, -1 = keep forever
+      if (typeof request.keepAlive === "number") {
+        body.keep_alive = request.keepAlive;
+      }
+
       const response = await this.fetchFromCandidates("/api/chat", {
         method: "POST",
         headers: {
@@ -112,18 +135,7 @@ export class OllamaProvider implements ModelProvider {
         },
         signal,
         timeoutMs: CHAT_TIMEOUT_MS,
-        body: JSON.stringify({
-          model: request.model,
-          messages: request.messages,
-          stream: true,
-          options: {
-            temperature: request.temperature ?? 0.1,
-            ...(typeof request.maxTokens === "number"
-              ? { num_predict: request.maxTokens }
-              : {}),
-          },
-          format: request.format,
-        }),
+        body: JSON.stringify(body),
       });
 
       if (!response.ok) {
@@ -160,6 +172,27 @@ export class OllamaProvider implements ModelProvider {
       return this.consumeStream(response, request.onChunk);
     } finally {
       cleanup();
+    }
+  }
+
+  /**
+   * Unload a model from Ollama's memory by sending an empty chat with keep_alive=0.
+   * This frees VRAM so another model can load. Best-effort; failures are silent.
+   */
+  public async unloadModel(model: string): Promise<void> {
+    try {
+      await this.fetchFromCandidates("/api/chat", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        timeoutMs: DEFAULT_TIMEOUT_MS,
+        body: JSON.stringify({
+          model,
+          messages: [],
+          keep_alive: 0,
+        }),
+      });
+    } catch {
+      // Best-effort unload — model may not be loaded or Ollama may be unreachable
     }
   }
 

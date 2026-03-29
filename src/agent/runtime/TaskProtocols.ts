@@ -2,6 +2,65 @@ import type { ProposedEdit } from "../edits/EditManager";
 
 export const TARGET_TASK_QUALITY_SCORE = 0.9;
 
+/**
+ * JSON Schema for structured output mode. When passed to Ollama's `format`
+ * parameter, the model is constrained to emit only valid JSON matching this
+ * schema, which eliminates markdown fencing and malformed output on local
+ * models like deepseek-r1 and qwen2.5-coder.
+ */
+export const TASK_RESPONSE_SCHEMA: Record<string, unknown> = {
+  type: "object",
+  properties: {
+    response: { type: "string" },
+    todos: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: {
+          id: { type: "string" },
+          title: { type: "string" },
+          status: {
+            type: "string",
+            enum: ["pending", "in-progress", "blocked", "done"],
+          },
+          detail: { type: "string" },
+        },
+        required: ["id", "title", "status"],
+      },
+    },
+    toolCalls: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: {
+          tool: { type: "string" },
+          args: { type: "object" },
+          reason: { type: "string" },
+        },
+        required: ["tool", "args"],
+      },
+    },
+    edits: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: {
+          filePath: { type: "string" },
+          content: { type: "string" },
+          operation: { type: "string" },
+          reason: { type: "string" },
+        },
+        required: ["filePath"],
+      },
+    },
+    shortcuts: {
+      type: "array",
+      items: { type: "string" },
+    },
+  },
+  required: ["response", "todos", "toolCalls", "edits", "shortcuts"],
+};
+
 export type TaskTodoStatus = "pending" | "in-progress" | "blocked" | "done";
 
 export interface TaskTodo {
@@ -654,7 +713,9 @@ export function formatShortcutHints(shortcuts: string[]): string {
 export function assessTaskQuality(
   response: TaskModelResponse,
   context: TaskQualityContext,
+  qualityTarget?: number,
 ): TaskQualityAssessment {
+  const target = qualityTarget ?? TARGET_TASK_QUALITY_SCORE;
   const strengths: string[] = [];
   const weaknesses: string[] = [];
   const recommendations: string[] = [];
@@ -756,8 +817,8 @@ export function assessTaskQuality(
 
   return {
     score,
-    target: TARGET_TASK_QUALITY_SCORE,
-    meetsTarget: score >= TARGET_TASK_QUALITY_SCORE,
+    target,
+    meetsTarget: score >= target,
     strengths,
     weaknesses,
     recommendations: Array.from(new Set(recommendations)),

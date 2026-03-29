@@ -121,6 +121,8 @@ describe("AgentRuntime", () => {
       openaiBaseUrl: "",
       openaiApiKey: "",
       openaiModels: [],
+      performanceProfile: "auto",
+      qualityTargetScore: 0.9,
     };
 
     vi.spyOn(
@@ -298,6 +300,8 @@ describe("AgentRuntime", () => {
       openaiBaseUrl: "",
       openaiApiKey: "",
       openaiModels: [],
+      performanceProfile: "auto",
+      qualityTargetScore: 0.9,
     };
 
     vi.spyOn(OllamaProvider.prototype, "healthCheck").mockResolvedValue({
@@ -380,6 +384,8 @@ describe("AgentRuntime", () => {
       openaiBaseUrl: "",
       openaiApiKey: "",
       openaiModels: [],
+      performanceProfile: "auto",
+      qualityTargetScore: 0.9,
     };
 
     const runtime = new AgentRuntime(
@@ -449,6 +455,8 @@ describe("AgentRuntime", () => {
       openaiBaseUrl: "",
       openaiApiKey: "",
       openaiModels: [],
+      performanceProfile: "auto",
+      qualityTargetScore: 0.9,
     };
 
     const runtime = new AgentRuntime(
@@ -577,6 +585,8 @@ describe("AgentRuntime", () => {
       openaiBaseUrl: "",
       openaiApiKey: "",
       openaiModels: [],
+      performanceProfile: "auto",
+      qualityTargetScore: 0.9,
     };
 
     const runtime = new AgentRuntime(
@@ -669,6 +679,8 @@ describe("AgentRuntime", () => {
       openaiBaseUrl: "",
       openaiApiKey: "",
       openaiModels: [],
+      performanceProfile: "auto",
+      qualityTargetScore: 0.9,
     };
 
     const runtime = new AgentRuntime(
