@@ -647,7 +647,10 @@ export class AgentRuntime {
     return lines.join("\n");
   }
 
-  private selectBootstrapFiles(listedFiles: string[], objective: string): string[] {
+  private selectBootstrapFiles(
+    listedFiles: string[],
+    objective: string,
+  ): string[] {
     const normalizedObjective = objective.toLowerCase();
     const selected: string[] = [];
     const seen = new Set<string>();
@@ -736,7 +739,8 @@ export class AgentRuntime {
           {
             tool: "read_files",
             args: { paths: bootstrapFiles },
-            reason: "Read key project files for concrete workspace bootstrap context.",
+            reason:
+              "Read key project files for concrete workspace bootstrap context.",
           },
         ],
         objective,

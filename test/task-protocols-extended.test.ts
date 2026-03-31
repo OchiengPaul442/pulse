@@ -216,7 +216,11 @@ LINE_TWO"}}]}`;
       JSON.stringify({
         response: "working",
         todos: [
-          { id: ">>", title: "[in-progress] Create Next.js app", status: "in-progress" },
+          {
+            id: ">>",
+            title: "[in-progress] Create Next.js app",
+            status: "in-progress",
+          },
           { id: "[ ]", title: "todo: Inspect package.json", status: "pending" },
         ],
       }),

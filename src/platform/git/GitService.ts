@@ -565,10 +565,7 @@ interface GitRepository {
   checkout(treeish: string): Promise<void>;
   createBranch(name: string, checkout: boolean): Promise<void>;
   getBranches(query?: { remote?: boolean }): Promise<Array<{ name?: string }>>;
-  log(options?: {
-    maxEntries?: number;
-    path?: string;
-  }): Promise<
+  log(options?: { maxEntries?: number; path?: string }): Promise<
     Array<{
       hash: string;
       message: string;
