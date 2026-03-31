@@ -159,6 +159,151 @@ export class GitService {
   }
 
   /**
+   * Stage specific files for commit.
+   */
+  public async stageFiles(paths: string[]): Promise<void> {
+    const repo = this.getRepository();
+    if (!repo) throw new Error("No git repository found.");
+    await repo.add(paths);
+  }
+
+  /**
+   * Stage all changes for commit.
+   */
+  public async stageAll(): Promise<void> {
+    const repo = this.getRepository();
+    if (!repo) throw new Error("No git repository found.");
+    // Stage all by adding the root
+    const rootPath = repo.rootUri.fsPath;
+    await repo.add([rootPath]);
+  }
+
+  /**
+   * Create a git commit with a message (staged changes).
+   */
+  public async commit(message: string): Promise<void> {
+    const repo = this.getRepository();
+    if (!repo) throw new Error("No git repository found.");
+    await repo.commit(message);
+  }
+
+  /**
+   * Checkout a branch or ref.
+   */
+  public async checkout(treeish: string): Promise<void> {
+    const repo = this.getRepository();
+    if (!repo) throw new Error("No git repository found.");
+    await repo.checkout(treeish);
+  }
+
+  /**
+   * Create and switch to a new branch.
+   */
+  public async createBranch(name: string): Promise<void> {
+    const repo = this.getRepository();
+    if (!repo) throw new Error("No git repository found.");
+    await repo.createBranch(name, true);
+  }
+
+  /**
+   * List local branches.
+   */
+  public async getBranches(): Promise<string[]> {
+    const repo = this.getRepository();
+    if (!repo) return [];
+    try {
+      const branches = await repo.getBranches({ remote: false });
+      return branches.map((b) => b.name ?? "").filter(Boolean);
+    } catch {
+      return [];
+    }
+  }
+
+  /**
+   * Get recent commit log entries.
+   */
+  public async getLog(
+    count = 10,
+  ): Promise<Array<{ hash: string; date: string; message: string }>> {
+    const repo = this.getRepository();
+    if (!repo) return [];
+    try {
+      const entries = await repo.log({ maxEntries: count });
+      return entries.map((e) => ({
+        hash: e.hash,
+        date: e.authorDate
+          ? e.authorDate.toISOString().slice(0, 10)
+          : "unknown",
+        message: e.message,
+      }));
+    } catch {
+      return [];
+    }
+  }
+
+  /**
+   * Get working tree status summary.
+   */
+  public async getStatus(): Promise<{
+    branch: string;
+    staged: number;
+    modified: number;
+    untracked: number;
+    files: Array<{ status: string; path: string }>;
+  }> {
+    const gitExt = this.getGitExtension();
+    if (!gitExt || gitExt.repositories.length === 0) {
+      return {
+        branch: "none",
+        staged: 0,
+        modified: 0,
+        untracked: 0,
+        files: [],
+      };
+    }
+    const repo = gitExt.repositories[0];
+    const branch = repo.state.HEAD?.name ?? "detached";
+    const workspaceRoot =
+      vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? "";
+
+    const files: Array<{ status: string; path: string }> = [];
+    let staged = 0;
+    let modified = 0;
+    let untracked = 0;
+
+    for (const change of repo.state.indexChanges) {
+      staged++;
+      const rel = workspaceRoot
+        ? change.uri.fsPath.replace(workspaceRoot, "").replace(/^[/\\]/, "")
+        : change.uri.fsPath;
+      files.push({
+        status: "staged:" + mapGitStatus(change.status),
+        path: rel,
+      });
+    }
+    for (const change of repo.state.workingTreeChanges) {
+      const st = mapGitStatus(change.status);
+      if (st === "untracked") untracked++;
+      else modified++;
+      const rel = workspaceRoot
+        ? change.uri.fsPath.replace(workspaceRoot, "").replace(/^[/\\]/, "")
+        : change.uri.fsPath;
+      files.push({ status: st, path: rel });
+    }
+
+    return { branch, staged, modified, untracked, files };
+  }
+
+  /**
+   * Get the first VS Code git repository, or null.
+   */
+  private getRepository(): GitRepository | null {
+    const gitExt = this.getGitExtension();
+    if (!gitExt || gitExt.repositories.length === 0) return null;
+    return gitExt.repositories[0];
+  }
+
+  /**
    * Get the VS Code built-in git extension API.
    */
   private getGitExtension(): GitExtensionApi | null {
@@ -209,8 +354,17 @@ interface GitExtensionApi {
 }
 
 interface GitRepository {
+  rootUri: vscode.Uri;
   state: GitRepositoryState;
   diffWith(ref: string, path: string): Promise<string>;
+  add(paths: string[]): Promise<void>;
+  commit(message: string): Promise<void>;
+  checkout(treeish: string): Promise<void>;
+  createBranch(name: string, checkout: boolean): Promise<void>;
+  getBranches(query?: { remote?: boolean }): Promise<Array<{ name?: string }>>;
+  log(options?: {
+    maxEntries?: number;
+  }): Promise<Array<{ hash: string; message: string; authorDate?: Date }>>;
 }
 
 interface GitRepositoryState {

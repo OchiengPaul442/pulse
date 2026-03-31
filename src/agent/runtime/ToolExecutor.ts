@@ -16,6 +16,21 @@ import {
   estimateCommandTimeout,
 } from "./TaskProtocols.js";
 
+import {
+  WriteFileTool,
+  ReplaceInFileTool,
+  GrepSearchTool,
+  GetDefinitionsTool,
+  GetReferencesTool,
+  GetDocumentSymbolsTool,
+  RenameSymbolTool,
+  GitCommitTool,
+  GitLogTool,
+  GitStatusTool,
+  GitBranchTool,
+} from "../tools/index.js";
+import type { AgentTool } from "../tools/index.js";
+
 /**
  * Adapter interface that AgentRuntime implements to provide services
  * needed by tool execution without coupling ToolExecutor to the runtime.
@@ -78,6 +93,28 @@ export class ToolExecutor {
     private readonly webSearch: WebSearchService,
     private readonly broadcaster: StreamBroadcaster,
   ) {
+    // Instantiate modular tools
+    const fileCtx = {
+      resolvePath: (p: string) => ctx.resolvePath(p),
+      normalizeDisplay: (p: string) => ctx.normalizeDisplay(p),
+    };
+    const lspCtx = fileCtx;
+    const gitCtx = { workspaceRoot: ctx.workspaceRoot };
+
+    const modularTools: AgentTool[] = [
+      new WriteFileTool(fileCtx, broadcaster),
+      new ReplaceInFileTool(fileCtx, broadcaster),
+      new GrepSearchTool(fileCtx),
+      new GetDefinitionsTool(lspCtx),
+      new GetReferencesTool(lspCtx),
+      new GetDocumentSymbolsTool(lspCtx),
+      new RenameSymbolTool(lspCtx),
+      new GitCommitTool(gitCtx, gitService),
+      new GitLogTool(gitCtx, gitService),
+      new GitStatusTool(gitCtx, gitService),
+      new GitBranchTool(gitCtx, gitService),
+    ];
+
     this.handlers = new Map([
       ["workspace_scan", (c, o, s) => this.handleWorkspaceScan(c)],
       ["read_files", (c, o, s) => this.handleReadFiles(c, s)],
@@ -105,6 +142,11 @@ export class ToolExecutor {
         () => Promise.resolve(this.handleGetTerminalOutput()),
       ],
     ]);
+
+    // Register modular tools into the handler map
+    for (const tool of modularTools) {
+      this.handlers.set(tool.name, (c, o, s) => tool.execute(c, o, s));
+    }
   }
 
   public getLastTerminalResult(): TerminalExecResult | null {
@@ -199,12 +241,17 @@ export class ToolExecutor {
     call: TaskToolCall,
   ): Promise<TaskToolObservation[]> {
     const inventory = await this.ctx.buildWorkspaceInventory(250);
+    const fileList = inventory.listedFiles.slice(0, 30);
+    const hasExistingCode = inventory.totalFiles > 0;
+    const preamble = hasExistingCode
+      ? `Found ${inventory.totalFiles} existing file(s). IMPORTANT: This workspace already has code. Read and adapt to existing files — do NOT recreate them.`
+      : `Empty workspace with ${inventory.totalFiles} file(s). You may create new files as needed.`;
     return [
       {
         tool: call.tool,
         ok: true,
-        summary: `Found ${inventory.totalFiles} file(s) in the workspace.`,
-        detail: inventory.listedFiles.slice(0, 20).join("\n"),
+        summary: preamble,
+        detail: fileList.join("\n"),
       },
     ];
   }

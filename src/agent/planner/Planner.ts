@@ -38,16 +38,11 @@ export class Planner {
     options?: { keepAlive?: number; numCtx?: number },
   ): Promise<TaskPlan> {
     const prompt = [
-      "Create a rigorous JSON plan for a coding agent task.",
-      "Return valid JSON only with fields: objective, assumptions, acceptanceCriteria, todos, steps, taskSlices, verification.",
-      "Each step must contain id, goal, tools, expectedOutput.",
-      "Each todo must contain id, title, status, and optionally detail.",
-      "Keep todo titles short, imperative, and concrete. Use at most 5 todo items.",
-      "If detail is needed, keep it to one short clause.",
-      "Each taskSlice must contain id, title, scope, steps, deliverable, acceptanceCriteria.",
-      "Make acceptance criteria observable and testable.",
-      "Task slices should be small enough to implement and verify independently.",
-      `Task objective: ${objective}`,
+      "Create a JSON plan for a coding agent task. Return valid JSON only.",
+      "Fields: objective, assumptions (string[]), acceptanceCriteria (string[]), todos (array of {id, title, status}), steps (array of {id, goal, tools, expectedOutput}), taskSlices (array of {id, title, scope, steps, deliverable, acceptanceCriteria}), verification (array of {type, command}).",
+      "Keep 3-5 todos with short imperative titles. First todo should always be about scanning/reading the workspace.",
+      "Todo statuses: 'pending' only (the agent will update them).",
+      `Task: ${objective}`,
     ].join("\n");
 
     try {
@@ -56,10 +51,12 @@ export class Planner {
         format: "json",
         keepAlive: options?.keepAlive,
         numCtx: options?.numCtx,
+        maxTokens: 1024,
         messages: [
           {
             role: "system",
-            content: "You are a planning engine for a VS Code coding agent.",
+            content:
+              "You are a planning engine. Return ONLY valid JSON. No markdown. Start with { end with }.",
           },
           {
             role: "user",
@@ -69,7 +66,12 @@ export class Planner {
       });
 
       const parsed = JSON.parse(response.text) as Partial<TaskPlan>;
-      return normalizePlan(parsed, objective);
+      const plan = normalizePlan(parsed, objective);
+      // Sanity check: if planner returned empty/useless todos, use fallback
+      if (plan.todos.length === 0) {
+        return fallbackPlan(objective);
+      }
+      return plan;
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       console.warn(
@@ -126,6 +128,7 @@ function fallbackPlan(objective: string): TaskPlan {
     objective,
     assumptions: [
       "No reliable structured plan response from model; fallback plan used.",
+      "Agent must use tool calls to inspect the workspace before taking action.",
     ],
     acceptanceCriteria: [
       "The plan is understandable and actionable.",
@@ -135,32 +138,38 @@ function fallbackPlan(objective: string): TaskPlan {
     todos: [
       {
         id: "todo_1",
-        title: "Inspect workspace context",
+        title: "Scan workspace and read relevant files",
         status: "pending",
       },
       {
         id: "todo_2",
-        title: "Make the smallest correct change",
+        title: "Implement the requested changes",
         status: "pending",
       },
       {
         id: "todo_3",
-        title: "Verify the result",
+        title: "Run verification and fix issues",
         status: "pending",
       },
     ],
     steps: [
       {
         id: "step_1",
-        goal: "Gather relevant workspace context",
-        tools: ["search", "read_file"],
-        expectedOutput: "Candidate files and local evidence",
+        goal: "Scan workspace structure and read key files",
+        tools: ["workspace_scan", "read_files", "list_dir"],
+        expectedOutput: "Understanding of project structure and relevant code",
       },
       {
         id: "step_2",
-        goal: "Generate implementation or explanation",
-        tools: ["model.chat"],
-        expectedOutput: "Actionable response",
+        goal: "Implement the changes requested by the user",
+        tools: ["create_file", "batch_edit", "run_terminal"],
+        expectedOutput: "Files created or modified to fulfill the objective",
+      },
+      {
+        id: "step_3",
+        goal: "Verify changes compile and pass tests",
+        tools: ["run_verification", "get_problems"],
+        expectedOutput: "All checks passing or clear explanation of issues",
       },
     ],
     taskSlices: [
@@ -169,24 +178,29 @@ function fallbackPlan(objective: string): TaskPlan {
         title: "Discovery and framing",
         scope: "Relevant files and request context",
         steps: [
-          "Inspect the workspace context",
+          "Use workspace_scan to list files",
+          "Use read_files to read relevant source files",
           "Identify constraints and dependencies",
         ],
         deliverable: "A scoped understanding of the task",
         acceptanceCriteria: [
-          "Relevant context has been identified.",
+          "workspace_scan tool has been called.",
+          "Relevant files have been read.",
           "The task scope is clearly framed.",
         ],
       },
       {
         id: "slice_2",
-        title: "Action and verification",
+        title: "Implementation",
         scope: "Target code or plan artifact",
-        steps: ["Produce the implementation or plan", "Verify the result"],
+        steps: [
+          "Create or modify files to implement the objective",
+          "Run verification commands to test the result",
+        ],
         deliverable: "A concrete task outcome",
         acceptanceCriteria: [
-          "The output is actionable.",
-          "Verification guidance is present.",
+          "Files have been created or modified.",
+          "Verification has been attempted.",
         ],
       },
     ],

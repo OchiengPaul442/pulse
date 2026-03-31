@@ -777,7 +777,11 @@ export class AgentRuntime {
       if (signal?.aborted) throw new Error("__TASK_CANCELLED__");
     };
     checkAborted();
-    this.broadcaster.emitProgress("Starting", "Initializing session context", "\u25B8");
+    this.broadcaster.emitProgress(
+      "Starting",
+      "Initializing session context",
+      "\u25B8",
+    );
     let session = await this.sessionStore.getActiveSession();
     if (!session) {
       session = await this.sessionStore.createSession(objective, {
@@ -989,7 +993,11 @@ export class AgentRuntime {
     }
 
     if (mode === "plan") {
-      this.broadcaster.emitProgress("Plan mode", "Preparing structured plan", "\u25A0");
+      this.broadcaster.emitProgress(
+        "Plan mode",
+        "Preparing structured plan",
+        "\u25A0",
+      );
       const [plannerModel, webResearch] = await Promise.all([
         this.resolveModelOrFallback(this.currentConfig.plannerModel),
         this.collectWebResearch(objective, mode),
@@ -1003,7 +1011,11 @@ export class AgentRuntime {
       }
       this.broadcaster.emitProgress("Building plan", plannerModel, "\u25A0");
       const plan = await this.planner.createPlan(objective, plannerModel);
-      this.broadcaster.emitProgress("Saving plan artifact", undefined, "\u25CB");
+      this.broadcaster.emitProgress(
+        "Saving plan artifact",
+        undefined,
+        "\u25CB",
+      );
       const artifactPath = await this.writePlanArtifact(
         objective,
         plan,
@@ -1874,12 +1886,18 @@ export class AgentRuntime {
       budget,
       this.tokensConsumed + Math.max(usage.totalTokens, 0),
     );
-    this.broadcaster.emitTokenUpdate(this.tokensConsumed, this.currentConfig.maxContextTokens);
+    this.broadcaster.emitTokenUpdate(
+      this.tokensConsumed,
+      this.currentConfig.maxContextTokens,
+    );
   }
 
   private resetTokenUsage(): void {
     this.tokensConsumed = 0;
-    this.broadcaster.emitTokenUpdate(this.tokensConsumed, this.currentConfig.maxContextTokens);
+    this.broadcaster.emitTokenUpdate(
+      this.tokensConsumed,
+      this.currentConfig.maxContextTokens,
+    );
   }
 
   /**
@@ -2577,7 +2595,11 @@ export class AgentRuntime {
       planningModel !== editorModel &&
       this.provider.providerType === "ollama"
     ) {
-      this.broadcaster.emitProgress("Freeing VRAM", `Unloading ${planningModel}`, "\u21BB");
+      this.broadcaster.emitProgress(
+        "Freeing VRAM",
+        `Unloading ${planningModel}`,
+        "\u21BB",
+      );
       await (this.provider as OllamaProvider).unloadModel(planningModel);
     }
 
@@ -2588,71 +2610,51 @@ export class AgentRuntime {
       [
         this.getPersonaPrompt(),
         "You are an autonomous coding agent inside VS Code. You MUST return valid JSON only, no markdown.",
-        "## WORKSPACE ACCESS",
-        "- You have full read/write/delete/move access inside the current workspace root.",
-        "- Prefer workspace-relative paths unless an absolute path is needed for a specific tool.",
-        "- Inspect first with workspace_scan, list_dir, read_files, search_files, and file_search.",
-        "- Create folders with create_directory, create new files with create_file, modify existing files with batch_edit, move or rename with rename_file, and remove files with delete_file.",
-        "- Never create empty placeholder files when you intend to write code; include the actual file content in create_file.",
-        "- Attached files are already available as context; read them before duplicating work.",
+        "You have full workspace access: read, write, create, delete, rename files and run terminal commands.",
+        "CRITICAL: You MUST use toolCalls to do work. Do NOT just respond with text. Call tools!",
         "",
         ...(styleHintAgent ? [styleHintAgent] : []),
         ...(improvementHintsAgent ? [improvementHintsAgent] : []),
         ...(agentAwarenessAgent ? [agentAwarenessAgent] : []),
         shortcutSummary ? shortcutSummary : "",
-        `Primary skill: ${primarySkillName}`,
-        skillsSummary ? `Skills:\n${skillsSummary}` : "",
+        skillsSummary ? `Skills: ${skillsSummary}` : "",
         "",
         /next\.?js|next-app/i.test(objective)
-          ? [
-              "## SCAFFOLDING",
-              "- Use the framework's official scaffold command first.",
-              "- For Next.js, prefer `pnpm create next-app@latest . --ts --tailwind --eslint --app`.",
-              "- Do not use `pnpm init -y`; pnpm init does not support the -y flag.",
-              "- Create dummy data and blog components only after the scaffold succeeds.",
-              "",
-            ].join("\n")
+          ? "SCAFFOLDING: Use `pnpm create next-app@latest . --ts --tailwind --eslint --app` first. Do not use `pnpm init -y`."
           : "",
         "## WORKFLOW",
-        "1. Read/search files BEFORE editing. Never guess contents.",
-        "2. Work through todos ONE at a time: mark current 'in-progress', execute it with tool calls, mark 'done'.",
-        "3. After run_terminal, ALWAYS check output. If errors: diagnose and fix before proceeding.",
-        "4. Use create_directory for folders, create_file for new files with real content, and batch_edit for modifying existing files.",
-        "5. On failure: analyze error → try alternatives → never give up on first attempt.",
-        "6. Never delete files unless explicitly asked. Contain fixes — don't break other code.",
-        "7. You get MULTIPLE turns. Each turn you can make tool calls. Use them!",
-        "8. Do not repeat the same tool call, edit, todo text, or summary wording unless the inputs changed or you are intentionally retrying after a new error.",
-        "9. Prefer the smallest fresh next action. One successful step is better than repeating the same plan.",
-        "10. Do NOT assume the tech stack. Detect it from workspace evidence (package.json → Node, pyproject.toml/requirements.txt/manage.py → Python, Cargo.toml → Rust, go.mod → Go). Never run npm/pnpm/yarn in non-Node projects.",
-        "11. If a terminal command fails with ENOENT / not recognized, propose a non-terminal fallback (direct file creation/edits) whenever possible.",
+        "1. ALWAYS start by calling workspace_scan or read_files to understand the project.",
+        "2. IMPORTANT: If the workspace already has files, read and ADAPT to them. Do NOT recreate or overwrite existing code.",
+        "3. Work through todos ONE at a time: mark 'in-progress', use tool calls, mark 'done'.",
+        "4. After run_terminal, check output. If errors: diagnose and fix.",
+        "5. Use create_file ONLY for truly new files. Use batch_edit or replace_in_file for modifying existing files.",
+        "6. On failure: analyze → try alternatives. Never give up on first attempt.",
+        "7. You get MULTIPLE turns. Each turn you MUST make tool calls to do work. Do NOT skip tools!",
+        "8. Detect tech stack from workspace (package.json → Node, pyproject.toml → Python, etc).",
+        "9. If the workspace has existing structure, work WITHIN it — extend, fix, or modify. Do NOT start from scratch.",
         "",
         "## TODO RULES",
-        "- Create 3-5 actionable todos upfront. Update statuses EVERY turn.",
-        "- Statuses: 'pending' | 'in-progress' | 'done' | 'blocked'",
-        "- ONE 'in-progress' at a time. Complete it, mark 'done', then start next.",
-        "- Do NOT try to complete all todos in one turn. Focus on ONE at a time.",
+        "- 3-5 actionable todos. Statuses: 'pending' | 'in-progress' | 'done' | 'blocked'",
+        "- ONE 'in-progress' at a time. Complete it, mark 'done', start next.",
         "",
-        "## JSON FORMAT (STRICT)",
-        '{"response":"<brief explanation>","todos":[{"id":"todo_1","title":"...","status":"pending"}],"toolCalls":[{"tool":"<name>","args":{...}}],"edits":[],"shortcuts":[]}',
-        "- 'response': brief explanation of what you're doing this turn.",
-        "- 'toolCalls': actions for THIS turn only. You'll get results and can continue.",
-        "- 'edits': use ONLY for batch file modifications. Prefer create_file tool for new files.",
+        "## JSON FORMAT",
+        '{"response":"<what you are doing>","todos":[{"id":"todo_1","title":"...","status":"pending"}],"toolCalls":[{"tool":"<name>","args":{...}}],"edits":[],"shortcuts":[]}',
+        "- toolCalls: actions for THIS turn. You MUST include at least one tool call per turn until all todos are done.",
         "- If toolCalls present: you get another turn with results.",
-        "- If no toolCalls and all todos done: write final summary in response.",
+        "- ONLY when ALL todos are truly done with evidence: empty toolCalls and write summary.",
         "",
-        "## TOOL EXAMPLES",
-        'Create a directory: {"tool":"create_directory","args":{"path":"src/components"}}',
-        'Create a file: {"tool":"create_file","args":{"filePath":"src/index.ts","content":"..."}}',
-        'Run command: {"tool":"run_terminal","args":{"command":"npm install"}}',
-        'Read files: {"tool":"read_files","args":{"paths":["package.json"]}}',
-        'List directory: {"tool":"list_dir","args":{"path":"."}}',
+        "## TOOLS (use these in toolCalls)",
+        "workspace_scan {}, read_files {paths:[]}, list_dir {path}, search_files {query}, file_search {pattern}",
+        "create_directory {path}, create_file {filePath,content}, write_file {filePath,content}, delete_file {filePath}",
+        "batch_edit {edits:[{filePath,search,replace}]}, replace_in_file {filePath,oldText,newText}, rename_file {oldPath,newPath}",
+        "grep_search {pattern, isRegex?, includePattern?}",
+        "run_terminal {command}, run_verification, get_problems {filePath?}, get_terminal_output",
+        "web_search {query}, git_diff {filePath?}, diagnostics, find_references {symbol}",
+        "get_definitions {filePath,line,character}, get_references {filePath,line,character}, get_document_symbols {filePath}, rename_symbol {filePath,line,character,newName}",
+        "git_commit {message,files?}, git_status {}, git_log {count?}, git_branch {action:'list'|'create'|'checkout',name?}",
         "",
-        "## ALL TOOLS",
-        "workspace_scan, read_files {paths:[]}, create_directory {path}, create_file {filePath,content}, delete_file {filePath}",
-        "search_files {query}, list_dir {path}, run_terminal {command}, run_verification",
-        "web_search {query}, git_diff {filePath?}, diagnostics, get_terminal_output",
-        "batch_edit {edits:[{filePath,search,replace}]}, rename_file {oldPath,newPath}",
-        "find_references {symbol}, file_search {pattern}, get_problems {filePath?}",
+        "## EXAMPLE FIRST TURN",
+        '{"response":"Scanning workspace to understand the project structure.","todos":[{"id":"todo_1","title":"Scan workspace","status":"in-progress"},{"id":"todo_2","title":"Implement changes","status":"pending"},{"id":"todo_3","title":"Verify result","status":"pending"}],"toolCalls":[{"tool":"workspace_scan","args":{}},{"tool":"read_files","args":{"paths":["package.json"]}}],"edits":[],"shortcuts":[]}',
         "",
         "## CONTEXT",
         `Objective: ${objective}`,
@@ -2712,15 +2714,25 @@ export class AgentRuntime {
           : "No todos yet.",
         "",
         "## INSTRUCTIONS",
-        "- Work on the NEXT pending todo. Mark it in-progress, complete it, mark it done.",
-        "- Use create_file tool for new files. Use batch_edit for modifying existing files.",
-        "- Do not repeat exact tool calls, edits, or todo text already shown in tool results.",
-        "- If a prior tool call succeeded, move forward instead of replaying it.",
-        "- After completing a todo, update its status to done and proceed to the next.",
-        "- When ALL todos are done, write a final summary in response with NO toolCalls.",
+        "- You MUST include toolCalls to do work. Do NOT respond with only text.",
+        "- Work on the NEXT pending todo. Mark it in-progress, use tool calls, mark done.",
+        "- If the workspace already has files, ADAPT to them. Do NOT recreate existing files from scratch.",
+        "- Use create_file ONLY for truly new files. Use batch_edit or replace_in_file for modifying existing files.",
+        "- Do not repeat exact tool calls already shown in tool results.",
+        "- If a prior tool call succeeded, move forward to the next step.",
+        "- When ALL todos are done WITH evidence from tool calls: write final summary, empty toolCalls.",
+        "",
+        "## TOOLS",
+        "workspace_scan, read_files {paths:[]}, list_dir {path}, search_files {query}, file_search {pattern}",
+        "create_directory {path}, create_file {filePath,content}, write_file {filePath,content}, delete_file {filePath}",
+        "batch_edit {edits:[{filePath,search,replace}]}, replace_in_file {filePath,oldText,newText}, rename_file {oldPath,newPath}",
+        "grep_search {pattern, isRegex?, includePattern?}",
+        "run_terminal {command}, run_verification, get_problems {filePath?}, get_terminal_output",
+        "get_definitions {filePath,line,character}, get_references {filePath,line,character}, get_document_symbols {filePath}, rename_symbol {filePath,line,character,newName}",
+        "git_commit {message,files?}, git_status {}, git_log {count?}, git_branch {action:'list'|'create'|'checkout',name?}",
         "",
         "## JSON FORMAT",
-        '{"response":"...","todos":[...],"toolCalls":[...],"edits":[],"shortcuts":[]}',
+        '{"response":"...","todos":[...],"toolCalls":[{"tool":"...","args":{...}}],"edits":[],"shortcuts":[]}',
         "",
         toolCtx ? `## TOOL RESULTS\n${toolCtx}` : "",
         critiqueCtx ? `## FEEDBACK\n${critiqueCtx}` : "",
@@ -2732,6 +2744,31 @@ export class AgentRuntime {
     // or max iterations reached. Each iteration can produce tool calls,
     // file edits, or both. Edits are applied immediately so the agent
     // can continue working on remaining todos without stopping.
+    // When the planner failed (fallback plan), auto-bootstrap the first
+    // iteration with workspace_scan results so the model has concrete
+    // data to work with instead of guessing from the prompt context alone.
+    if (plan.isFallback) {
+      this.broadcaster.emitProgress(
+        "Auto-bootstrap",
+        "Scanning workspace for fallback plan",
+        "\u25CB",
+      );
+      const bootstrapObs = await this.executeTaskToolCalls(
+        [{ tool: "workspace_scan", args: {} }],
+        objective,
+        signal,
+      );
+      if (bootstrapObs.length > 0) {
+        toolTrace.push(...bootstrapObs);
+        const maxObs = profileDefaults.numCtx <= 4096 ? 3 : 5;
+        toolContext = formatToolObservations(toolTrace.slice(-maxObs));
+      }
+    }
+
+    // Track whether ANY tool calls have been successfully executed
+    // across all iterations — used to prevent false "all done" exits.
+    let hasEverExecutedTools = false;
+
     const MAX_AGENT_ITERATIONS = profileDefaults.maxAgentIterations;
     let noActionCount = 0;
     let retried = false;
@@ -2790,7 +2827,7 @@ export class AgentRuntime {
                 {
                   role: "system",
                   content:
-                    "You are a coding agent. Return ONLY valid JSON: {response, todos, toolCalls, edits, shortcuts}. No markdown. Start with { end with }.",
+                    "You are a coding agent. Return ONLY valid JSON: {response, todos, toolCalls, edits, shortcuts}. No markdown. You MUST include toolCalls to do work. Start with { end with }.",
                 },
                 this.buildUserMessage(promptText),
               ]
@@ -2798,7 +2835,7 @@ export class AgentRuntime {
                 {
                   role: "system",
                   content:
-                    "You are a coding agent. You MUST return ONLY valid JSON with these fields: response, todos, toolCalls, edits, shortcuts. No markdown fences. No text outside the JSON object. Start your response with { and end with }.",
+                    "You are a coding agent. Return ONLY valid JSON: {response, todos, toolCalls, edits, shortcuts}. No markdown fences. No text outside JSON. You MUST include toolCalls array with at least one tool call to do work. Start with { end with }.",
                 },
                 ...conversationHistory,
                 this.buildUserMessage(
@@ -2874,12 +2911,18 @@ export class AgentRuntime {
       if (parsed.todos.length === 0) {
         const hasNoActions =
           parsed.toolCalls.length === 0 && parsed.edits.length === 0;
-        if (hasNoActions && parsed.response.trim().length > 0) {
+        if (
+          hasNoActions &&
+          parsed.response.trim().length > 0 &&
+          hasEverExecutedTools
+        ) {
+          // Only mark todos done if the agent has actually done work
           parsed.todos = plan.todos.map((todo) => ({
             ...todo,
             status: "done" as const,
           }));
         } else {
+          // No todos returned — use plan todos and keep them pending
           parsed.todos = plan.todos;
         }
       }
@@ -3020,6 +3063,7 @@ export class AgentRuntime {
       // If work was done this iteration (tool calls or edits), continue
       // so the LLM can observe results and proceed to next todo.
       if (observations.length > 0) {
+        hasEverExecutedTools = true;
         const hasSuccessfulObservations = observations.some((o) => o.ok);
         if (hasSuccessfulObservations) {
           noActionCount = 0;
@@ -3029,9 +3073,10 @@ export class AgentRuntime {
         if (failedObs.length === 0) {
           critiqueContext = "";
         }
-        // Only break on all-done if at least a few iterations have passed
-        // AND no pending todos remain (low-end models may mark done too early).
-        if (allTodosDone && iteration >= 2) {
+        // Only break on all-done if real work was done across the session
+        // AND at least a couple of iterations have passed (low-end models
+        // may mark done too early).
+        if (allTodosDone && iteration >= 2 && hasEverExecutedTools) {
           break;
         }
 
@@ -3069,12 +3114,51 @@ export class AgentRuntime {
       noActionCount += 1;
 
       // Break if genuinely complete: all todos done OR quality target met.
-      // Do NOT break on iteration count alone while pending todos remain.
+      // BUT only if the model has actually executed tools at some point —
+      // otherwise it's just marking generic todos "done" without doing work.
       if (
-        allTodosDone ||
-        (finalAssessment.meetsTarget && pendingTodos.length === 0)
+        hasEverExecutedTools &&
+        (allTodosDone ||
+          (finalAssessment.meetsTarget && pendingTodos.length === 0))
       ) {
         break;
+      }
+
+      // If model claims "all done" but never executed a single tool call,
+      // don't trust it — reset todos to pending and force workspace scan.
+      if (allTodosDone && !hasEverExecutedTools) {
+        this.broadcaster.emitProgress(
+          "Auto-bootstrap",
+          "Model claimed done without tool use — forcing workspace scan",
+          "\u21BB",
+        );
+        // Reset all todos back to pending
+        for (const todo of parsed.todos) {
+          todo.status = "pending";
+        }
+        this.broadcaster.emitTodoUpdate(parsed.todos);
+
+        const bootstrapObs = await this.executeTaskToolCalls(
+          [{ tool: "workspace_scan", args: {} }],
+          objective,
+          signal,
+        );
+        if (bootstrapObs.length > 0) {
+          hasEverExecutedTools = true;
+          toolTrace.push(...bootstrapObs);
+          const maxObs = profileDefaults.numCtx <= 4096 ? 3 : 5;
+          toolContext = formatToolObservations(toolTrace.slice(-maxObs));
+        }
+        critiqueContext =
+          "IMPORTANT: You marked all todos done without using any tools. " +
+          "That is NOT correct. You MUST use tool calls to actually do the work. " +
+          "I've scanned the workspace for you. Now read the results above and " +
+          "start working through the todos using tool calls.\n" +
+          "FIRST: call workspace_scan or read_files to understand the project.\n" +
+          "THEN: use create_file, batch_edit, or run_terminal to make changes.\n" +
+          `Objective: ${objective}`;
+        noActionCount = 0;
+        continue;
       }
 
       // Deterministic bootstrap: if the model has stalled for too many
@@ -3112,9 +3196,10 @@ export class AgentRuntime {
       // Still have pending todos but LLM didn't produce actions — nudge it
       if (pendingTodos.length > 0) {
         critiqueContext =
+          "IMPORTANT: You returned NO tool calls. You MUST use tool calls to do work!\n" +
           "You have pending todos that are NOT complete. " +
-          "Pick the next pending todo, mark it in-progress, and use tool calls to complete it. " +
-          "Do NOT stop until all todos are done.\n" +
+          "Pick the next pending todo, mark it in-progress, and include toolCalls to complete it.\n" +
+          'Example: {"tool":"workspace_scan","args":{}} or {"tool":"read_files","args":{"paths":["package.json"]}}\n' +
           `Pending: ${pendingTodos.map((t) => t.title).join(", ")}`;
         continue;
       }
@@ -3338,7 +3423,11 @@ export class AgentRuntime {
           {
             role: "system",
             content:
-              "You write concise closing summaries for a VS Code coding agent. Summarize what happened in 2-4 sentences, focusing on outcomes and key actions. Do NOT list TODOs, file changes, or verification details — those are shown separately. Use plain markdown, no JSON, no code fences. Be specific to the task. If there was a failure, state what failed and suggest recovery options.",
+              "You write concise, professional task summaries for a VS Code coding agent (like GitHub Copilot). " +
+              "Format: Start with a one-sentence outcome statement. Then optionally 1-2 bullet points for key actions taken. " +
+              "If there was a failure, clearly state what failed and suggest a concrete next step. " +
+              "Keep it under 4 sentences total. Do NOT list TODOs, file counts, or verification stats — those are shown in separate UI panels. " +
+              "Use plain markdown with no JSON, no code fences, no boilerplate. Be specific and direct.",
           },
           {
             role: "user",
@@ -3377,44 +3466,62 @@ export class AgentRuntime {
     raw: string,
     generic: boolean,
   ): string {
-    // Keep the response text clean — TODOs, file changes, verification
-    // are shown in dedicated UI drawers, not dumped into the chat bubble.
     const sections: string[] = [];
+    const doneTodos = params.todos.filter((t) => t.status === "done");
     const hasIncompleteTodos = params.todos.some(
       (todo) => todo.status !== "done",
     );
-    const intro = hasIncompleteTodos
-      ? "Task not completed."
-      : generic
-        ? "Task completed."
-        : raw;
-    sections.push(intro);
+    const totalTodos = params.todos.length;
+    const fileCount =
+      (params.fileDiffs?.length ?? 0) + (params.proposal?.edits.length ?? 0);
+    const toolCount = params.toolTrace.filter((t) => t.ok).length;
+
+    // Outcome statement (first line)
+    if (hasIncompleteTodos) {
+      const completedCount = doneTodos.length;
+      if (completedCount > 0) {
+        sections.push(
+          `Completed ${completedCount} of ${totalTodos} tasks. Some tasks could not be finished.`,
+        );
+      } else {
+        sections.push("Task could not be completed.");
+      }
+    } else if (!generic && raw.length > 0 && raw.length < 200) {
+      sections.push(raw);
+    } else {
+      // Build a meaningful outcome line
+      const parts: string[] = [];
+      if (fileCount > 0)
+        parts.push(`${fileCount} file${fileCount === 1 ? "" : "s"} changed`);
+      if (toolCount > 0)
+        parts.push(
+          `${toolCount} tool action${toolCount === 1 ? "" : "s"} executed`,
+        );
+      sections.push(
+        parts.length > 0
+          ? `Task completed successfully — ${parts.join(", ")}.`
+          : "Task completed.",
+      );
+    }
 
     const incompleteEditTask = this.summarizeIncompleteEditTask(params);
     if (incompleteEditTask) {
-      sections.push("## Issue");
-      sections.push(incompleteEditTask.issue);
+      sections.push(`\n**Issue:** ${incompleteEditTask.issue}`);
       if (incompleteEditTask.nextSteps.length > 0) {
-        sections.push("## Next steps");
         sections.push(
-          ...incompleteEditTask.nextSteps.map((step) => `- ${step}`),
+          incompleteEditTask.nextSteps.map((step) => `- ${step}`).join("\n"),
         );
       }
     }
 
     const issueSummary = this.summarizeIssueCompact(params.toolTrace);
     if (issueSummary) {
-      sections.push("## Issue");
-      sections.push(issueSummary);
+      sections.push(`\n**Issue:** ${issueSummary}`);
       const nextSteps = this.summarizeIssueNextSteps(params.toolTrace);
       if (nextSteps) {
-        sections.push("## Next steps");
         sections.push(nextSteps);
       }
     }
-
-    // TODOs, file changes, and verification are rendered in dedicated
-    // UI drawers — do NOT append them to the chat bubble text.
 
     return sections.join("\n");
   }

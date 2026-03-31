@@ -1,6 +1,7 @@
 import * as vscode from "vscode";
 
 import { AgentRuntime } from "./agent/runtime/AgentRuntime";
+import { InlineCompletionProvider } from "./agent/completions/InlineCompletionProvider";
 import { registerCommands } from "./commands/registerCommands";
 import { getAgentConfig, ProviderType } from "./config/AgentConfig";
 import { bootstrapStorage } from "./db/StorageBootstrap";
@@ -75,6 +76,20 @@ export async function activate(
       ),
     );
     registerCommands(context, runtime, logger);
+
+    // Register inline completion provider for ghost-text suggestions
+    if (config.providerType === "ollama") {
+      const completionProvider = new InlineCompletionProvider(
+        config.ollamaBaseUrl,
+        config.fastModel || config.editorModel || "qwen2.5-coder:7b",
+      );
+      context.subscriptions.push(
+        vscode.languages.registerInlineCompletionItemProvider(
+          { pattern: "**" },
+          completionProvider,
+        ),
+      );
+    }
 
     // Initialize in background — failures leave the UI in degraded mode
     // rather than killing the entire extension.

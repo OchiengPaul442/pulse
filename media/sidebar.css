@@ -590,6 +590,14 @@ textarea {
 .thinking-panel.hidden {
   display: none;
 }
+/* Inline thinking panel cloned into #messages for conversation flow */
+.thinking-panel.inline-thinking {
+  margin: 4px 10px 2px;
+  border-radius: var(--r);
+  border: 1px solid var(--border);
+  background: var(--bg3);
+  padding: 0 4px;
+}
 .thinking-header {
   display: flex;
   align-items: center;
@@ -617,7 +625,7 @@ textarea {
   background-size: 200% 100%;
   -webkit-background-clip: text;
   background-clip: text;
-  animation: title-shimmer 1.5s linear infinite;
+  animation: title-shimmer 3s ease-in-out infinite;
 }
 @keyframes title-shimmer {
   0% {
@@ -671,7 +679,7 @@ textarea {
     var(--bg3) 75%
   );
   background-size: 200% 100%;
-  animation: text-shimmer 1.5s linear infinite;
+  animation: text-shimmer 3s ease-in-out infinite;
   opacity: 0.18;
 }
 .stream-placeholder-line:nth-child(1) {
@@ -691,7 +699,7 @@ textarea {
   -webkit-background-clip: text;
   -webkit-text-fill-color: transparent;
   background-clip: text;
-  animation: text-shimmer 1.8s linear infinite;
+  animation: text-shimmer 3.5s ease-in-out infinite;
 }
 @keyframes text-shimmer {
   0% {
@@ -885,7 +893,7 @@ textarea {
   -webkit-background-clip: text;
   -webkit-text-fill-color: transparent;
   background-clip: text;
-  animation: reasoning-shimmer 2s linear infinite;
+  animation: reasoning-shimmer 4s ease-in-out infinite;
 }
 .step-item.step-reasoning:not(.step-reasoning-active) .step-reasoning-text {
   -webkit-text-fill-color: var(--fg2);
@@ -1239,6 +1247,23 @@ textarea {
   font-size: 12px;
   opacity: 0.55;
   line-height: 1.4;
+}
+.empty-hints {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 10px;
+  justify-content: center;
+}
+.empty-hint {
+  font-size: 11px;
+  padding: 3px 10px;
+  border-radius: 12px;
+  background: var(--bg2);
+  border: 1px solid var(--bdr);
+  color: var(--fg2);
+  cursor: default;
+  opacity: 0.7;
 }
 
 /* ── Pending edits banner ─── */

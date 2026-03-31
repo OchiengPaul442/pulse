@@ -50,13 +50,13 @@ describe("resolveProfileDefaults", () => {
     const d = resolveProfileDefaults(
       makeConfig({ performanceProfile: "low_vram" }),
     );
-    expect(d.numCtx).toBe(4096);
+    expect(d.numCtx).toBe(8192);
     expect(d.plannerKeepAlive).toBe(0);
     expect(d.iterationTimeoutMs).toBe(120_000);
     expect(d.coldStartBonusMs).toBe(60_000);
     expect(d.qualityTarget).toBe(0.75);
     expect(d.useSingleModel).toBe(true);
-    expect(d.firstIterationMaxTokens).toBeLessThanOrEqual(2048);
+    expect(d.firstIterationMaxTokens).toBeLessThanOrEqual(4096);
   });
 
   it("high_vram profile has generous defaults", () => {

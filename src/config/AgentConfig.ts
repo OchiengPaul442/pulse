@@ -149,17 +149,17 @@ export function resolveProfileDefaults(config: AgentConfig): ProfileDefaults {
 
   if (profile === "low_vram") {
     return {
-      numCtx: 4096,
+      numCtx: 8192,
       plannerKeepAlive: 0,
       editorKeepAlive: 180,
       iterationTimeoutMs: 120_000,
       coldStartBonusMs: 60_000,
-      maxAgentIterations: 10,
+      maxAgentIterations: 12,
       qualityTarget:
         config.qualityTargetScore < 0.9 ? config.qualityTargetScore : 0.75,
       useSingleModel: true,
-      firstIterationMaxTokens: 1536,
-      followUpMaxTokens: 1024,
+      firstIterationMaxTokens: 3072,
+      followUpMaxTokens: 2048,
       noActionThreshold: 2,
     };
   }
@@ -196,20 +196,20 @@ export function resolveProfileDefaults(config: AgentConfig): ProfileDefaults {
     };
   }
 
-  // "auto" — assume low-VRAM conservatism for local Ollama, balanced otherwise
+  // "auto" — use balanced defaults for local Ollama; most 7B+ models handle 8K context
   if (config.providerType === "ollama") {
     return {
-      numCtx: 4096,
+      numCtx: 8192,
       plannerKeepAlive: 0,
-      editorKeepAlive: 180,
+      editorKeepAlive: 300,
       iterationTimeoutMs: 120_000,
       coldStartBonusMs: 60_000,
-      maxAgentIterations: 10,
+      maxAgentIterations: 12,
       qualityTarget:
         config.qualityTargetScore < 0.9 ? config.qualityTargetScore : 0.8,
       useSingleModel: true,
-      firstIterationMaxTokens: 1536,
-      followUpMaxTokens: 1024,
+      firstIterationMaxTokens: 3072,
+      followUpMaxTokens: 2048,
       noActionThreshold: 2,
     };
   }

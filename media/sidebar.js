@@ -629,6 +629,13 @@
       if (title) title.textContent = "Thinking…";
       if (elapsed) elapsed.textContent = "";
       if (list) list.innerHTML = "";
+      // Remove any inline thinking clones from messages area
+      if (messages) {
+        var inlineThinkings = messages.querySelectorAll(".inline-thinking");
+        for (var it = 0; it < inlineThinkings.length; it++) {
+          inlineThinkings[it].parentNode.removeChild(inlineThinkings[it]);
+        }
+      }
     }
 
     function startThinking() {
@@ -860,6 +867,31 @@
             (count !== 1 ? "s" : "");
       if (elapsed) elapsed.textContent = "";
       setBusyMode(false);
+
+      // Move thinking panel content into the messages area so it
+      // appears above the final response (inline in conversation flow)
+      if (panel && messages && count > 0) {
+        var inlineThinking = panel.cloneNode(true);
+        inlineThinking.removeAttribute("id");
+        inlineThinking.className =
+          "thinking-panel done steps-collapsed inline-thinking";
+        // Strip IDs from cloned children to avoid duplicate IDs in DOM
+        var idEls = inlineThinking.querySelectorAll("[id]");
+        for (var ii = 0; ii < idEls.length; ii++) {
+          idEls[ii].removeAttribute("id");
+        }
+        // Re-wire the toggle button on the cloned node
+        var clonedToggleBtn = inlineThinking.querySelector(".steps-toggle-btn");
+        if (clonedToggleBtn) {
+          clonedToggleBtn.addEventListener("click", function (e) {
+            e.stopPropagation();
+            inlineThinking.classList.toggle("steps-collapsed");
+          });
+        }
+        messages.appendChild(inlineThinking);
+        // Hide the original fixed thinkingPanel
+        panel.classList.add("hidden");
+      }
     }
     on(D("stepsToggleBtn"), "click", function (e) {
       e.stopPropagation();
@@ -1143,7 +1175,7 @@
     function renderMessages() {
       if (!chatHistory.length) {
         messages.innerHTML =
-          '<div class="empty fadein"><div class="empty-icon">&#9889;</div><div class="empty-h">What can I help you build?</div><div class="empty-p">Describe a task, ask a question, or paste code to get started</div></div>';
+          '<div class="empty fadein"><div class="empty-icon">&#9889;</div><div class="empty-h">What can I help you build?</div><div class="empty-p">I can read &amp; write files, search code, run terminal commands, use LSP for go-to-definition &amp; rename, manage git branches &amp; commits, and verify results automatically.</div><div class="empty-hints"><span class="empty-hint">&ldquo;Fix the failing tests&rdquo;</span><span class="empty-hint">&ldquo;Refactor UserService to use dependency injection&rdquo;</span><span class="empty-hint">&ldquo;Add a REST endpoint for /api/users&rdquo;</span></div></div>';
         scheduleScrollButtonUpdate();
         return;
       }
@@ -1972,6 +2004,61 @@
         id: "get_terminal_output",
         name: "Terminal Output",
         desc: "Get the last terminal command output",
+      },
+      {
+        id: "write_file",
+        name: "Write File",
+        desc: "Write or overwrite a file with full content",
+      },
+      {
+        id: "replace_in_file",
+        name: "Replace in File",
+        desc: "Targeted search-and-replace within a file",
+      },
+      {
+        id: "grep_search",
+        name: "Grep Search",
+        desc: "Regex or literal search across workspace files",
+      },
+      {
+        id: "get_definitions",
+        name: "Go to Definition",
+        desc: "LSP-backed symbol definition lookup",
+      },
+      {
+        id: "get_references",
+        name: "Find References (LSP)",
+        desc: "LSP-backed find all references to a symbol",
+      },
+      {
+        id: "get_document_symbols",
+        name: "Document Symbols",
+        desc: "List all symbols in a file (functions, classes, etc.)",
+      },
+      {
+        id: "rename_symbol",
+        name: "Rename Symbol",
+        desc: "LSP-backed rename a symbol across the workspace",
+      },
+      {
+        id: "git_commit",
+        name: "Git Commit",
+        desc: "Stage files and create a git commit",
+      },
+      {
+        id: "git_status",
+        name: "Git Status",
+        desc: "Show current working tree status",
+      },
+      {
+        id: "git_log",
+        name: "Git Log",
+        desc: "Show recent commit history",
+      },
+      {
+        id: "git_branch",
+        name: "Git Branch",
+        desc: "Create, list, or switch branches",
       },
     ];
     var enabledTools = {};

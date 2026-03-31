@@ -92,7 +92,18 @@ export type TaskToolName =
   | "find_references"
   | "file_search"
   | "get_problems"
-  | "get_terminal_output";
+  | "get_terminal_output"
+  | "write_file"
+  | "replace_in_file"
+  | "grep_search"
+  | "get_definitions"
+  | "get_references"
+  | "get_document_symbols"
+  | "rename_symbol"
+  | "git_commit"
+  | "git_log"
+  | "git_status"
+  | "git_branch";
 
 export interface TaskToolCall {
   tool: TaskToolName;
