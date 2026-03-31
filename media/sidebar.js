@@ -218,6 +218,93 @@
       }
     }
 
+    function looksLikeStructuredAgentPayload(text) {
+      var trimmed = String(text || "").trim();
+      if (!trimmed) return false;
+      return (
+        trimmed.charAt(0) === "{" ||
+        trimmed.charAt(0) === "[" ||
+        /"(?:response|todos|toolCalls|edits|shortcuts)"\s*:/.test(trimmed)
+      );
+    }
+
+    function extractStructuredResponseText(text) {
+      var trimmed = String(text || "").trim();
+      if (!looksLikeStructuredAgentPayload(trimmed)) return trimmed;
+
+      var candidates = [];
+      if (trimmed.charAt(0) === "{" || trimmed.charAt(0) === "[") {
+        candidates.push(trimmed);
+      }
+      var firstBrace = trimmed.indexOf("{");
+      var lastBrace = trimmed.lastIndexOf("}");
+      if (firstBrace >= 0 && lastBrace > firstBrace) {
+        candidates.push(trimmed.slice(firstBrace, lastBrace + 1));
+      }
+
+      for (var i = 0; i < candidates.length; i++) {
+        try {
+          var parsed = JSON.parse(candidates[i]);
+          if (parsed && typeof parsed.response === "string") {
+            return parsed.response;
+          }
+          if (parsed && typeof parsed.summary === "string") {
+            return parsed.summary;
+          }
+          if (parsed && typeof parsed.text === "string") {
+            return parsed.text;
+          }
+        } catch (_) {}
+      }
+
+      var matches = trimmed.match(/\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}/g);
+      if (matches && matches.length) {
+        for (var j = matches.length - 1; j >= 0; j--) {
+          try {
+            var entry = JSON.parse(matches[j]);
+            if (entry && typeof entry.response === "string") {
+              return entry.response;
+            }
+          } catch (_) {}
+        }
+      }
+
+      return trimmed;
+    }
+
+    function isPlanningPlaceholderText(text) {
+      var normalized = String(text || "")
+        .trim()
+        .toLowerCase()
+        .replace(/\s+/g, " ");
+      if (!normalized) return false;
+      return (
+        /^scanning (the )?workspace\b/.test(normalized) ||
+        /^workspace scanned\b/.test(normalized) ||
+        /^i(?:'ll| will)? .*\bunderstand (?:the )?(?:project|workspace)\b/.test(
+          normalized,
+        )
+      );
+    }
+
+    function cleanAgentResponseText(text) {
+      var cleaned = extractStructuredResponseText(text);
+      cleaned = cleaned.replace(
+        /##\s*(TODOs?|Tasks?|What I found|What changed|Verification|Changes made|Files? changed)[\s\S]*?(?=\n##|$)/gi,
+        "",
+      );
+      cleaned = cleaned
+        .replace(/<break\s*\/?>/gi, "\n")
+        .replace(/<\/break>/gi, "\n")
+        .trim();
+
+      if (isPlanningPlaceholderText(cleaned)) {
+        return "";
+      }
+
+      return cleaned;
+    }
+
     // Helpers
     function esc(s) {
       return String(s)
@@ -1175,7 +1262,7 @@
     function renderMessages() {
       if (!chatHistory.length) {
         messages.innerHTML =
-          '<div class="empty fadein"><div class="empty-icon">&#9889;</div><div class="empty-h">What can I help you build?</div><div class="empty-p">I can read &amp; write files, search code, run terminal commands, use LSP for go-to-definition &amp; rename, manage git branches &amp; commits, and verify results automatically.</div><div class="empty-hints"><span class="empty-hint">&ldquo;Fix the failing tests&rdquo;</span><span class="empty-hint">&ldquo;Refactor UserService to use dependency injection&rdquo;</span><span class="empty-hint">&ldquo;Add a REST endpoint for /api/users&rdquo;</span></div></div>';
+          '<div class="empty fadein"><div class="empty-icon">&#9889;</div><div class="empty-h">What should I work on?</div><div class="empty-p">Describe the bug, change, or feature.</div><div class="empty-hints"><span class="empty-hint">&ldquo;Fix the failing tests&rdquo;</span><span class="empty-hint">&ldquo;Refactor the auth flow&rdquo;</span><span class="empty-hint">&ldquo;Add /api/users&rdquo;</span></div></div>';
         scheduleScrollButtonUpdate();
         return;
       }
@@ -2328,6 +2415,19 @@
       if (type === "streamChunk") {
         if (!isBusy) return;
         streamBuffer += payload || "";
+        if (looksLikeStructuredAgentPayload(streamBuffer)) {
+          if (streamFlushTimer) {
+            clearInterval(streamFlushTimer);
+            streamFlushTimer = null;
+          }
+          streamChunkQueue = [];
+          streamRenderBuffer = "";
+          if (streamBubble && streamBubble.parentNode) {
+            streamBubble.parentNode.removeChild(streamBubble);
+          }
+          streamBubble = null;
+          return;
+        }
         if (!streamBubble) {
           // Create streaming bubble with placeholder skeleton
           streamBubble = document.createElement("div");
@@ -2397,59 +2497,7 @@
             renderFilesDrawer(payload.fileDiffs);
 
           var text = (payload && payload.responseText) || "Task completed.";
-          // Clean response: strip raw JSON wrappers that models sometimes emit
-          // Handle single JSON object or multiple concatenated JSON objects
-          if (text && (text.charAt(0) === "{" || text.charAt(0) === "[")) {
-            try {
-              var parsed = JSON.parse(text);
-              if (
-                parsed &&
-                typeof parsed.response === "string" &&
-                parsed.response.length > 0
-              ) {
-                text = parsed.response;
-              } else if (
-                parsed &&
-                typeof parsed === "object" &&
-                !Array.isArray(parsed)
-              ) {
-                if (parsed.summary) text = String(parsed.summary);
-                else if (parsed.text) text = String(parsed.text);
-              }
-            } catch (e) {
-              // May be multiple concatenated JSON objects — extract .response from each
-              var jsonParts = text.match(
-                /\\{[^{}]*(?:\\{[^{}]*\\}[^{}]*)*\\}/g,
-              );
-              if (jsonParts && jsonParts.length > 0) {
-                var extracted = [];
-                for (var jp = 0; jp < jsonParts.length; jp++) {
-                  try {
-                    var p = JSON.parse(jsonParts[jp]);
-                    if (
-                      p &&
-                      typeof p.response === "string" &&
-                      p.response.length > 0
-                    )
-                      extracted.push(p.response);
-                  } catch (e2) {}
-                }
-                if (extracted.length > 0)
-                  text = extracted[extracted.length - 1];
-              }
-            }
-          }
-          // Strip markdown sections that duplicate drawer data
-          text = text.replace(
-            /##\s*(TODOs?|Tasks?|What I found|What changed|Verification|Changes made|Files? changed)[\s\S]*?(?=\n##|$)/gi,
-            "",
-          );
-          // Strip <break> tags
-          text = text
-            .replace(/<break\s*\/?>/gi, "\n")
-            .replace(/<\/break>/gi, "\n");
-          // Remove leading/trailing whitespace artifacts
-          text = text.trim();
+          text = cleanAgentResponseText(text);
           // If text became empty after cleanup, use fallback
           if (!text) text = "Task completed.";
           if (payload && payload.autoApplied && payload.proposedEdits > 0) {

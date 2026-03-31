@@ -177,7 +177,9 @@ export class AgentRuntime {
 
   private activeTokenSessionId: string | null = null;
 
-  private readonly workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri;
+  private get workspaceRoot(): vscode.Uri | undefined {
+    return vscode.workspace.workspaceFolders?.[0]?.uri;
+  }
 
   /** Simple concurrency gate — only one task runs at a time. */
   private taskQueue: Promise<RuntimeTaskResult> = Promise.resolve(
@@ -236,7 +238,7 @@ export class AgentRuntime {
     this.gitService = new GitService();
     this.improvementEngine = new ImprovementEngine(storage.improvementPath);
     this.terminalExecutor = new TerminalExecutor();
-    this.pathResolver = new PathResolver(this.workspaceRoot);
+    this.pathResolver = new PathResolver(() => this.workspaceRoot);
     this.projectDetector = new ProjectDetector();
     this.broadcaster = new StreamBroadcaster();
 
@@ -643,6 +645,107 @@ export class AgentRuntime {
     }
 
     return lines.join("\n");
+  }
+
+  private selectBootstrapFiles(listedFiles: string[], objective: string): string[] {
+    const normalizedObjective = objective.toLowerCase();
+    const selected: string[] = [];
+    const seen = new Set<string>();
+    const add = (filePath: string | undefined): void => {
+      if (!filePath || seen.has(filePath)) {
+        return;
+      }
+      seen.add(filePath);
+      selected.push(filePath);
+    };
+
+    const preferred = [
+      "package.json",
+      "pnpm-lock.yaml",
+      "pnpm-workspace.yaml",
+      "package-lock.json",
+      "yarn.lock",
+      "tsconfig.json",
+      "README.md",
+      "src/extension.ts",
+      "src/index.ts",
+      "src/main.ts",
+      "src/app.ts",
+      "src/App.tsx",
+      "src/main.tsx",
+      "pyproject.toml",
+      "requirements.txt",
+    ];
+
+    for (const preferredPath of preferred) {
+      const match = listedFiles.find(
+        (filePath) =>
+          filePath === preferredPath || filePath.endsWith(`/${preferredPath}`),
+      );
+      add(match);
+      if (selected.length >= 4) {
+        return selected;
+      }
+    }
+
+    if (/test|vitest|jest|failing|broken|fix/i.test(normalizedObjective)) {
+      for (const filePath of listedFiles) {
+        if (/test|spec/i.test(filePath)) {
+          add(filePath);
+        }
+        if (selected.length >= 4) {
+          return selected;
+        }
+      }
+    }
+
+    for (const filePath of listedFiles) {
+      if (filePath.startsWith("src/") || filePath.startsWith("test/")) {
+        add(filePath);
+      }
+      if (selected.length >= 4) {
+        break;
+      }
+    }
+
+    return selected;
+  }
+
+  private async bootstrapWorkspaceContext(
+    objective: string,
+    signal?: AbortSignal,
+  ): Promise<TaskToolObservation[]> {
+    const inventory = await this.buildWorkspaceInventory(60);
+    const bootstrapObservations: TaskToolObservation[] = [
+      {
+        tool: "workspace_scan",
+        ok: true,
+        summary: `Loaded workspace inventory (${inventory.totalFiles} file${inventory.totalFiles === 1 ? "" : "s"}).`,
+        detail: inventory.listedFiles.slice(0, 20).join("\n"),
+      },
+    ];
+
+    const bootstrapFiles = this.selectBootstrapFiles(
+      inventory.listedFiles,
+      objective,
+    );
+
+    if (bootstrapFiles.length > 0) {
+      const readObservations = await this.executeTaskToolCalls(
+        [
+          {
+            tool: "read_files",
+            args: { paths: bootstrapFiles },
+            reason: "Read key project files for concrete workspace bootstrap context.",
+          },
+        ],
+        objective,
+        signal,
+      );
+      bootstrapObservations.push(...readObservations);
+    }
+
+    return bootstrapObservations;
   }
 
   /** Cancel the currently running task, if any. */
@@ -2612,6 +2715,7 @@ export class AgentRuntime {
         "You are an autonomous coding agent inside VS Code. You MUST return valid JSON only, no markdown.",
         "You have full workspace access: read, write, create, delete, rename files and run terminal commands.",
         "CRITICAL: You MUST use toolCalls to do work. Do NOT just respond with text. Call tools!",
+        "The workspace context below is already part of this turn. Use it before repeating discovery steps.",
         "",
         ...(styleHintAgent ? [styleHintAgent] : []),
         ...(improvementHintsAgent ? [improvementHintsAgent] : []),
@@ -2623,7 +2727,7 @@ export class AgentRuntime {
           ? "SCAFFOLDING: Use `pnpm create next-app@latest . --ts --tailwind --eslint --app` first. Do not use `pnpm init -y`."
           : "",
         "## WORKFLOW",
-        "1. ALWAYS start by calling workspace_scan or read_files to understand the project.",
+        "1. Start from the provided workspace context and only call more discovery tools when they add new information.",
         "2. IMPORTANT: If the workspace already has files, read and ADAPT to them. Do NOT recreate or overwrite existing code.",
         "3. Work through todos ONE at a time: mark 'in-progress', use tool calls, mark 'done'.",
         "4. After run_terminal, check output. If errors: diagnose and fix.",
@@ -2632,6 +2736,7 @@ export class AgentRuntime {
         "7. You get MULTIPLE turns. Each turn you MUST make tool calls to do work. Do NOT skip tools!",
         "8. Detect tech stack from workspace (package.json → Node, pyproject.toml → Python, etc).",
         "9. If the workspace has existing structure, work WITHIN it — extend, fix, or modify. Do NOT start from scratch.",
+        "10. Do NOT repeat the same planning sentence or generic scaffold todo list when tool results already show the next step.",
         "",
         "## TODO RULES",
         "- 3-5 actionable todos. Statuses: 'pending' | 'in-progress' | 'done' | 'blocked'",
@@ -2651,10 +2756,7 @@ export class AgentRuntime {
         "run_terminal {command}, run_verification, get_problems {filePath?}, get_terminal_output",
         "web_search {query}, git_diff {filePath?}, diagnostics, find_references {symbol}",
         "get_definitions {filePath,line,character}, get_references {filePath,line,character}, get_document_symbols {filePath}, rename_symbol {filePath,line,character,newName}",
-        "git_commit {message,files?}, git_status {}, git_log {count?}, git_branch {action:'list'|'create'|'checkout',name?}",
-        "",
-        "## EXAMPLE FIRST TURN",
-        '{"response":"Scanning workspace to understand the project structure.","todos":[{"id":"todo_1","title":"Scan workspace","status":"in-progress"},{"id":"todo_2","title":"Implement changes","status":"pending"},{"id":"todo_3","title":"Verify result","status":"pending"}],"toolCalls":[{"tool":"workspace_scan","args":{}},{"tool":"read_files","args":{"paths":["package.json"]}}],"edits":[],"shortcuts":[]}',
+        "git_commit {message,files?}, git_status {}, git_log {count?}, git_file_history {filePath,count?}, git_blame {filePath,line?}, git_branch {action:'list'|'create'|'checkout',name?}",
         "",
         "## CONTEXT",
         `Objective: ${objective}`,
@@ -2716,6 +2818,7 @@ export class AgentRuntime {
         "## INSTRUCTIONS",
         "- You MUST include toolCalls to do work. Do NOT respond with only text.",
         "- Work on the NEXT pending todo. Mark it in-progress, use tool calls, mark done.",
+        "- The current workspace context has already been gathered. Do NOT repeat workspace_scan unless the context is stale.",
         "- If the workspace already has files, ADAPT to them. Do NOT recreate existing files from scratch.",
         "- Use create_file ONLY for truly new files. Use batch_edit or replace_in_file for modifying existing files.",
         "- Do not repeat exact tool calls already shown in tool results.",
@@ -2729,7 +2832,7 @@ export class AgentRuntime {
         "grep_search {pattern, isRegex?, includePattern?}",
         "run_terminal {command}, run_verification, get_problems {filePath?}, get_terminal_output",
         "get_definitions {filePath,line,character}, get_references {filePath,line,character}, get_document_symbols {filePath}, rename_symbol {filePath,line,character,newName}",
-        "git_commit {message,files?}, git_status {}, git_log {count?}, git_branch {action:'list'|'create'|'checkout',name?}",
+        "git_commit {message,files?}, git_status {}, git_log {count?}, git_file_history {filePath,count?}, git_blame {filePath,line?}, git_branch {action:'list'|'create'|'checkout',name?}",
         "",
         "## JSON FORMAT",
         '{"response":"...","todos":[...],"toolCalls":[{"tool":"...","args":{...}}],"edits":[],"shortcuts":[]}',
@@ -2820,7 +2923,6 @@ export class AgentRuntime {
             this.broadcaster.emitReasoningPulse(
               "Reasoning through tools and code changes...",
             );
-            this.broadcaster.emitStreamChunk(chunk);
           },
           messages: isFollowUp
             ? [
@@ -3086,11 +3188,10 @@ export class AgentRuntime {
         ) {
           this.broadcaster.emitProgress(
             "Auto-bootstrap",
-            "Repeated tool failures — injecting workspace context",
+            "Repeated tool failures — attaching concrete workspace context",
             "\u21BB",
           );
-          const bootstrapObs = await this.executeTaskToolCalls(
-            [{ tool: "workspace_scan", args: {} }],
+          const bootstrapObs = await this.bootstrapWorkspaceContext(
             objective,
             signal,
           );
@@ -3129,7 +3230,7 @@ export class AgentRuntime {
       if (allTodosDone && !hasEverExecutedTools) {
         this.broadcaster.emitProgress(
           "Auto-bootstrap",
-          "Model claimed done without tool use — forcing workspace scan",
+          "Model claimed done without tool use — attaching concrete workspace context",
           "\u21BB",
         );
         // Reset all todos back to pending
@@ -3138,8 +3239,7 @@ export class AgentRuntime {
         }
         this.broadcaster.emitTodoUpdate(parsed.todos);
 
-        const bootstrapObs = await this.executeTaskToolCalls(
-          [{ tool: "workspace_scan", args: {} }],
+        const bootstrapObs = await this.bootstrapWorkspaceContext(
           objective,
           signal,
         );
@@ -3152,11 +3252,39 @@ export class AgentRuntime {
         critiqueContext =
           "IMPORTANT: You marked all todos done without using any tools. " +
           "That is NOT correct. You MUST use tool calls to actually do the work. " +
-          "I've scanned the workspace for you. Now read the results above and " +
+          "I've attached concrete workspace context for you. Now read the results above and " +
           "start working through the todos using tool calls.\n" +
-          "FIRST: call workspace_scan or read_files to understand the project.\n" +
+          "FIRST: use the attached file/context evidence before repeating discovery.\n" +
           "THEN: use create_file, batch_edit, or run_terminal to make changes.\n" +
           `Objective: ${objective}`;
+        noActionCount = 0;
+        continue;
+      }
+
+      if (
+        pendingTodos.length > 0 &&
+        this.isPlanningPlaceholderResponse(parsed.response)
+      ) {
+        this.broadcaster.emitProgress(
+          "Auto-bootstrap",
+          "Model repeated a planning placeholder — attaching concrete workspace context",
+          "\u21BB",
+        );
+        const bootstrapObs = await this.bootstrapWorkspaceContext(
+          objective,
+          signal,
+        );
+        if (bootstrapObs.length > 0) {
+          hasEverExecutedTools = true;
+          toolTrace.push(...bootstrapObs);
+          const maxObs = profileDefaults.numCtx <= 4096 ? 3 : 5;
+          toolContext = formatToolObservations(toolTrace.slice(-maxObs));
+        }
+        critiqueContext =
+          "Your last response repeated a planning placeholder instead of acting on the task. " +
+          "Use the concrete workspace context above. Do NOT restate that you will scan, inspect, or plan. " +
+          "Pick one pending todo, mark it in-progress, and perform the next tool call immediately.\n" +
+          `Pending: ${pendingTodos.map((t) => t.title).join(", ")}`;
         noActionCount = 0;
         continue;
       }
@@ -3170,22 +3298,22 @@ export class AgentRuntime {
       ) {
         this.broadcaster.emitProgress(
           "Auto-bootstrap",
-          "Model stalled — injecting workspace context",
+          "Model stalled — attaching concrete workspace context",
           "\u21BB",
         );
-        const bootstrapObs = await this.executeTaskToolCalls(
-          [{ tool: "workspace_scan", args: {} }],
+        const bootstrapObs = await this.bootstrapWorkspaceContext(
           objective,
           signal,
         );
         if (bootstrapObs.length > 0) {
+          hasEverExecutedTools = true;
           toolTrace.push(...bootstrapObs);
           const maxObs = profileDefaults.numCtx <= 4096 ? 3 : 5;
           toolContext = formatToolObservations(toolTrace.slice(-maxObs));
         }
         critiqueContext =
           "You have pending todos that are NOT complete. " +
-          "I have auto-scanned the workspace for you. Use the results above. " +
+          "I have attached concrete workspace context for you. Use the results above. " +
           "Pick the next pending todo, mark it in-progress, and use tool calls to complete it. " +
           "Do NOT stop until all todos are done.\n" +
           `Pending: ${pendingTodos.map((t) => t.title).join(", ")}`;
@@ -3821,8 +3949,24 @@ export class AgentRuntime {
       normalized === "task completed" ||
       normalized === "completed." ||
       normalized === "done." ||
-      normalized === "done"
+      normalized === "done" ||
+      this.isPlanningPlaceholderResponse(normalized)
     );
+  }
+
+  private isPlanningPlaceholderResponse(text: string): boolean {
+    const normalized = text.trim().toLowerCase().replace(/\s+/g, " ");
+    if (!normalized) {
+      return false;
+    }
+
+    return [
+      /^scanning (the )?workspace\b/,
+      /^workspace scanned\b/,
+      /^i(?:'ll| will)? (?:start by )?scan(?:ning)? (?:the )?workspace\b/,
+      /^i(?:'ll| will)? .*\bunderstand (?:the )?(?:project|workspace)\b/,
+      /^i(?:'ll| will)? .*\bcreate (?:a )?(?:plan|project structure)\b/,
+    ].some((pattern) => pattern.test(normalized));
   }
 
   private summarizeEvidenceCompact(
@@ -3965,6 +4109,20 @@ export class AgentRuntime {
         "for Next.js scaffolds, use create-next-app instead of init",
       );
       suggestions.push("verify the scaffold command before retrying");
+    } else if (
+      normalized.includes("interactive prompt") ||
+      normalized.includes("requires input") ||
+      normalized.includes("would you like to use")
+    ) {
+      suggestions.push(
+        "retry the command with explicit non-interactive flags such as --yes",
+      );
+      suggestions.push(
+        "if prompts are required, run the command manually in a visible terminal",
+      );
+      suggestions.push(
+        "continue only after the scaffold command finishes without waiting for input",
+      );
     } else if (
       normalized.includes("next-app") ||
       normalized.includes("next.js") ||

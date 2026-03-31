@@ -14,6 +14,7 @@ export interface TerminalExecResult {
   command: string;
   durationMs: number;
   timedOut: boolean;
+  interactivePrompt?: boolean;
 }
 
 export class TerminalExecutor {
@@ -32,6 +33,8 @@ export class TerminalExecutor {
       showInTerminal?: boolean;
     },
   ): Promise<TerminalExecResult> {
+    const prepared = this.prepareCommand(command);
+    const effectiveCommand = prepared.command;
     const timeout = options?.timeoutMs ?? 30_000;
     let cwd = options?.cwd ?? this.getWorkspaceRoot() ?? undefined;
 
@@ -40,12 +43,12 @@ export class TerminalExecutor {
       cwd = fallback && existsSync(fallback) ? fallback : undefined;
     }
 
-    const preflight = this.preflightCommand(command, cwd);
+    const preflight = this.preflightCommand(effectiveCommand, cwd);
     if (!preflight.ok) {
       return {
         exitCode: 127,
         output: preflight.message,
-        command,
+        command: effectiveCommand,
         durationMs: 0,
         timedOut: false,
       };
@@ -53,22 +56,30 @@ export class TerminalExecutor {
 
     // Mirror to visible terminal if requested
     if (options?.showInTerminal) {
-      this.sendToAgentTerminal(command);
+      this.sendToAgentTerminal(effectiveCommand);
     }
 
     const start = Date.now();
-    const shell = this.resolveShellCommand(command);
+    const shell = this.resolveShellCommand(effectiveCommand);
 
     return new Promise<TerminalExecResult>((resolve) => {
       let output = "";
       let resolved = false;
+      let interactivePrompt = false;
       const child = spawn(shell.executable, shell.args, {
         cwd,
         windowsHide: true,
-        env: process.env,
+        env: {
+          ...process.env,
+          ...prepared.env,
+        },
       });
 
-      const finish = (exitCode: number | null, timedOut = false) => {
+      const finish = (
+        exitCode: number | null,
+        timedOut = false,
+        promptDetected = interactivePrompt,
+      ) => {
         if (resolved) return;
         resolved = true;
         if (timeoutHandle) {
@@ -76,10 +87,11 @@ export class TerminalExecutor {
         }
         resolve({
           exitCode,
-          output: output.slice(-12_000),
-          command,
+          output: this.finalizeOutput(output),
+          command: effectiveCommand,
           durationMs: Date.now() - start,
           timedOut,
+          interactivePrompt: promptDetected,
         });
       };
 
@@ -89,15 +101,29 @@ export class TerminalExecutor {
         finish(null, true);
       }, timeout);
 
-      child.stdout?.on("data", (chunk) => {
-        output += chunk.toString();
-      });
-      child.stderr?.on("data", (chunk) => {
-        output += chunk.toString();
-      });
+      const onData = (chunk: Buffer | string) => {
+        const cleaned = this.cleanTerminalChunk(chunk.toString());
+        if (!cleaned) {
+          return;
+        }
+
+        output += cleaned;
+        if (!interactivePrompt && this.detectInteractivePrompt(output)) {
+          interactivePrompt = true;
+          output = output.trimEnd();
+          output +=
+            "\n[interactive prompt] Command requires input and was stopped early so the agent can revise the command." +
+            this.interactivePromptHint(effectiveCommand);
+          this.killProcessTree(child.pid);
+          finish(1, false, true);
+        }
+      };
+
+      child.stdout?.on("data", onData);
+      child.stderr?.on("data", onData);
 
       child.on("error", (err) => {
-        output += this.formatSpawnError(err, command, cwd);
+        output += this.formatSpawnError(err, effectiveCommand, cwd);
         finish(1);
       });
 
@@ -480,5 +506,75 @@ export class TerminalExecutor {
     }
 
     return `Error: ${message}`;
+  }
+
+  private prepareCommand(command: string): {
+    command: string;
+    env?: Record<string, string>;
+  } {
+    let normalized = command.trim();
+
+    if (
+      /\b(pnpm|npm|yarn)\s+create\s+next-app(?:@latest)?\b/i.test(normalized)
+    ) {
+      if (!/\s--yes\b/i.test(normalized)) {
+        normalized += " --yes";
+      }
+
+      if (!/\s--use-(pnpm|npm|yarn|bun)\b/i.test(normalized)) {
+        if (/^pnpm\b/i.test(normalized)) {
+          normalized += " --use-pnpm";
+        } else if (/^npm\b/i.test(normalized)) {
+          normalized += " --use-npm";
+        } else if (/^yarn\b/i.test(normalized)) {
+          normalized += " --use-yarn";
+        }
+      }
+
+      return {
+        command: normalized,
+        env: { CI: "1" },
+      };
+    }
+
+    return { command: normalized };
+  }
+
+  private cleanTerminalChunk(text: string): string {
+    return this.stripAnsi(text)
+      .replace(/\r/g, "")
+      .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, "")
+      .replace(/\n{3,}/g, "\n\n");
+  }
+
+  private stripAnsi(text: string): string {
+    return text
+      .replace(/\u001B\][^\u0007]*(?:\u0007|\u001B\\)/g, "")
+      .replace(/\u001B\[[0-?]*[ -/]*[@-~]/g, "");
+  }
+
+  private finalizeOutput(output: string): string {
+    return output.trim().slice(-12_000);
+  }
+
+  private detectInteractivePrompt(output: string): boolean {
+    const normalized = output.toLowerCase();
+    return [
+      /would you like to\b/,
+      /select an option\b/,
+      /pick an option\b/,
+      /use arrow-keys\b/,
+      /yes\s*\/\s*no/,
+      /press enter to continue\b/,
+      /requires input\b/,
+    ].some((pattern) => pattern.test(normalized));
+  }
+
+  private interactivePromptHint(command: string): string {
+    if (/\b(pnpm|npm|yarn)\s+create\s+next-app(?:@latest)?\b/i.test(command)) {
+      return " Retry with explicit scaffold flags such as --yes and the desired package-manager flag.";
+    }
+
+    return " Retry with explicit non-interactive flags, or run it manually in a visible terminal if input is required.";
   }
 }

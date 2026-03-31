@@ -46,4 +46,25 @@ describe("TerminalExecutor", () => {
     expect(shell.executable.toLowerCase()).toContain("cmd.exe");
     expect(shell.args).toContain("/c");
   });
+
+  it("normalizes Next.js scaffold commands for non-interactive execution", () => {
+    const executor = new TerminalExecutor();
+    const prepared = (executor as any).prepareCommand(
+      "pnpm create next-app@latest . --ts --tailwind --eslint --app",
+    );
+
+    expect(prepared.command).toContain("--yes");
+    expect(prepared.command).toContain("--use-pnpm");
+    expect(prepared.env?.CI).toBe("1");
+  });
+
+  it("detects interactive terminal prompts from cleaned output", () => {
+    const executor = new TerminalExecutor();
+
+    expect(
+      (executor as any).detectInteractivePrompt(
+        "Would you like to use React Compiler? Yes / No",
+      ),
+    ).toBe(true);
+  });
 });

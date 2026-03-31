@@ -26,6 +26,8 @@ import {
   RenameSymbolTool,
   GitCommitTool,
   GitLogTool,
+  GitBlameTool,
+  GitFileHistoryTool,
   GitStatusTool,
   GitBranchTool,
 } from "../tools/index.js";
@@ -111,6 +113,8 @@ export class ToolExecutor {
       new RenameSymbolTool(lspCtx),
       new GitCommitTool(gitCtx, gitService),
       new GitLogTool(gitCtx, gitService),
+      new GitBlameTool(gitCtx, gitService),
+      new GitFileHistoryTool(gitCtx, gitService),
       new GitStatusTool(gitCtx, gitService),
       new GitBranchTool(gitCtx, gitService),
     ];
@@ -577,7 +581,7 @@ export class ToolExecutor {
       this.lastTerminalResult = result;
     }
     this.broadcaster.emitTerminalOutput(
-      command,
+      result?.command ?? command,
       result ? result.output.slice(0, 5000) : "",
       result?.exitCode ?? null,
     );
@@ -586,7 +590,11 @@ export class ToolExecutor {
         tool: call.tool,
         ok: result !== null && result.exitCode === 0,
         summary: result
-          ? `Exit ${result.exitCode ?? "unknown"} in ${result.durationMs}ms.`
+          ? result.interactivePrompt
+            ? `Stopped at an interactive prompt after ${result.durationMs}ms.`
+            : result.timedOut
+              ? `Timed out after ${result.durationMs}ms.`
+              : `Exit ${result.exitCode ?? "unknown"} in ${result.durationMs}ms.`
           : "Terminal command was blocked.",
         detail: result ? result.output.slice(0, 5000) : command,
       },

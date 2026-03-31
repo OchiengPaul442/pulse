@@ -211,6 +211,39 @@ LINE_TWO"}}]}`;
     expect(parsed.toolCalls[2]?.tool).toBe("create_file");
   });
 
+  it("sanitizes malformed todo ids and titles from weak model output", () => {
+    const parsed = parseTaskResponse(
+      JSON.stringify({
+        response: "working",
+        todos: [
+          { id: ">>", title: "[in-progress] Create Next.js app", status: "in-progress" },
+          { id: "[ ]", title: "todo: Inspect package.json", status: "pending" },
+        ],
+      }),
+    );
+
+    expect(parsed.todos).toHaveLength(2);
+    expect(parsed.todos[0]?.id).toBe("todo_1");
+    expect(parsed.todos[0]?.title).toBe("Create Next.js app");
+    expect(parsed.todos[1]?.id).toBe("todo_2");
+    expect(parsed.todos[1]?.title).toBe("Inspect package.json");
+  });
+
+  it("maps git history, blame, and symbol aliases correctly", () => {
+    const parsed = parseTaskResponse(
+      JSON.stringify({
+        response: "inspecting git and symbols",
+        toolCalls: ["history", "blame", "symbols", "definitions"],
+      }),
+    );
+
+    expect(parsed.toolCalls).toHaveLength(4);
+    expect(parsed.toolCalls[0]?.tool).toBe("git_file_history");
+    expect(parsed.toolCalls[1]?.tool).toBe("git_blame");
+    expect(parsed.toolCalls[2]?.tool).toBe("get_document_symbols");
+    expect(parsed.toolCalls[3]?.tool).toBe("get_definitions");
+  });
+
   it("skips edits with missing filePath", () => {
     const parsed = parseTaskResponse(
       JSON.stringify({

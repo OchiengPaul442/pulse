@@ -40,7 +40,8 @@ export class Planner {
     const prompt = [
       "Create a JSON plan for a coding agent task. Return valid JSON only.",
       "Fields: objective, assumptions (string[]), acceptanceCriteria (string[]), todos (array of {id, title, status}), steps (array of {id, goal, tools, expectedOutput}), taskSlices (array of {id, title, scope, steps, deliverable, acceptanceCriteria}), verification (array of {type, command}).",
-      "Keep 3-5 todos with short imperative titles. First todo should always be about scanning/reading the workspace.",
+      "Keep 3-5 todos with short, task-specific imperative titles.",
+      "The first todo should inspect relevant workspace files, but avoid generic titles like 'Scan workspace and read relevant files'.",
       "Todo statuses: 'pending' only (the agent will update them).",
       `Task: ${objective}`,
     ].join("\n");
@@ -123,6 +124,7 @@ function normalizePlan(plan: Partial<TaskPlan>, objective: string): TaskPlan {
 }
 
 function fallbackPlan(objective: string): TaskPlan {
+  const fallbackTodos = buildFallbackTodos(objective);
   return {
     isFallback: true,
     objective,
@@ -135,23 +137,7 @@ function fallbackPlan(objective: string): TaskPlan {
       "Work is split into manageable slices.",
       "Verification is explicitly described.",
     ],
-    todos: [
-      {
-        id: "todo_1",
-        title: "Scan workspace and read relevant files",
-        status: "pending",
-      },
-      {
-        id: "todo_2",
-        title: "Implement the requested changes",
-        status: "pending",
-      },
-      {
-        id: "todo_3",
-        title: "Run verification and fix issues",
-        status: "pending",
-      },
-    ],
+    todos: fallbackTodos,
     steps: [
       {
         id: "step_1",
@@ -215,26 +201,10 @@ function fallbackPlan(objective: string): TaskPlan {
 
 function normalizeTodos(
   todos: Partial<TaskTodo>[] | undefined,
-  _objective: string,
+  objective: string,
 ): TaskTodo[] {
   if (!todos || todos.length === 0) {
-    return [
-      {
-        id: "todo_1",
-        title: "Review workspace context",
-        status: "pending",
-      },
-      {
-        id: "todo_2",
-        title: "Apply the smallest correct change",
-        status: "pending",
-      },
-      {
-        id: "todo_3",
-        title: "Run verification",
-        status: "pending",
-      },
-    ];
+    return buildFallbackTodos(objective);
   }
 
   return todos
@@ -254,4 +224,51 @@ function normalizeTodos(
       };
     })
     .filter((todo) => todo.title.trim().length > 0);
+}
+
+function buildFallbackTodos(objective: string): TaskTodo[] {
+  const lower = objective.toLowerCase();
+
+  let titles: string[];
+  if (
+    /\b(next\.?js|scaffold|starter|bootstrap|create project|new app)\b/.test(
+      lower,
+    )
+  ) {
+    titles = [
+      "Inspect the workspace and scaffold target",
+      "Set up the requested app structure",
+      "Verify the scaffold and fix setup issues",
+    ];
+  } else if (/\b(fix|bug|error|crash|failing|test)\b/.test(lower)) {
+    titles = [
+      "Inspect the failing area and evidence",
+      "Apply the targeted fix",
+      "Run verification and resolve regressions",
+    ];
+  } else if (/\b(refactor|rename|restructure|cleanup|clean up)\b/.test(lower)) {
+    titles = [
+      "Inspect the affected code paths",
+      "Refactor the requested area",
+      "Verify behavior and review the diff",
+    ];
+  } else if (/\b(add|implement|build|create|introduce)\b/.test(lower)) {
+    titles = [
+      "Inspect the target files and constraints",
+      "Implement the requested change",
+      "Verify the result and fix issues",
+    ];
+  } else {
+    titles = [
+      "Inspect relevant workspace files",
+      "Make the requested change",
+      "Verify and summarize the result",
+    ];
+  }
+
+  return titles.map((title, index) => ({
+    id: `todo_${index + 1}`,
+    title,
+    status: "pending",
+  }));
 }

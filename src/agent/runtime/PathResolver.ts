@@ -8,10 +8,21 @@ import * as vscode from "vscode";
  * single responsibility class.
  */
 export class PathResolver {
-  private readonly workspaceRoot: vscode.Uri | undefined;
+  private readonly workspaceRoot:
+    | vscode.Uri
+    | undefined
+    | (() => vscode.Uri | undefined);
 
-  public constructor(workspaceRoot?: vscode.Uri) {
+  public constructor(
+    workspaceRoot?: vscode.Uri | (() => vscode.Uri | undefined),
+  ) {
     this.workspaceRoot = workspaceRoot;
+  }
+
+  private getCurrentWorkspaceRoot(): vscode.Uri | undefined {
+    return typeof this.workspaceRoot === "function"
+      ? this.workspaceRoot()
+      : this.workspaceRoot;
   }
 
   /** Convert a relative value to an absolute workspace path. */
@@ -24,23 +35,25 @@ export class PathResolver {
       return value;
     }
 
-    if (!this.workspaceRoot) {
+    const workspaceRoot = this.getCurrentWorkspaceRoot();
+    if (!workspaceRoot) {
       return null;
     }
 
-    return path.join(this.workspaceRoot.fsPath, value);
+    return path.join(workspaceRoot.fsPath, value);
   }
 
   /** Convert an absolute path to a workspace-relative display path. */
   public normalizeDisplay(filePath: string): string {
-    if (this.workspaceRoot && path.isAbsolute(filePath)) {
-      const relative = path.relative(this.workspaceRoot.fsPath, filePath);
+    const workspaceRoot = this.getCurrentWorkspaceRoot();
+    if (workspaceRoot && path.isAbsolute(filePath)) {
+      const relative = path.relative(workspaceRoot.fsPath, filePath);
       if (
         relative &&
         !relative.startsWith("..") &&
         !path.isAbsolute(relative)
       ) {
-        return relative;
+        return relative.replace(/\\/g, "/");
       }
     }
 
@@ -58,20 +71,21 @@ export class PathResolver {
 
   /** Normalise an attachment path to workspace-relative form for storage. */
   public normalizeAttachment(value: string): string {
+    const workspaceRoot = this.getCurrentWorkspaceRoot();
     const absolute = path.isAbsolute(value)
       ? value
-      : this.workspaceRoot
-        ? path.join(this.workspaceRoot.fsPath, value)
+      : workspaceRoot
+        ? path.join(workspaceRoot.fsPath, value)
         : value;
 
-    if (this.workspaceRoot) {
-      const relative = path.relative(this.workspaceRoot.fsPath, absolute);
+    if (workspaceRoot) {
+      const relative = path.relative(workspaceRoot.fsPath, absolute);
       if (
         relative &&
         !relative.startsWith("..") &&
         !path.isAbsolute(relative)
       ) {
-        return relative;
+        return relative.replace(/\\/g, "/");
       }
     }
 
@@ -80,11 +94,11 @@ export class PathResolver {
 
   /** Get the workspace root URI (may be undefined if no workspace is open). */
   public getRoot(): vscode.Uri | undefined {
-    return this.workspaceRoot;
+    return this.getCurrentWorkspaceRoot();
   }
 
   /** Get the workspace root filesystem path, or undefined. */
   public getRootFsPath(): string | undefined {
-    return this.workspaceRoot?.fsPath;
+    return this.getCurrentWorkspaceRoot()?.fsPath;
   }
 }

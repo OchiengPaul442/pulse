@@ -102,6 +102,8 @@ export type TaskToolName =
   | "rename_symbol"
   | "git_commit"
   | "git_log"
+  | "git_blame"
+  | "git_file_history"
   | "git_status"
   | "git_branch";
 
@@ -213,7 +215,13 @@ const TOOL_ALIASES: Record<string, TaskToolName> = {
   internet: "web_search",
   google: "web_search",
   git_diff: "git_diff",
-  git_status: "git_diff",
+  git_status: "git_status",
+  git_log: "git_log",
+  git_blame: "git_blame",
+  blame: "git_blame",
+  git_file_history: "git_file_history",
+  file_history: "git_file_history",
+  history: "git_file_history",
   git: "git_diff",
   diff: "git_diff",
   mcp_status: "mcp_status",
@@ -222,6 +230,16 @@ const TOOL_ALIASES: Record<string, TaskToolName> = {
   run_diagnostics: "diagnostics",
   check_errors: "diagnostics",
   errors: "diagnostics",
+  get_definitions: "get_definitions",
+  definition: "get_definitions",
+  definitions: "get_definitions",
+  get_references: "get_references",
+  symbol_references: "get_references",
+  get_document_symbols: "get_document_symbols",
+  document_symbols: "get_document_symbols",
+  symbols: "get_document_symbols",
+  rename_symbol: "rename_symbol",
+  symbol_rename: "rename_symbol",
   batch_edit: "batch_edit",
   multi_edit: "batch_edit",
   multi_file_edit: "batch_edit",
@@ -1035,7 +1053,7 @@ export function buildTaskRefinementPrompt(
 
 function normalizeTodoEntry(entry: unknown, index: number): TaskTodo | null {
   if (typeof entry === "string") {
-    const title = entry.trim();
+    const title = sanitizeTodoTitle(entry);
     if (!title) {
       return null;
     }
@@ -1052,11 +1070,13 @@ function normalizeTodoEntry(entry: unknown, index: number): TaskTodo | null {
   }
 
   const candidate = entry as Record<string, unknown>;
-  const title = firstString(
-    candidate.title,
-    candidate.text,
-    candidate.description,
-    candidate.task,
+  const title = sanitizeTodoTitle(
+    firstString(
+      candidate.title,
+      candidate.text,
+      candidate.description,
+      candidate.task,
+    ),
   );
   if (!title) {
     return null;
@@ -1082,11 +1102,40 @@ function normalizeTodoEntry(entry: unknown, index: number): TaskTodo | null {
           : "pending";
 
   return {
-    id: firstString(candidate.id) ?? `todo_${index + 1}`,
-    title: compactText(title),
+    id: sanitizeTodoId(firstString(candidate.id), index),
+    title,
     status,
     detail: firstString(candidate.detail, candidate.reason),
   };
+}
+
+function sanitizeTodoId(value: string | undefined, index: number): string {
+  const fallback = `todo_${index + 1}`;
+  if (!value) {
+    return fallback;
+  }
+
+  const trimmed = compactText(value)
+    .replace(/^[>\[\]\-\sx]+/i, "")
+    .replace(/[^a-z0-9_-]+/gi, "_")
+    .replace(/^_+|_+$/g, "");
+
+  if (!trimmed || trimmed.length > 40 || !/[a-z0-9]/i.test(trimmed)) {
+    return fallback;
+  }
+
+  return trimmed;
+}
+
+function sanitizeTodoTitle(value: string | undefined): string {
+  if (!value) {
+    return "";
+  }
+
+  return compactText(value)
+    .replace(/^(?:>>?|\[[^\]]*\]|\([^)]*\)|[-*•]+)\s*/g, "")
+    .replace(/^todo\s*[:\-]\s*/i, "")
+    .trim();
 }
 
 function normalizeShortcuts(value: unknown): string[] {

@@ -2,6 +2,8 @@
  * Lightweight git integration using VS Code's built-in git extension API.
  * Provides workspace git awareness, diff summaries, and change tracking.
  */
+import { spawn } from "child_process";
+import * as path from "path";
 import * as vscode from "vscode";
 
 export interface GitFileChange {
@@ -24,6 +26,21 @@ export interface GitDiffSummary {
 export interface GitFileDiff {
   path: string;
   diff: string;
+}
+
+export interface GitHistoryEntry {
+  hash: string;
+  date: string;
+  author: string;
+  message: string;
+}
+
+export interface GitBlameLine {
+  lineNumber: number;
+  commit: string;
+  author: string;
+  summary: string;
+  text: string;
 }
 
 /**
@@ -242,6 +259,100 @@ export class GitService {
   }
 
   /**
+   * Get recent commit history for a specific file.
+   */
+  public async getFileHistory(
+    filePath: string,
+    count = 10,
+  ): Promise<GitHistoryEntry[]> {
+    const repo = this.getRepository();
+    if (!repo) return [];
+
+    const maxEntries = Math.max(1, Math.min(count, 20));
+    const relativePath = this.toRepoRelativePath(filePath, repo.rootUri.fsPath);
+
+    try {
+      const entries = await repo.log({ maxEntries, path: relativePath });
+      if (entries.length > 0) {
+        return entries.map((entry) => ({
+          hash: entry.hash,
+          date: entry.authorDate
+            ? entry.authorDate.toISOString().slice(0, 10)
+            : "unknown",
+          author: entry.authorName ?? "unknown",
+          message: entry.message,
+        }));
+      }
+    } catch {
+      // Fall back to git CLI when the VS Code API cannot scope history by path.
+    }
+
+    const output = await this.runGitCommand(
+      [
+        "log",
+        `-${maxEntries}`,
+        "--date=short",
+        "--pretty=format:%H%x09%ad%x09%an%x09%s",
+        "--",
+        relativePath,
+      ],
+      repo.rootUri.fsPath,
+    );
+
+    if (!output) {
+      return [];
+    }
+
+    return output
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .map((line) => {
+        const [hash = "", date = "unknown", author = "unknown", ...rest] =
+          line.split("\t");
+        return {
+          hash,
+          date,
+          author,
+          message: rest.join("\t").trim(),
+        };
+      })
+      .filter((entry) => entry.hash.length > 0);
+  }
+
+  /**
+   * Get blame information for a file or a single line within it.
+   */
+  public async getFileBlame(
+    filePath: string,
+    line?: number,
+  ): Promise<GitBlameLine[] | null> {
+    const repo = this.getRepository();
+    if (!repo) {
+      return null;
+    }
+
+    const relativePath = this.toRepoRelativePath(filePath, repo.rootUri.fsPath);
+    const args = ["blame", "--line-porcelain"];
+    if (typeof line === "number" && Number.isFinite(line) && line > 0) {
+      args.push("-L", `${Math.floor(line)},${Math.floor(line)}`);
+    }
+    args.push("--", relativePath);
+
+    const output = await this.runGitCommand(args, repo.rootUri.fsPath);
+    if (!output) {
+      return null;
+    }
+
+    const parsed = this.parseGitBlame(output);
+    if (parsed.length === 0) {
+      return null;
+    }
+
+    return typeof line === "number" && line > 0 ? parsed.slice(0, 1) : parsed;
+  }
+
+  /**
    * Get working tree status summary.
    */
   public async getStatus(): Promise<{
@@ -314,6 +425,98 @@ export class GitService {
     const gitApi = extension.exports?.getAPI?.(1);
     return gitApi ?? null;
   }
+
+  private toRepoRelativePath(filePath: string, repoRoot: string): string {
+    if (!path.isAbsolute(filePath)) {
+      return filePath.replace(/\\/g, "/");
+    }
+
+    const relative = path.relative(repoRoot, filePath);
+    return relative.replace(/\\/g, "/");
+  }
+
+  private async runGitCommand(
+    args: string[],
+    cwd: string,
+  ): Promise<string | null> {
+    return new Promise((resolve) => {
+      let stdout = "";
+      let stderr = "";
+      const child = spawn("git", args, {
+        cwd,
+        windowsHide: true,
+        env: process.env,
+      });
+
+      child.stdout.on("data", (chunk: Buffer | string) => {
+        stdout += chunk.toString();
+      });
+      child.stderr.on("data", (chunk: Buffer | string) => {
+        stderr += chunk.toString();
+      });
+      child.on("error", () => resolve(null));
+      child.on("close", (code) => {
+        if (code === 0) {
+          resolve(stdout.trim());
+          return;
+        }
+        resolve((stdout + "\n" + stderr).trim() || null);
+      });
+    });
+  }
+
+  private parseGitBlame(output: string): GitBlameLine[] {
+    const lines = output.split(/\r?\n/);
+    const result: GitBlameLine[] = [];
+    let current:
+      | {
+          commit: string;
+          lineNumber: number;
+          author: string;
+          summary: string;
+        }
+      | undefined;
+
+    for (const line of lines) {
+      if (/^[0-9a-f]{7,40}\s+\d+\s+\d+\s+\d+$/i.test(line)) {
+        const [commit, , finalLine] = line.split(/\s+/);
+        current = {
+          commit,
+          lineNumber: Number(finalLine),
+          author: "unknown",
+          summary: "",
+        };
+        continue;
+      }
+
+      if (!current) {
+        continue;
+      }
+
+      if (line.startsWith("author ")) {
+        current.author = line.slice("author ".length).trim() || "unknown";
+        continue;
+      }
+
+      if (line.startsWith("summary ")) {
+        current.summary = line.slice("summary ".length).trim();
+        continue;
+      }
+
+      if (line.startsWith("\t")) {
+        result.push({
+          lineNumber: current.lineNumber,
+          commit: current.commit,
+          author: current.author,
+          summary: current.summary,
+          text: line.slice(1),
+        });
+        current = undefined;
+      }
+    }
+
+    return result;
+  }
 }
 
 /**
@@ -364,7 +567,15 @@ interface GitRepository {
   getBranches(query?: { remote?: boolean }): Promise<Array<{ name?: string }>>;
   log(options?: {
     maxEntries?: number;
-  }): Promise<Array<{ hash: string; message: string; authorDate?: Date }>>;
+    path?: string;
+  }): Promise<
+    Array<{
+      hash: string;
+      message: string;
+      authorDate?: Date;
+      authorName?: string;
+    }>
+  >;
 }
 
 interface GitRepositoryState {

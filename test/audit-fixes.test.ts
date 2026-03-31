@@ -252,3 +252,15 @@ describe("Audit fix: Planner fallback plan has isFallback flag", () => {
     expect(plan.objective).toBe("do something");
   });
 });
+
+describe("Audit fix: agent placeholder responses are treated as generic", () => {
+  it("marks repeated workspace-scan summaries as generic task responses", () => {
+    const runtime = makeRuntime();
+
+    expect(
+      (runtime as any).isGenericTaskResponse(
+        "Workspace scanned; only .vscode/settings.json exists.",
+      ),
+    ).toBe(true);
+  });
+});

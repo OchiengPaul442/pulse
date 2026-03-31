@@ -29,5 +29,7 @@ describe("Planner", () => {
     expect(plan.steps.length).toBeGreaterThan(0);
     expect(plan.assumptions.length).toBeGreaterThan(0);
     expect(plan.isFallback).toBe(true);
+    expect(plan.todos[0]?.title).toMatch(/inspect/i);
+    expect(plan.todos[1]?.title).not.toBe("Implement the requested changes");
   });
 });

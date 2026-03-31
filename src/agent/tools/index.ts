@@ -22,6 +22,8 @@ export type { LSPToolContext } from "./LSPTools";
 export {
   GitCommitTool,
   GitLogTool,
+  GitBlameTool,
+  GitFileHistoryTool,
   GitStatusTool,
   GitBranchTool,
 } from "./GitTools";

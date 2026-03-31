@@ -130,6 +130,143 @@ export class GitLogTool implements AgentTool {
 }
 
 /**
+ * git_file_history — Show recent commit history for a file.
+ */
+export class GitFileHistoryTool implements AgentTool {
+  readonly name = "git_file_history";
+  readonly description = "Show recent git history for a file";
+  readonly parameterHints = "{filePath|path, count?}";
+
+  constructor(
+    private readonly ctx: GitToolContext,
+    private readonly git: GitService,
+  ) {}
+
+  async execute(call: TaskToolCall): Promise<TaskToolObservation[]> {
+    const filePath = firstString(call.args.filePath, call.args.path);
+    if (!filePath) {
+      return [
+        {
+          tool: call.tool,
+          ok: false,
+          summary: "git_file_history requires a filePath.",
+        },
+      ];
+    }
+
+    try {
+      const isRepo = await this.git.isGitRepository();
+      if (!isRepo) {
+        return [
+          { tool: call.tool, ok: false, summary: "Not a git repository." },
+        ];
+      }
+
+      const count =
+        typeof call.args.count === "number"
+          ? Math.min(Math.max(call.args.count, 1), 20)
+          : 10;
+      const history = await this.git.getFileHistory(filePath, count);
+      return [
+        {
+          tool: call.tool,
+          ok: history.length > 0,
+          summary:
+            history.length > 0
+              ? `Loaded ${history.length} commit(s) for ${filePath}.`
+              : `No git history found for ${filePath}.`,
+          detail: history
+            .map(
+              (entry) =>
+                `${entry.hash.slice(0, 8)} ${entry.date} ${entry.author} ${entry.message.slice(0, 120)}`,
+            )
+            .join("\n"),
+        },
+      ];
+    } catch (err) {
+      return [
+        {
+          tool: call.tool,
+          ok: false,
+          summary: `git_file_history failed: ${stringifyError(err)}`,
+        },
+      ];
+    }
+  }
+}
+
+/**
+ * git_blame — Show blame for a file or line.
+ */
+export class GitBlameTool implements AgentTool {
+  readonly name = "git_blame";
+  readonly description = "Show git blame details for a file or line";
+  readonly parameterHints = "{filePath|path, line?}";
+
+  constructor(
+    private readonly ctx: GitToolContext,
+    private readonly git: GitService,
+  ) {}
+
+  async execute(call: TaskToolCall): Promise<TaskToolObservation[]> {
+    const filePath = firstString(call.args.filePath, call.args.path);
+    if (!filePath) {
+      return [
+        {
+          tool: call.tool,
+          ok: false,
+          summary: "git_blame requires a filePath.",
+        },
+      ];
+    }
+
+    const line =
+      typeof call.args.line === "number" && Number.isFinite(call.args.line)
+        ? Math.max(1, Math.floor(call.args.line))
+        : undefined;
+
+    try {
+      const isRepo = await this.git.isGitRepository();
+      if (!isRepo) {
+        return [
+          { tool: call.tool, ok: false, summary: "Not a git repository." },
+        ];
+      }
+
+      const blame = await this.git.getFileBlame(filePath, line);
+      return [
+        {
+          tool: call.tool,
+          ok: Boolean(blame && blame.length > 0),
+          summary:
+            blame && blame.length > 0
+              ? line
+                ? `Loaded blame for ${filePath}:${line}.`
+                : `Loaded blame for ${filePath}.`
+              : `No blame information found for ${filePath}.`,
+          detail:
+            blame
+              ?.slice(0, line ? 1 : 20)
+              .map(
+                (entry) =>
+                  `${entry.lineNumber}: ${entry.commit.slice(0, 8)} ${entry.author} ${entry.summary || "(no summary)"} | ${entry.text}`,
+              )
+              .join("\n") ?? "",
+        },
+      ];
+    } catch (err) {
+      return [
+        {
+          tool: call.tool,
+          ok: false,
+          summary: `git_blame failed: ${stringifyError(err)}`,
+        },
+      ];
+    }
+  }
+}
+
+/**
  * git_status — Show working tree status.
  */
 export class GitStatusTool implements AgentTool {
