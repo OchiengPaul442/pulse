@@ -415,6 +415,18 @@
       );
       // Newlines to br (except inside pre/code)
       html = html.replace(/\n/g, "<br>");
+      // Collapse 3+ consecutive <br> into at most 2
+      html = html.replace(/(<br\s*\/?>){3,}/gi, "<br><br>");
+      // Remove <br> immediately after block-level elements
+      html = html.replace(
+        /(<\/(?:h[1-6]|ul|ol|li|div|pre|blockquote)>)\s*<br>/gi,
+        "$1",
+      );
+      // Remove <br> immediately before block-level elements
+      html = html.replace(
+        /<br>\s*(<(?:h[1-6]|ul|ol|li|div|pre|blockquote)[> ])/gi,
+        "$1",
+      );
       // Restore code block placeholders
       for (var bi = 0; bi < blocks.length; bi++) {
         html = html.replace("%%CODEBLOCK_" + bi + "%%", blocks[bi]);
@@ -820,6 +832,9 @@
       }
       if (!panel) return;
       panel.classList.add("done");
+      // Auto-collapse steps to avoid duplicating the response text
+      stepsCollapsed = true;
+      panel.classList.add("steps-collapsed");
       // Unseal any active reasoning block and stop label cycling
       stopReasoningLabelCycle();
       if (list) {
@@ -1847,6 +1862,33 @@
       });
     })();
 
+    // ── Paste image handler (Ctrl+V / Cmd+V) ────────────────────
+    if (taskInput) {
+      taskInput.addEventListener("paste", function (e) {
+        var items = e.clipboardData && e.clipboardData.items;
+        if (!items) return;
+        for (var i = 0; i < items.length; i++) {
+          if (items[i].type.indexOf("image/") === 0) {
+            var file = items[i].getAsFile();
+            if (!file) continue;
+            var name = file.name || "pasted-image.png";
+            var reader = new FileReader();
+            reader.onload = function (ev) {
+              var dataUrl = ev.target && ev.target.result;
+              if (typeof dataUrl === "string") {
+                addImagePreview(name, dataUrl);
+                vscode.postMessage({
+                  type: "dropImage",
+                  payload: { name: name, dataUrl: dataUrl },
+                });
+              }
+            };
+            reader.readAsDataURL(file);
+          }
+        }
+      });
+    }
+
     // ── Tool configuration panel ──────────────────────────────────
     var TOOL_DEFS = [
       {
@@ -2174,11 +2216,11 @@
             "</span>" +
             '<span class="terminal-chat-status">' +
             (exitOk
-              ? "\\u2713"
-              : "\\u2717 exit " +
+              ? "\u2713"
+              : "\u2717 exit " +
                 (payload.exitCode != null ? payload.exitCode : "?")) +
             "</span>" +
-            '<span class="terminal-chat-toggle">\\u25BC</span>' +
+            '<span class="terminal-chat-toggle">\u25BC</span>' +
             "</div>" +
             '<pre class="terminal-chat-output hidden">' +
             esc(payload.output || "(no output)") +
