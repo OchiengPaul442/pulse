@@ -25,6 +25,8 @@ export interface TaskPlan {
   steps: PlanStep[];
   taskSlices: TaskSlice[];
   verification: Array<{ type: string; command: string }>;
+  /** True when the planner model failed and a generic fallback plan was used. */
+  isFallback?: boolean;
 }
 
 export class Planner {
@@ -68,7 +70,11 @@ export class Planner {
 
       const parsed = JSON.parse(response.text) as Partial<TaskPlan>;
       return normalizePlan(parsed, objective);
-    } catch {
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.warn(
+        `[Planner] Plan generation failed, using fallback: ${message}`,
+      );
       return fallbackPlan(objective);
     }
   }
@@ -116,6 +122,7 @@ function normalizePlan(plan: Partial<TaskPlan>, objective: string): TaskPlan {
 
 function fallbackPlan(objective: string): TaskPlan {
   return {
+    isFallback: true,
     objective,
     assumptions: [
       "No reliable structured plan response from model; fallback plan used.",

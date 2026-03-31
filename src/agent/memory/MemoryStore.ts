@@ -15,6 +15,7 @@ interface MemoryState {
 
 export class MemoryStore {
   private cache: MemoryState | null = null;
+  private writeQueue: Promise<void> = Promise.resolve();
 
   public constructor(private readonly memoriesPath: string) {}
 
@@ -71,9 +72,14 @@ export class MemoryStore {
 
   private async save(state: MemoryState): Promise<void> {
     this.cache = state;
-    await vscode.workspace.fs.writeFile(
-      vscode.Uri.file(this.memoriesPath),
-      Buffer.from(JSON.stringify(state, null, 2), "utf8"),
-    );
+    this.writeQueue = this.writeQueue
+      .catch(() => {})
+      .then(() =>
+        vscode.workspace.fs.writeFile(
+          vscode.Uri.file(this.memoriesPath),
+          Buffer.from(JSON.stringify(state, null, 2), "utf8"),
+        ),
+      );
+    await this.writeQueue;
   }
 }

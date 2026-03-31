@@ -1,6 +1,5 @@
 import * as crypto from "crypto";
 import * as path from "path";
-import { existsSync } from "fs";
 import * as vscode from "vscode";
 
 import type {
@@ -45,6 +44,11 @@ import {
 import { SkillRegistry, type SkillManifest } from "../skills/SkillRegistry";
 import { GitService } from "../../platform/git/GitService";
 import { ImprovementEngine } from "../improvement/ImprovementEngine";
+import { PathResolver } from "./PathResolver";
+import { ProjectDetector } from "./ProjectDetector";
+import { StreamBroadcaster } from "./StreamBroadcaster";
+import { ToolExecutor } from "./ToolExecutor";
+import type { ToolExecutorContext } from "./ToolExecutor";
 import {
   TerminalExecutor,
   type TerminalExecResult,
@@ -152,6 +156,14 @@ export class AgentRuntime {
 
   private readonly terminalExecutor: TerminalExecutor;
 
+  private readonly pathResolver: PathResolver;
+
+  private readonly projectDetector: ProjectDetector;
+
+  private readonly broadcaster: StreamBroadcaster;
+
+  private readonly toolExecutor: ToolExecutor;
+
   private currentConfig: AgentConfig;
 
   private health: ProviderHealth = { ok: false, message: "Not checked" };
@@ -192,16 +204,8 @@ export class AgentRuntime {
 
   private mcpStatusPromise: Promise<McpServerStatus[]> | null = null;
 
-  private readonly packageScriptsCache = new Map<
-    string,
-    Record<string, string> | null
-  >();
-
   /** Tool enable/disable map set from the UI. All tools enabled by default. */
   private enabledToolsMap: Record<string, boolean> = {};
-
-  /** Last terminal execution result for get_terminal_output tool. */
-  private lastTerminalResult: TerminalExecResult | null = null;
 
   /** Throttle marker for reasoning pulse updates in the progress UI. */
   private lastReasoningPulseAt = 0;
@@ -240,24 +244,61 @@ export class AgentRuntime {
     this.gitService = new GitService();
     this.improvementEngine = new ImprovementEngine(storage.improvementPath);
     this.terminalExecutor = new TerminalExecutor();
+    this.pathResolver = new PathResolver(this.workspaceRoot);
+    this.projectDetector = new ProjectDetector();
+    this.broadcaster = new StreamBroadcaster();
+
+    // eslint-disable-next-line @typescript-eslint/no-this-alias
+    const self = this;
+    const toolCtx: ToolExecutorContext = {
+      get workspaceRoot() {
+        return self.workspaceRoot?.fsPath ?? null;
+      },
+      get allowTerminalExecution() {
+        return self.currentConfig.allowTerminalExecution ?? false;
+      },
+      isToolEnabled: (tool: string) => this.isToolEnabled(tool),
+      resolvePath: (value: string) => this.resolveWorkspacePath(value),
+      normalizeDisplay: (filePath: string) =>
+        this.normalizeDisplayPath(filePath),
+      buildWorkspaceInventory: (limit: number) =>
+        this.buildWorkspaceInventory(limit),
+      executeTerminalCommand: (command, opts) =>
+        this.executeTerminalCommand(command, opts),
+      researchWeb: (query: string) => this.researchWeb(query),
+      mcpSummary: () => this.mcpSummary(),
+      collectVerificationCommands: (objective, args) =>
+        this.collectVerificationCommands(objective, args),
+    };
+    this.toolExecutor = new ToolExecutor(
+      toolCtx,
+      this.scanner,
+      this.verifier,
+      this.gitService,
+      this.webSearch,
+      this.broadcaster,
+    );
   }
 
   public setProgressCallback(
     cb: ((step: AgentProgressStep) => void) | null,
   ): void {
     this.progressCallback = cb;
+    this.broadcaster.setProgressCallback(cb);
   }
 
   public setTokenCallback(
     cb: ((snapshot: TokenSnapshot) => void) | null,
   ): void {
     this.tokenCallback = cb;
+    this.broadcaster.setTokenCallback(cb);
   }
 
   private streamCallback: ((chunk: string) => void) | null = null;
 
   public setStreamCallback(cb: ((chunk: string) => void) | null): void {
     this.streamCallback = cb;
+    this.broadcaster.setStreamCallback(cb);
   }
 
   private emitStreamChunk(chunk: string): void {
@@ -309,6 +350,7 @@ export class AgentRuntime {
       | null,
   ): void {
     this.terminalOutputCallback = cb;
+    this.broadcaster.setTerminalOutputCallback(cb);
   }
 
   private emitTerminalRun(command: string): void {
@@ -625,35 +667,30 @@ export class AgentRuntime {
   }
 
   public async explainText(input: string): Promise<ExplainResult> {
-    const tokenSnapshot = this.tokensConsumed;
-    const activeSessionSnapshot = this.activeTokenSessionId;
     const model = await this.resolveModelOrFallback(
       this.currentConfig.fastModel,
     );
-    try {
-      const response = await this.provider.chat({
-        model,
-        messages: [
-          {
-            role: "system",
-            content:
-              "You are Pulse, a senior coding assistant. Explain code accurately and concisely with practical details.",
-          },
-          {
-            role: "user",
-            content: input,
-          },
-        ],
-      });
+    const response = await this.provider.chat({
+      model,
+      messages: [
+        {
+          role: "system",
+          content:
+            "You are Pulse, a senior coding assistant. Explain code accurately and concisely with practical details.",
+        },
+        {
+          role: "user",
+          content: input,
+        },
+      ],
+    });
 
-      return {
-        text: response.text,
-        model,
-      };
-    } finally {
-      this.tokensConsumed = tokenSnapshot;
-      this.activeTokenSessionId = activeSessionSnapshot;
-    }
+    this.consumeTokens(response.tokenUsage);
+
+    return {
+      text: response.text,
+      model,
+    };
   }
 
   private classifyObjective(objective: string): string {
@@ -795,15 +832,28 @@ export class AgentRuntime {
     }
   }
 
+  /** Whether a self-learn cycle is currently running. */
+  private selfLearnRunning = false;
+
   private startSelfLearnLoop(): void {
     if (this.selfLearnTimer) return; // already running
-    // Run an improvement cycle every 45 seconds while self-learn is active
+    // Use a longer interval (120s) with a concurrency guard to prevent
+    // overlapping cycles from competing with user tasks for VRAM.
     this.selfLearnTimer = setInterval(() => {
-      this.improvementEngine.runSelfImprovementCycle().catch((err) => {
-        this.logger.warn(`Self-learn cycle error: ${err}`);
-      });
-    }, 45_000);
-    this.logger.info("Self-learn loop started (every 45s)");
+      if (this.activeTaskController || this.selfLearnRunning) {
+        return; // skip if a user task is running or a cycle is already active
+      }
+      this.selfLearnRunning = true;
+      this.improvementEngine
+        .runSelfImprovementCycle()
+        .catch((err) => {
+          this.logger.warn(`Self-learn cycle error: ${err}`);
+        })
+        .finally(() => {
+          this.selfLearnRunning = false;
+        });
+    }, 120_000);
+    this.logger.info("Self-learn loop started (every 120s, with backpressure)");
   }
 
   private stopSelfLearnLoop(): void {
@@ -1336,7 +1386,7 @@ export class AgentRuntime {
       );
     }
 
-    this.packageScriptsCache.clear();
+    this.projectDetector.clearCache();
 
     return `Applied transaction ${result.id}.`;
   }
@@ -1344,7 +1394,7 @@ export class AgentRuntime {
   public async acceptFileEdit(filePath: string): Promise<string> {
     const ok = await this.editManager.acceptFile(filePath);
     if (!ok) return "File not found in pending proposal.";
-    this.packageScriptsCache.clear();
+    this.projectDetector.clearCache();
     return `Accepted edit for ${path.basename(filePath)}.`;
   }
 
@@ -1367,7 +1417,7 @@ export class AgentRuntime {
       );
     }
 
-    this.packageScriptsCache.clear();
+    this.projectDetector.clearCache();
 
     return `Reverted transaction ${reverted.id}.`;
   }
@@ -2147,6 +2197,11 @@ export class AgentRuntime {
         if (trimmed) {
           keyPoints.push(`- User: ${trimmed}`);
         }
+      } else if (m.role === "assistant") {
+        const trimmed = m.content.slice(0, 200).replace(/\n+/g, " ").trim();
+        if (trimmed) {
+          keyPoints.push(`- Agent: ${trimmed}`);
+        }
       }
     }
 
@@ -2231,36 +2286,11 @@ export class AgentRuntime {
   }
 
   private resolveAttachmentPath(value: string): string | null {
-    if (path.isAbsolute(value)) {
-      return value;
-    }
-
-    if (!this.workspaceRoot) {
-      return null;
-    }
-
-    return path.join(this.workspaceRoot.fsPath, value);
+    return this.pathResolver.resolveAttachment(value);
   }
 
   private normalizeAttachmentPath(value: string): string {
-    const absolute = path.isAbsolute(value)
-      ? value
-      : this.workspaceRoot
-        ? path.join(this.workspaceRoot.fsPath, value)
-        : value;
-
-    if (this.workspaceRoot) {
-      const relative = path.relative(this.workspaceRoot.fsPath, absolute);
-      if (
-        relative &&
-        !relative.startsWith("..") &&
-        !path.isAbsolute(relative)
-      ) {
-        return relative;
-      }
-    }
-
-    return absolute;
+    return this.pathResolver.normalizeAttachment(value);
   }
 
   private formatAttachedContext(
@@ -2276,18 +2306,7 @@ export class AgentRuntime {
   }
 
   private normalizeDisplayPath(filePath: string): string {
-    if (this.workspaceRoot && path.isAbsolute(filePath)) {
-      const relative = path.relative(this.workspaceRoot.fsPath, filePath);
-      if (
-        relative &&
-        !relative.startsWith("..") &&
-        !path.isAbsolute(relative)
-      ) {
-        return relative;
-      }
-    }
-
-    return filePath;
+    return this.pathResolver.normalizeDisplay(filePath);
   }
 
   private async writePlanArtifact(
@@ -2398,47 +2417,17 @@ export class AgentRuntime {
     return true;
   }
 
+  private static readonly GREETING_PATTERN =
+    /^(h(ello|i|ey|owdy)|yo|sup|greetings|good\s+(morning|afternoon|evening|night)|thanks?(\s+you)?|th?x|bye|goodbye|see\s+you|later|ok(ay)?|sure|yes|no|yep|nope|got\s+it|what\s+(can\s+you\s+do|are\s+you)|who\s+are\s+you|help(\s+me)?)$/;
+
   private isSimpleConversational(objective: string): boolean {
     const trimmed = objective.trim();
     const lower = trimmed
       .toLowerCase()
-      .replace(/[!?.]+$/, "")
+      .replace(/[!?.,]+$/g, "")
       .trim();
-    const greetings = [
-      "hello",
-      "hi",
-      "hey",
-      "yo",
-      "sup",
-      "howdy",
-      "greetings",
-      "good morning",
-      "good afternoon",
-      "good evening",
-      "good night",
-      "thanks",
-      "thank you",
-      "ty",
-      "thx",
-      "bye",
-      "goodbye",
-      "see you",
-      "later",
-      "ok",
-      "okay",
-      "sure",
-      "yes",
-      "no",
-      "yep",
-      "nope",
-      "got it",
-      "what can you do",
-      "who are you",
-      "what are you",
-      "help",
-      "help me",
-    ];
-    if (greetings.includes(lower)) {
+
+    if (AgentRuntime.GREETING_PATTERN.test(lower)) {
       return true;
     }
 
@@ -2660,7 +2649,6 @@ export class AgentRuntime {
 
     checkAborted();
 
-    const sessionPromise = this.sessionStore.getSession(sessionId);
     const [
       plannerModel,
       editorModel,
@@ -2669,6 +2657,7 @@ export class AgentRuntime {
       webResearch,
       styleHintAgent,
       improvementHintsAgent,
+      session,
     ] = await Promise.all([
       this.resolveModelOrFallback(this.currentConfig.plannerModel),
       this.resolveModelOrFallback(this.currentConfig.editorModel),
@@ -2679,6 +2668,7 @@ export class AgentRuntime {
       this.collectWebResearch(objective, "agent"),
       this.getLearnedStyleHint(objective, "agent"),
       this.improvementEngine.getOptimizedBehaviorHints(objective, "agent"),
+      this.sessionStore.getSession(sessionId),
     ]);
     const agentAwarenessAgent = this.improvementEngine.getAgentAwarenessHints();
     if (webResearch) {
@@ -2689,7 +2679,6 @@ export class AgentRuntime {
       );
     }
 
-    const session = await sessionPromise;
     const [rawContextSnippets, attachedContext, conversationHistory] =
       await Promise.all([
         this.scanner.readContextSnippets(
@@ -2732,6 +2721,14 @@ export class AgentRuntime {
       keepAlive: profileDefaults.plannerKeepAlive,
       numCtx: profileDefaults.numCtx,
     });
+
+    if (plan.isFallback) {
+      this.emitProgress(
+        "Plan fallback",
+        "Planner model failed — using generic fallback plan",
+        "\u26A0",
+      );
+    }
 
     // On low-VRAM profiles, unload the planner model before starting the
     // editor loop to avoid VRAM contention between two loaded models.
@@ -2898,6 +2895,7 @@ export class AgentRuntime {
     const MAX_AGENT_ITERATIONS = profileDefaults.maxAgentIterations;
     let noActionCount = 0;
     let retried = false;
+    const toolFailureCounts = new Map<string, number>();
     for (let iteration = 0; iteration < MAX_AGENT_ITERATIONS; iteration += 1) {
       this.emitProgress(
         iteration === 0 ? "Generating response" : "Continuing",
@@ -2945,6 +2943,7 @@ export class AgentRuntime {
             this.emitReasoningPulse(
               "Reasoning through tools and code changes...",
             );
+            this.emitStreamChunk(chunk);
           },
           messages: isFollowUp
             ? [
@@ -3112,14 +3111,38 @@ export class AgentRuntime {
         observations.length > 0 &&
         parsed.toolCalls.length > 0
       ) {
+        // Track consecutive failures per tool name
+        for (const obs of failedObs) {
+          const count = (toolFailureCounts.get(obs.tool) ?? 0) + 1;
+          toolFailureCounts.set(obs.tool, count);
+        }
+        // Reset count for tools that succeeded
+        for (const obs of observations.filter((o) => o.ok)) {
+          toolFailureCounts.delete(obs.tool);
+        }
+
         const failSummary = failedObs
           .map((o) => `[FAILED] ${o.tool}: ${o.summary}`)
           .join("\n");
+
+        // Build hard-stop warnings for tools that have failed 3+ times
+        const hardStops: string[] = [];
+        for (const [tool, count] of toolFailureCounts) {
+          if (count >= 3) {
+            hardStops.push(
+              `STOP: "${tool}" has failed ${count} times consecutively. Do NOT call it again. Use an alternative approach.`,
+            );
+          }
+        }
+        const hardStopBlock =
+          hardStops.length > 0 ? "\n\n" + hardStops.join("\n") : "";
+
         critiqueContext =
           (critiqueContext ? critiqueContext + "\n\n" : "") +
           "## TOOL FAILURES — INVESTIGATE AND RETRY\n" +
           "The following tool calls failed. Do NOT give up. Analyze the error, find the root cause, and try an alternative approach:\n" +
-          failSummary;
+          failSummary +
+          hardStopBlock;
       }
 
       if (observations.length > 0) {
@@ -3425,29 +3448,7 @@ export class AgentRuntime {
     objective: string,
     signal?: AbortSignal,
   ): Promise<TaskToolObservation[]> {
-    const limitedCalls = toolCalls.slice(0, 5);
-    const settled = await Promise.allSettled(
-      limitedCalls.map((call) =>
-        this.executeSingleToolCall(call, objective, signal),
-      ),
-    );
-
-    const observations: TaskToolObservation[] = [];
-    settled.forEach((result, index) => {
-      if (result.status === "fulfilled") {
-        observations.push(...result.value);
-        return;
-      }
-
-      observations.push({
-        tool: limitedCalls[index].tool,
-        ok: false,
-        summary: `Tool execution failed: ${stringifyError(result.reason)}`,
-        detail: limitedCalls[index].reason,
-      });
-    });
-
-    return observations;
+    return this.toolExecutor.executeToolCalls(toolCalls, objective, signal);
   }
 
   private async buildTaskCompletionSummary(params: {
@@ -4072,773 +4073,7 @@ export class AgentRuntime {
     objective: string,
     signal?: AbortSignal,
   ): Promise<TaskToolObservation[]> {
-    // Check if this tool has been disabled by the user in the tool config panel
-    if (!this.isToolEnabled(call.tool)) {
-      return [
-        {
-          tool: call.tool,
-          ok: false,
-          summary: `Tool "${call.tool}" is disabled in tool settings.`,
-          detail: "The user has disabled this tool. Use a different approach.",
-        },
-      ];
-    }
-
-    const workspaceRoot = this.workspaceRoot?.fsPath ?? null;
-    const checkAborted = () => {
-      if (signal?.aborted) {
-        throw new Error("__TASK_CANCELLED__");
-      }
-    };
-
-    checkAborted();
-
-    if (call.tool === "workspace_scan") {
-      const inventory = await this.buildWorkspaceInventory(250);
-      return [
-        {
-          tool: call.tool,
-          ok: true,
-          summary: `Found ${inventory.totalFiles} file(s) in the workspace.`,
-          detail: inventory.listedFiles.slice(0, 20).join("\n"),
-        },
-      ];
-    }
-
-    if (call.tool === "read_files") {
-      const requestedPaths = this.extractStringList(
-        call.args.paths,
-        call.args.files,
-        call.args.filePaths,
-        call.args.path,
-      );
-      const resolvedPaths = requestedPaths
-        .map((item) => this.resolveWorkspacePath(item))
-        .filter((item): item is string => Boolean(item));
-      const snippets = await this.scanner.readContextSnippets(
-        resolvedPaths.slice(0, 8),
-        6000,
-        signal,
-      );
-      return [
-        {
-          tool: call.tool,
-          ok: snippets.length > 0,
-          summary:
-            snippets.length > 0
-              ? `Read ${snippets.length} file(s).`
-              : "No readable files were returned.",
-          detail: snippets
-            .map(
-              (snippet) =>
-                `File: ${this.normalizeDisplayPath(snippet.path)}\n${snippet.content}`,
-            )
-            .join("\n\n")
-            .slice(0, 8000),
-        },
-      ];
-    }
-
-    if (call.tool === "create_file") {
-      const filePath = this.firstString(call.args.filePath, call.args.path);
-      const content = this.firstString(call.args.content) ?? "";
-      if (!filePath) {
-        return [
-          {
-            tool: call.tool,
-            ok: false,
-            summary: "No file path was provided for create_file.",
-          },
-        ];
-      }
-      const resolved = this.resolveWorkspacePath(filePath);
-      if (!resolved) {
-        return [
-          {
-            tool: call.tool,
-            ok: false,
-            summary: `Path "${filePath}" is outside the workspace.`,
-          },
-        ];
-      }
-      if (content.trim().length === 0) {
-        return [
-          {
-            tool: call.tool,
-            ok: false,
-            summary: "create_file requires non-empty content.",
-            detail:
-              "Use create_directory for folders, then provide the actual file contents for code files.",
-          },
-        ];
-      }
-      try {
-        const uri = vscode.Uri.file(resolved);
-        await vscode.workspace.fs.createDirectory(
-          vscode.Uri.file(path.dirname(resolved)),
-        );
-        await vscode.workspace.fs.writeFile(uri, Buffer.from(content, "utf8"));
-        return [
-          {
-            tool: call.tool,
-            ok: true,
-            summary: `Created file: ${this.normalizeDisplayPath(resolved)}`,
-          },
-        ];
-      } catch (err) {
-        return [
-          {
-            tool: call.tool,
-            ok: false,
-            summary: `Failed to create file: ${stringifyError(err)}`,
-          },
-        ];
-      }
-    }
-
-    if (call.tool === "create_directory") {
-      const dirPath = this.firstString(call.args.path, call.args.filePath);
-      if (!dirPath) {
-        return [
-          {
-            tool: call.tool,
-            ok: false,
-            summary: "No directory path was provided for create_directory.",
-          },
-        ];
-      }
-      const resolved = this.resolveWorkspacePath(dirPath);
-      if (!resolved) {
-        return [
-          {
-            tool: call.tool,
-            ok: false,
-            summary: `Path "${dirPath}" is outside the workspace.`,
-          },
-        ];
-      }
-      try {
-        await vscode.workspace.fs.createDirectory(vscode.Uri.file(resolved));
-        return [
-          {
-            tool: call.tool,
-            ok: true,
-            summary: `Created directory: ${this.normalizeDisplayPath(resolved)}`,
-          },
-        ];
-      } catch (err) {
-        return [
-          {
-            tool: call.tool,
-            ok: false,
-            summary: `Failed to create directory: ${stringifyError(err)}`,
-          },
-        ];
-      }
-    }
-
-    if (call.tool === "delete_file") {
-      const filePath = this.firstString(call.args.filePath, call.args.path);
-      if (!filePath) {
-        return [
-          {
-            tool: call.tool,
-            ok: false,
-            summary: "No file path was provided for delete_file.",
-          },
-        ];
-      }
-      const resolved = this.resolveWorkspacePath(filePath);
-      if (!resolved) {
-        return [
-          {
-            tool: call.tool,
-            ok: false,
-            summary: `Path "${filePath}" is outside the workspace.`,
-          },
-        ];
-      }
-      try {
-        const uri = vscode.Uri.file(resolved);
-        await vscode.workspace.fs.delete(uri);
-        return [
-          {
-            tool: call.tool,
-            ok: true,
-            summary: `Deleted file: ${this.normalizeDisplayPath(resolved)}`,
-          },
-        ];
-      } catch (err) {
-        return [
-          {
-            tool: call.tool,
-            ok: false,
-            summary: `Failed to delete file: ${stringifyError(err)}`,
-          },
-        ];
-      }
-    }
-
-    if (call.tool === "search_files") {
-      const query =
-        this.firstString(
-          call.args.query,
-          call.args.pattern,
-          call.args.search,
-        ) ?? "";
-      if (!query) {
-        return [
-          {
-            tool: call.tool,
-            ok: false,
-            summary: "No search query was provided.",
-          },
-        ];
-      }
-      const results = await this.scanner.searchFileContents(
-        query,
-        8,
-        3000,
-        signal,
-      );
-      return [
-        {
-          tool: call.tool,
-          ok: results.length > 0,
-          summary:
-            results.length > 0
-              ? `Found matches in ${results.length} file(s).`
-              : "No matches found.",
-          detail: results
-            .map(
-              (r) =>
-                `File: ${this.normalizeDisplayPath(r.path)}\n${r.matches.join("\n---\n")}`,
-            )
-            .join("\n\n")
-            .slice(0, 5000),
-        },
-      ];
-    }
-
-    if (call.tool === "list_dir") {
-      const dirPath =
-        this.firstString(call.args.path, call.args.directory, call.args.dir) ??
-        ".";
-      const resolved = this.resolveWorkspacePath(dirPath);
-      if (!resolved) {
-        return [
-          {
-            tool: call.tool,
-            ok: false,
-            summary: `Path "${dirPath}" is outside the workspace.`,
-          },
-        ];
-      }
-      try {
-        const uri = vscode.Uri.file(resolved);
-        const entries = await vscode.workspace.fs.readDirectory(uri);
-        const listing = entries
-          .slice(0, 50)
-          .map(([name, type]) =>
-            type === vscode.FileType.Directory ? `${name}/` : name,
-          )
-          .join("\n");
-        return [
-          {
-            tool: call.tool,
-            ok: true,
-            summary: `Listed ${entries.length} entries in ${this.normalizeDisplayPath(resolved)}.`,
-            detail: listing,
-          },
-        ];
-      } catch (err) {
-        return [
-          {
-            tool: call.tool,
-            ok: false,
-            summary: `Failed to list directory: ${stringifyError(err)}`,
-          },
-        ];
-      }
-    }
-
-    if (call.tool === "run_terminal") {
-      const command = this.firstString(call.args.command, call.args.cmd);
-      if (!command) {
-        return [
-          {
-            tool: call.tool,
-            ok: false,
-            summary: "No terminal command was provided.",
-          },
-        ];
-      }
-
-      if (
-        !isSafeTerminalCommand(command) &&
-        !this.currentConfig.allowTerminalExecution
-      ) {
-        return [
-          {
-            tool: call.tool,
-            ok: false,
-            summary: "Terminal execution is disabled for unsafe commands.",
-            detail: command,
-          },
-        ];
-      }
-
-      this.emitTerminalRun(command);
-      const terminalTimeout = estimateCommandTimeout(command);
-      const result = await this.executeTerminalCommand(command, {
-        cwd: workspaceRoot ?? undefined,
-        timeoutMs: terminalTimeout,
-        purpose: "tool",
-        objective,
-      });
-      // Store for get_terminal_output tool
-      if (result) {
-        this.lastTerminalResult = result;
-      }
-      // Emit terminal output for chat display
-      this.terminalOutputCallback?.({
-        command,
-        output: result ? result.output.slice(0, 5000) : "",
-        exitCode: result?.exitCode ?? null,
-      });
-      return [
-        {
-          tool: call.tool,
-          ok: result !== null && result.exitCode === 0,
-          summary: result
-            ? `Exit ${result.exitCode ?? "unknown"} in ${result.durationMs}ms.`
-            : "Terminal command was blocked.",
-          detail: result ? result.output.slice(0, 5000) : command,
-        },
-      ];
-    }
-
-    if (call.tool === "run_verification") {
-      return this.runVerificationWorkflow(objective, signal, call.args);
-    }
-
-    if (call.tool === "web_search") {
-      const query = this.firstString(call.args.query) ?? objective;
-      const result = await this.researchWeb(query);
-      return [
-        {
-          tool: call.tool,
-          ok: true,
-          summary: `Web search returned ${result.results.length} result(s).`,
-          detail: this.webSearch.formatResult(result).slice(0, 5000),
-        },
-      ];
-    }
-
-    if (call.tool === "git_diff") {
-      const filePath = this.firstString(call.args.filePath, call.args.path);
-      if (filePath) {
-        const diff = await this.gitService.getFileDiff(
-          this.resolveWorkspacePath(filePath) ?? filePath,
-        );
-        return [
-          {
-            tool: call.tool,
-            ok: diff !== null,
-            summary: diff
-              ? `Loaded diff for ${this.normalizeDisplayPath(diff.path)}.`
-              : "No diff available.",
-            detail: diff?.diff.slice(0, 5000),
-          },
-        ];
-      }
-
-      const diffSummary = await this.gitService.getDiffSummary();
-      return [
-        {
-          tool: call.tool,
-          ok: diffSummary.isGitRepo,
-          summary: diffSummary.summary,
-          detail: JSON.stringify(diffSummary, null, 2).slice(0, 5000),
-        },
-      ];
-    }
-
-    if (call.tool === "mcp_status") {
-      const summary = await this.mcpSummary();
-      return [
-        {
-          tool: call.tool,
-          ok: true,
-          summary: "Loaded MCP connection summary.",
-          detail: summary.slice(0, 5000),
-        },
-      ];
-    }
-
-    if (call.tool === "diagnostics") {
-      const diagnostics = this.verifier.runDiagnostics();
-      return [
-        {
-          tool: call.tool,
-          ok: !diagnostics.hasErrors,
-          summary: diagnostics.summary,
-          detail: JSON.stringify(diagnostics, null, 2),
-        },
-      ];
-    }
-
-    if (call.tool === "batch_edit") {
-      const editList = Array.isArray(call.args.edits) ? call.args.edits : [];
-      if (editList.length === 0) {
-        return [
-          {
-            tool: call.tool,
-            ok: false,
-            summary: "No edits provided for batch_edit.",
-          },
-        ];
-      }
-
-      const results: string[] = [];
-      let successCount = 0;
-      let failCount = 0;
-
-      for (const edit of editList.slice(0, 20)) {
-        const filePath = this.firstString(edit.filePath, edit.path);
-        const search = this.firstString(edit.search, edit.oldText, edit.find);
-        const replace = this.firstString(
-          edit.replace,
-          edit.newText,
-          edit.replacement,
-        );
-
-        if (!filePath || search === null || search === undefined) {
-          results.push(`SKIP: Missing filePath or search text`);
-          failCount++;
-          continue;
-        }
-
-        const resolved = this.resolveWorkspacePath(filePath);
-        if (!resolved) {
-          results.push(`FAIL: ${filePath} — outside workspace`);
-          failCount++;
-          continue;
-        }
-
-        try {
-          const uri = vscode.Uri.file(resolved);
-          const raw = await vscode.workspace.fs.readFile(uri);
-          const content = Buffer.from(raw).toString("utf8");
-
-          if (!content.includes(search)) {
-            results.push(
-              `FAIL: ${this.normalizeDisplayPath(resolved)} — search text not found`,
-            );
-            failCount++;
-            continue;
-          }
-
-          const newContent = content.replace(search, replace ?? "");
-          await vscode.workspace.fs.writeFile(
-            uri,
-            Buffer.from(newContent, "utf8"),
-          );
-          results.push(`OK: ${this.normalizeDisplayPath(resolved)}`);
-          successCount++;
-
-          this.emitFilePatched(
-            path.basename(resolved),
-            newContent.split("\n").length,
-          );
-        } catch (err) {
-          results.push(
-            `FAIL: ${this.normalizeDisplayPath(resolved)} — ${stringifyError(err)}`,
-          );
-          failCount++;
-        }
-      }
-
-      return [
-        {
-          tool: call.tool,
-          ok: successCount > 0,
-          summary: `Batch edit: ${successCount} succeeded, ${failCount} failed out of ${editList.length} edit(s).`,
-          detail: results.join("\n"),
-        },
-      ];
-    }
-
-    // ── rename_file: Rename or move a file ──────────────────────────
-    if (call.tool === "rename_file") {
-      const oldPath = this.firstString(
-        call.args.oldPath,
-        call.args.filePath,
-        call.args.from,
-        call.args.path,
-      );
-      const newPath = this.firstString(
-        call.args.newPath,
-        call.args.to,
-        call.args.destination,
-        call.args.target,
-      );
-
-      if (!oldPath || !newPath) {
-        return [
-          {
-            tool: call.tool,
-            ok: false,
-            summary: "rename_file requires both oldPath and newPath.",
-          },
-        ];
-      }
-
-      const resolvedOld = this.resolveWorkspacePath(oldPath);
-      const resolvedNew = this.resolveWorkspacePath(newPath);
-      if (!resolvedOld || !resolvedNew) {
-        return [
-          {
-            tool: call.tool,
-            ok: false,
-            summary: "Path resolves outside workspace.",
-          },
-        ];
-      }
-
-      try {
-        const oldUri = vscode.Uri.file(resolvedOld);
-        const newUri = vscode.Uri.file(resolvedNew);
-
-        // Ensure parent directory exists
-        const parentDir = path.dirname(resolvedNew);
-        await vscode.workspace.fs.createDirectory(vscode.Uri.file(parentDir));
-
-        await vscode.workspace.fs.rename(oldUri, newUri, {
-          overwrite: false,
-        });
-        return [
-          {
-            tool: call.tool,
-            ok: true,
-            summary: `Renamed ${this.normalizeDisplayPath(resolvedOld)} → ${this.normalizeDisplayPath(resolvedNew)}`,
-          },
-        ];
-      } catch (err) {
-        return [
-          {
-            tool: call.tool,
-            ok: false,
-            summary: `Failed to rename: ${stringifyError(err)}`,
-          },
-        ];
-      }
-    }
-
-    // ── find_references: Find symbol usages across workspace ────────
-    if (call.tool === "find_references") {
-      const symbol = this.firstString(
-        call.args.symbol,
-        call.args.query,
-        call.args.name,
-        call.args.pattern,
-      );
-      if (!symbol) {
-        return [
-          {
-            tool: call.tool,
-            ok: false,
-            summary: "find_references requires a symbol name.",
-          },
-        ];
-      }
-
-      // Use workspace text search to find references
-      const searchResults = await this.scanner.searchFileContents(
-        symbol,
-        30,
-        3000,
-        signal,
-      );
-      if (!searchResults || searchResults.length === 0) {
-        return [
-          {
-            tool: call.tool,
-            ok: true,
-            summary: `No references found for "${symbol}".`,
-          },
-        ];
-      }
-
-      const formatted = searchResults
-        .map(
-          (r: { path: string; matches: string[] }) =>
-            `${this.normalizeDisplayPath(r.path)}:\n${r.matches.join("\n")}`,
-        )
-        .join("\n\n");
-
-      return [
-        {
-          tool: call.tool,
-          ok: true,
-          summary: `Found ${searchResults.length} file(s) with references to "${symbol}".`,
-          detail: formatted.slice(0, 6000),
-        },
-      ];
-    }
-
-    // ── file_search: Find files by glob pattern ─────────────────────
-    if (call.tool === "file_search") {
-      const pattern = this.firstString(
-        call.args.pattern,
-        call.args.glob,
-        call.args.query,
-        call.args.name,
-      );
-      if (!pattern) {
-        return [
-          {
-            tool: call.tool,
-            ok: false,
-            summary: "file_search requires a pattern (e.g. **/*.ts).",
-          },
-        ];
-      }
-
-      try {
-        const files = await vscode.workspace.findFiles(
-          pattern,
-          "**/{node_modules,dist,.git,build,out,.next}/**",
-          50,
-        );
-
-        if (files.length === 0) {
-          return [
-            {
-              tool: call.tool,
-              ok: true,
-              summary: `No files matching "${pattern}".`,
-            },
-          ];
-        }
-
-        const paths = files.map((f) => this.normalizeDisplayPath(f.fsPath));
-        return [
-          {
-            tool: call.tool,
-            ok: true,
-            summary: `Found ${files.length} file(s) matching "${pattern}".`,
-            detail: paths.join("\n"),
-          },
-        ];
-      } catch (err) {
-        return [
-          {
-            tool: call.tool,
-            ok: false,
-            summary: `file_search failed: ${stringifyError(err)}`,
-          },
-        ];
-      }
-    }
-
-    // ── get_problems: Retrieve VS Code problems/diagnostics ─────────
-    if (call.tool === "get_problems") {
-      const filePath = this.firstString(
-        call.args.filePath,
-        call.args.path,
-        call.args.file,
-      );
-
-      const allDiagnostics: string[] = [];
-      let errorCount = 0;
-      let warningCount = 0;
-
-      if (filePath) {
-        // Scoped to a specific file
-        const resolved = this.resolveWorkspacePath(filePath);
-        if (resolved) {
-          const uri = vscode.Uri.file(resolved);
-          const diags = vscode.languages.getDiagnostics(uri);
-          for (const d of diags.slice(0, 50)) {
-            const severity =
-              d.severity === vscode.DiagnosticSeverity.Error
-                ? "ERROR"
-                : d.severity === vscode.DiagnosticSeverity.Warning
-                  ? "WARN"
-                  : "INFO";
-            if (d.severity === vscode.DiagnosticSeverity.Error) errorCount++;
-            if (d.severity === vscode.DiagnosticSeverity.Warning)
-              warningCount++;
-            allDiagnostics.push(
-              `[${severity}] ${this.normalizeDisplayPath(resolved)}:${d.range.start.line + 1}: ${d.message}`,
-            );
-          }
-        }
-      } else {
-        // All workspace diagnostics
-        const diagnosticCollection = vscode.languages.getDiagnostics();
-        for (const [uri, diags] of diagnosticCollection) {
-          for (const d of diags.slice(0, 20)) {
-            const severity =
-              d.severity === vscode.DiagnosticSeverity.Error
-                ? "ERROR"
-                : d.severity === vscode.DiagnosticSeverity.Warning
-                  ? "WARN"
-                  : "INFO";
-            if (d.severity === vscode.DiagnosticSeverity.Error) errorCount++;
-            if (d.severity === vscode.DiagnosticSeverity.Warning)
-              warningCount++;
-            allDiagnostics.push(
-              `[${severity}] ${this.normalizeDisplayPath(uri.fsPath)}:${d.range.start.line + 1}: ${d.message}`,
-            );
-          }
-        }
-      }
-
-      return [
-        {
-          tool: call.tool,
-          ok: errorCount === 0,
-          summary: `${errorCount} error(s), ${warningCount} warning(s) found.`,
-          detail:
-            allDiagnostics.length > 0
-              ? allDiagnostics.slice(0, 100).join("\n")
-              : "No problems found.",
-        },
-      ];
-    }
-
-    // ── get_terminal_output: Retrieve last terminal command output ───
-    if (call.tool === "get_terminal_output") {
-      const lastResult = this.lastTerminalResult;
-      if (!lastResult) {
-        return [
-          {
-            tool: call.tool,
-            ok: true,
-            summary: "No recent terminal output available.",
-          },
-        ];
-      }
-
-      return [
-        {
-          tool: call.tool,
-          ok: lastResult.exitCode === 0,
-          summary: `Last command: "${lastResult.command}" (exit ${lastResult.exitCode ?? "unknown"})`,
-          detail: lastResult.output.slice(0, 6000),
-        },
-      ];
-    }
-
-    return [
-      {
-        tool: call.tool,
-        ok: false,
-        summary: "Unsupported tool call.",
-      },
-    ];
+    return this.toolExecutor.executeSingleToolCall(call, objective, signal);
   }
 
   private async runVerificationWorkflow(
@@ -4903,7 +4138,7 @@ export class AgentRuntime {
     objective: string,
     args?: Record<string, unknown>,
   ): Promise<string[]> {
-    const explicit = this.extractStringList(
+    const explicit = ToolExecutor.extractStringList(
       args?.commands,
       args?.command,
       args?.scripts,
@@ -4932,8 +4167,8 @@ export class AgentRuntime {
       ].filter((name) => Boolean(scripts?.[name]));
 
       if (candidateScripts.length > 0) {
+        const manager = await this.detectPackageManager();
         return candidateScripts.map((script) => {
-          const manager = this.detectPackageManager();
           if (manager === "pnpm") {
             return `pnpm run ${script}`;
           }
@@ -4945,7 +4180,7 @@ export class AgentRuntime {
       }
 
       // Node project exists but no matching scripts — use defaults
-      const manager = this.detectPackageManager();
+      const manager = await this.detectPackageManager();
       if (manager === "pnpm") {
         return ["pnpm test", "pnpm run build"];
       }
@@ -4986,94 +4221,34 @@ export class AgentRuntime {
   private async detectProjectType(
     root: string,
   ): Promise<"node" | "python" | "rust" | "go" | "unknown"> {
-    const checks = await Promise.all([
-      this.fileExists(path.join(root, "package.json")),
-      this.fileExists(path.join(root, "pyproject.toml")),
-      this.fileExists(path.join(root, "requirements.txt")),
-      this.fileExists(path.join(root, "manage.py")),
-      this.fileExists(path.join(root, "Cargo.toml")),
-      this.fileExists(path.join(root, "go.mod")),
-    ]);
-
-    if (checks[0]) return "node";
-    if (checks[1] || checks[2] || checks[3]) return "python";
-    if (checks[4]) return "rust";
-    if (checks[5]) return "go";
-    return "unknown";
+    return this.projectDetector.detectProjectType(root);
   }
 
   private detectCommandEcosystem(
     command: string,
   ): "node" | "python" | "rust" | "go" | "dotnet" | "unknown" {
-    const lower = command.trim().toLowerCase();
-
-    if (/^(npm|pnpm|yarn|npx)\b/.test(lower)) {
-      return "node";
-    }
-    if (/^(python|python3|pip|pip3|pytest|mypy|ruff|black)\b/.test(lower)) {
-      return "python";
-    }
-    if (/^cargo\b/.test(lower)) {
-      return "rust";
-    }
-    if (/^go\b/.test(lower)) {
-      return "go";
-    }
-    if (/^dotnet\b/.test(lower)) {
-      return "dotnet";
-    }
-
-    return "unknown";
+    return this.projectDetector.detectCommandEcosystem(command);
   }
 
   private isCommandCompatibleWithProject(
     projectType: "node" | "python" | "rust" | "go" | "unknown",
     commandEcosystem: "node" | "python" | "rust" | "go" | "dotnet" | "unknown",
   ): boolean {
-    if (projectType === "unknown" || commandEcosystem === "unknown") {
-      return true;
-    }
-
-    return projectType === commandEcosystem;
+    return this.projectDetector.isCommandCompatibleWithProject(
+      projectType,
+      commandEcosystem,
+    );
   }
 
   private objectiveAllowsCrossStack(
     objective: string,
     ecosystem: "node" | "python" | "rust" | "go" | "dotnet" | "unknown",
   ): boolean {
-    const lower = objective.toLowerCase();
-    if (!lower.trim() || ecosystem === "unknown") {
-      return false;
-    }
-
-    if (ecosystem === "node") {
-      return /\b(node|npm|pnpm|yarn|npx|next\.?js|react|vue|angular|vite|typescript|javascript)\b/.test(
-        lower,
-      );
-    }
-    if (ecosystem === "python") {
-      return /\b(python|pip|django|flask|fastapi|pytest)\b/.test(lower);
-    }
-    if (ecosystem === "rust") {
-      return /\b(rust|cargo)\b/.test(lower);
-    }
-    if (ecosystem === "go") {
-      return /\b(golang|go\s+module|go\s+project|go\s+app|go)\b/.test(lower);
-    }
-    if (ecosystem === "dotnet") {
-      return /\b(dotnet|c#|asp\.?net|nuget)\b/.test(lower);
-    }
-
-    return false;
+    return this.projectDetector.objectiveAllowsCrossStack(objective, ecosystem);
   }
 
   private async fileExists(filePath: string): Promise<boolean> {
-    try {
-      await vscode.workspace.fs.stat(vscode.Uri.file(filePath));
-      return true;
-    } catch {
-      return false;
-    }
+    return this.projectDetector.fileExists(filePath);
   }
 
   /**
@@ -5163,9 +4338,20 @@ export class AgentRuntime {
         return todo;
       }
 
-      // Keep todo progression monotonic to avoid regressions like
-      // done -> in-progress on later weak-model iterations.
+      // Allow regression from done -> in-progress ONLY if the model
+      // explicitly provides a detail explaining why (e.g. "previous edit was wrong").
+      // Otherwise keep todo progression monotonic to avoid regressions
+      // from weak-model hallucination.
       if (prior.status === "done" && todo.status !== "done") {
+        if (
+          todo.detail &&
+          todo.status === "in-progress" &&
+          /\b(revis|redo|fix|correct|wrong|broken|undo|retry)\b/i.test(
+            todo.detail,
+          )
+        ) {
+          return todo; // legitimate regression
+        }
         return {
           ...todo,
           status: "done",
@@ -5320,101 +4506,15 @@ export class AgentRuntime {
   private async readPackageScripts(
     packageJsonPath: string,
   ): Promise<Record<string, string> | null> {
-    if (this.packageScriptsCache.has(packageJsonPath)) {
-      return this.packageScriptsCache.get(packageJsonPath) ?? null;
-    }
-
-    try {
-      const bytes = await vscode.workspace.fs.readFile(
-        vscode.Uri.file(packageJsonPath),
-      );
-      const parsed = JSON.parse(Buffer.from(bytes).toString("utf8")) as {
-        scripts?: Record<string, unknown>;
-      };
-
-      if (!parsed.scripts || typeof parsed.scripts !== "object") {
-        return null;
-      }
-
-      const scripts = Object.fromEntries(
-        Object.entries(parsed.scripts).flatMap(([name, value]) =>
-          typeof value === "string" ? [[name, value]] : [],
-        ),
-      );
-      this.packageScriptsCache.set(packageJsonPath, scripts);
-      return scripts;
-    } catch {
-      this.packageScriptsCache.set(packageJsonPath, null);
-      return null;
-    }
+    return this.projectDetector.readPackageScripts(packageJsonPath);
   }
 
-  private detectPackageManager(): "npm" | "pnpm" | "yarn" {
-    if (!this.workspaceRoot) {
-      return "npm";
-    }
-
-    const fsPath = this.workspaceRoot.fsPath;
-    const hasPnpm = existsSync(path.join(fsPath, "pnpm-lock.yaml"));
-    if (hasPnpm) {
-      return "pnpm";
-    }
-
-    const hasYarn = existsSync(path.join(fsPath, "yarn.lock"));
-    if (hasYarn) {
-      return "yarn";
-    }
-
-    return "npm";
+  private async detectPackageManager(): Promise<"npm" | "pnpm" | "yarn"> {
+    return this.projectDetector.detectPackageManager(this.workspaceRoot);
   }
 
   private resolveWorkspacePath(value: string): string | null {
-    if (!value.trim()) {
-      return null;
-    }
-
-    if (path.isAbsolute(value)) {
-      return value;
-    }
-
-    if (!this.workspaceRoot) {
-      return null;
-    }
-
-    return path.join(this.workspaceRoot.fsPath, value);
-  }
-
-  private extractStringList(...values: unknown[]): string[] {
-    const output: string[] = [];
-    for (const value of values) {
-      if (typeof value === "string") {
-        const trimmed = value.trim();
-        if (trimmed) {
-          output.push(trimmed);
-        }
-        continue;
-      }
-
-      if (Array.isArray(value)) {
-        for (const item of value) {
-          if (typeof item === "string" && item.trim()) {
-            output.push(item.trim());
-          }
-        }
-      }
-    }
-
-    return output;
-  }
-
-  private firstString(...values: unknown[]): string | undefined {
-    for (const value of values) {
-      if (typeof value === "string" && value.trim()) {
-        return value.trim();
-      }
-    }
-
-    return undefined;
+    return this.pathResolver.resolve(value);
   }
 
   private isLikelyEditTaskObjective(objective: string): boolean {

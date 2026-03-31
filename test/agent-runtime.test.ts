@@ -4,11 +4,8 @@ import path from "node:path";
 
 import { describe, expect, it, vi, afterEach } from "vitest";
 
-vi.mock("vscode", () => ({
-  Uri: {
-    file: (fsPath: string) => ({ fsPath }),
-  },
-  workspace: {
+vi.mock("vscode", () => {
+  const workspace: Record<string, unknown> = {
     workspaceFolders: [],
     fs: {
       createDirectory: vi.fn(),
@@ -21,24 +18,30 @@ vi.mock("vscode", () => ({
     getConfiguration: vi.fn(() => ({
       get: vi.fn(),
     })),
-  },
-  commands: {
-    executeCommand: vi.fn(),
-  },
-  window: {
-    activeTextEditor: null,
-    showInformationMessage: vi.fn(),
-    showWarningMessage: vi.fn(),
-  },
-  secrets: {
-    get: vi.fn(),
-    store: vi.fn(),
-    delete: vi.fn(),
-  },
-  extensions: {
-    all: [],
-  },
-}));
+  };
+  return {
+    Uri: {
+      file: (fsPath: string) => ({ fsPath }),
+    },
+    workspace,
+    commands: {
+      executeCommand: vi.fn(),
+    },
+    window: {
+      activeTextEditor: null,
+      showInformationMessage: vi.fn(),
+      showWarningMessage: vi.fn(),
+    },
+    secrets: {
+      get: vi.fn(),
+      store: vi.fn(),
+      delete: vi.fn(),
+    },
+    extensions: {
+      all: [],
+    },
+  };
+});
 
 import { AgentRuntime } from "../src/agent/runtime/AgentRuntime";
 import type { AgentConfig } from "../src/config/AgentConfig";
@@ -354,7 +357,7 @@ describe("AgentRuntime", () => {
 
     const vscodeApi = await import("vscode");
     const previousWorkspaceFolders = vscodeApi.workspace.workspaceFolders;
-    vscodeApi.workspace.workspaceFolders = [
+    (vscodeApi.workspace as any).workspaceFolders = [
       { uri: { fsPath: tempRoot } },
     ] as any;
     const createDirectory = vi.mocked(vscodeApi.workspace.fs.createDirectory);
@@ -448,11 +451,11 @@ describe("AgentRuntime", () => {
       );
       expect(writeFile).toHaveBeenCalledTimes(1);
     } finally {
-      vscodeApi.workspace.workspaceFolders = previousWorkspaceFolders;
+      (vscodeApi.workspace as any).workspaceFolders = previousWorkspaceFolders;
     }
   });
 
-  it("preserves token accounting during explainText", async () => {
+  it("counts token usage during explainText", async () => {
     const tempRoot = fs.mkdtempSync(
       path.join(os.tmpdir(), "pulse-runtime-explain-token-test-"),
     );
@@ -547,10 +550,11 @@ describe("AgentRuntime", () => {
     const result = await runtime.explainText("const value = 1;");
 
     expect(result.text).toBe("Explanation text.");
-    expect((runtime as any).tokensConsumed).toBe(480);
-    expect((runtime as any).activeTokenSessionId).toBe("session-a");
-    expect(tokenUpdates).toHaveLength(0);
+    // Token accounting now correctly accumulates explain tokens
+    expect((runtime as any).tokensConsumed).toBe(480 + 35);
     expect(provider.chat).toHaveBeenCalledTimes(1);
+    // Token callback should have been called with the updated total
+    expect(tokenUpdates.length).toBeGreaterThan(0);
   });
 
   it("cancels queued tasks instead of starting them after abort", async () => {

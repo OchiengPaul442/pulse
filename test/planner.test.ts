@@ -28,5 +28,6 @@ describe("Planner", () => {
     expect(plan.todos.length).toBeGreaterThan(0);
     expect(plan.steps.length).toBeGreaterThan(0);
     expect(plan.assumptions.length).toBeGreaterThan(0);
+    expect(plan.isFallback).toBe(true);
   });
 });

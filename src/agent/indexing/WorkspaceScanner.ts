@@ -78,48 +78,92 @@ export class WorkspaceScanner {
       return allPaths.slice(0, limit);
     }
 
-    // Score each file path based on keyword matches
+    // ── IDF-like term weighting ────────────────────────────────────
+    // Count how many file paths contain each keyword (document frequency).
+    // Keywords that appear in fewer paths are more discriminating.
+    const docFreq = new Map<string, number>();
+    for (const kw of keywords) {
+      let count = 0;
+      for (const fp of allPaths) {
+        if (fp.toLowerCase().includes(kw)) {
+          count++;
+        }
+      }
+      // IDF = log(N / (1 + df))  — +1 avoids division by zero
+      docFreq.set(kw, Math.log(allPaths.length / (1 + count)));
+    }
+
+    // ── Fetch modification times for recency bonus ─────────────────
+    // Sample up to 500 files to keep this fast; uses Promise.allSettled
+    // so we don't block on unreadable files.
+    const recencyMap = new Map<string, number>();
+    const statBatch = files.slice(0, 500);
+    const stats = await Promise.allSettled(
+      statBatch.map(async (file) => {
+        const stat = await vscode.workspace.fs.stat(file);
+        return { fsPath: file.fsPath, mtime: stat.mtime };
+      }),
+    );
+    let latestMtime = 0;
+    for (const result of stats) {
+      if (result.status === "fulfilled") {
+        recencyMap.set(result.value.fsPath, result.value.mtime);
+        if (result.value.mtime > latestMtime) {
+          latestMtime = result.value.mtime;
+        }
+      }
+    }
+    // Age window: files modified within the last 24 hours get the full
+    // recency bonus; files older than 7 days get none.
+    const ONE_DAY = 86_400_000;
+    const RECENCY_WINDOW = 7 * ONE_DAY;
+
+    // Score each file path based on keyword matches + IDF + recency
     const scored = allPaths.map((filePath) => {
       const lower = filePath.toLowerCase();
-      const basename = lower.split(/[/\\]/).pop() ?? "";
+      const segments = lower.split(/[/\\]/);
+      const basename = segments.pop() ?? "";
       const ext = basename.split(".").pop() ?? "";
       let score = 0;
 
       for (const kw of keywords) {
+        const idf = docFreq.get(kw) ?? 1;
+
         // Exact filename match (highest signal)
         if (basename === kw || basename.startsWith(kw + ".")) {
-          score += 10;
+          score += 10 * idf;
         }
         // Basename contains keyword
         else if (basename.includes(kw)) {
-          score += 5;
+          score += 5 * idf;
         }
         // Directory path contains keyword
         else if (lower.includes(kw)) {
-          score += 2;
+          score += 2 * idf;
         }
       }
 
-      // Boost source files over configs/docs
-      if (
-        [
-          "ts",
-          "tsx",
-          "js",
-          "jsx",
-          "py",
-          "java",
-          "rs",
-          "go",
-          "cs",
-          "cpp",
-          "c",
-          "rb",
-          "vue",
-          "svelte",
-        ].includes(ext)
-      ) {
-        score += 1;
+      // ── File-type weighting ────────────────────────────────────
+      if (SOURCE_EXTENSIONS.has(ext)) {
+        score += 1.5;
+      } else if (CONFIG_EXTENSIONS.has(ext)) {
+        score += 0.5;
+      }
+
+      // ── Recency bonus (0 – 3 points) ─────────────────────────
+      const mtime = recencyMap.get(filePath);
+      if (mtime !== undefined && latestMtime > 0) {
+        const age = latestMtime - mtime;
+        if (age < RECENCY_WINDOW) {
+          score += 3 * (1 - age / RECENCY_WINDOW);
+        }
+      }
+
+      // ── Path depth penalty ────────────────────────────────────
+      // Very deep files (> 5 segments) are slightly less likely to be
+      // the "right" file for a broad query.
+      if (segments.length > 5) {
+        score -= 0.5 * (segments.length - 5);
       }
 
       return { filePath, score };
@@ -327,4 +371,40 @@ const STOP_WORDS = new Set([
   "need",
   "make",
   "should",
+]);
+
+const SOURCE_EXTENSIONS = new Set([
+  "ts",
+  "tsx",
+  "js",
+  "jsx",
+  "mts",
+  "mjs",
+  "py",
+  "java",
+  "rs",
+  "go",
+  "cs",
+  "cpp",
+  "c",
+  "rb",
+  "vue",
+  "svelte",
+  "swift",
+  "kt",
+  "scala",
+]);
+
+const CONFIG_EXTENSIONS = new Set([
+  "json",
+  "yaml",
+  "yml",
+  "toml",
+  "xml",
+  "ini",
+  "cfg",
+  "env",
+  "lock",
+  "md",
+  "txt",
 ]);
