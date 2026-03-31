@@ -177,10 +177,6 @@ export class AgentRuntime {
 
   private activeTokenSessionId: string | null = null;
 
-  private progressCallback: ((step: AgentProgressStep) => void) | null = null;
-
-  private tokenCallback: ((snapshot: TokenSnapshot) => void) | null = null;
-
   private readonly workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri;
 
   /** Simple concurrency gate — only one task runs at a time. */
@@ -206,10 +202,6 @@ export class AgentRuntime {
 
   /** Tool enable/disable map set from the UI. All tools enabled by default. */
   private enabledToolsMap: Record<string, boolean> = {};
-
-  /** Throttle marker for reasoning pulse updates in the progress UI. */
-  private lastReasoningPulseAt = 0;
-  private lastReasoningPulseMessage = "";
 
   public constructor(
     config: AgentConfig,
@@ -283,62 +275,18 @@ export class AgentRuntime {
   public setProgressCallback(
     cb: ((step: AgentProgressStep) => void) | null,
   ): void {
-    this.progressCallback = cb;
     this.broadcaster.setProgressCallback(cb);
   }
 
   public setTokenCallback(
     cb: ((snapshot: TokenSnapshot) => void) | null,
   ): void {
-    this.tokenCallback = cb;
     this.broadcaster.setTokenCallback(cb);
   }
 
-  private streamCallback: ((chunk: string) => void) | null = null;
-
   public setStreamCallback(cb: ((chunk: string) => void) | null): void {
-    this.streamCallback = cb;
     this.broadcaster.setStreamCallback(cb);
   }
-
-  private emitStreamChunk(chunk: string): void {
-    this.streamCallback?.(chunk);
-  }
-
-  private emitProgress(step: string, detail?: string, icon = "\u25B8"): void {
-    this.progressCallback?.({ icon, step, detail });
-  }
-
-  private emitFilePatch(filename: string, lineCount: number): void {
-    this.progressCallback?.({
-      icon: "✏️",
-      step: "Generating patch",
-      detail: filename,
-      kind: "file_patch",
-      file: filename,
-      lineCount,
-    });
-  }
-
-  private emitFilePatched(filename: string, linesAdded: number): void {
-    this.progressCallback?.({
-      icon: "✅",
-      step: "Edited",
-      detail: filename,
-      kind: "file_patched",
-      file: filename,
-      linesAdded,
-      linesRemoved: 0,
-    });
-  }
-
-  private terminalOutputCallback:
-    | ((data: {
-        command: string;
-        output: string;
-        exitCode: number | null;
-      }) => void)
-    | null = null;
 
   public setTerminalOutputCallback(
     cb:
@@ -349,114 +297,7 @@ export class AgentRuntime {
         }) => void)
       | null,
   ): void {
-    this.terminalOutputCallback = cb;
     this.broadcaster.setTerminalOutputCallback(cb);
-  }
-
-  private emitTerminalRun(command: string): void {
-    this.progressCallback?.({
-      icon: "\u25B6",
-      step: "Terminal",
-      detail: command,
-      kind: "terminal",
-    });
-  }
-
-  private emitReasoningChunk(chunk: string): void {
-    const cleaned = this.sanitizeReasoningChunk(chunk);
-    if (!cleaned) {
-      return;
-    }
-
-    this.progressCallback?.({
-      icon: "\u25B8",
-      step: "Reasoning",
-      detail: cleaned.slice(0, 240),
-      kind: "reasoning",
-    });
-  }
-
-  private emitReasoningPulse(
-    message = "Thinking through the next action...",
-  ): void {
-    const cleaned = this.sanitizeReasoningChunk(message);
-    if (!cleaned) {
-      return;
-    }
-
-    const now = Date.now();
-    const repeated = cleaned === this.lastReasoningPulseMessage;
-    const minIntervalMs = repeated ? 6000 : 1200;
-    if (now - this.lastReasoningPulseAt < minIntervalMs) {
-      return;
-    }
-    this.lastReasoningPulseAt = now;
-    this.lastReasoningPulseMessage = cleaned;
-
-    this.progressCallback?.({
-      icon: "\u25B8",
-      step: "Reasoning",
-      detail: cleaned,
-      kind: "reasoning",
-    });
-  }
-
-  private sanitizeReasoningChunk(chunk: string): string {
-    const trimmed = chunk.trim();
-    if (!trimmed) {
-      return "";
-    }
-
-    // Hide raw schema-token streaming fragments from structured JSON mode.
-    if (/^[\s{}\[\]",:]+$/.test(trimmed)) {
-      return "";
-    }
-
-    if (
-      /^"?(response|todos|toolCalls|tool_calls|edits|shortcuts|activeTodoId|todoId)"?\s*:?$/i.test(
-        trimmed,
-      )
-    ) {
-      return "";
-    }
-
-    if (
-      (trimmed.startsWith("{") || trimmed.startsWith("[")) &&
-      /"(response|todos|toolCalls|tool_calls|edits|shortcuts)"/i.test(trimmed)
-    ) {
-      return "";
-    }
-
-    return trimmed;
-  }
-
-  private emitTodoUpdate(todos: TaskTodo[]): void {
-    this.progressCallback?.({
-      icon: "\u2611",
-      step: "Updating TODOs",
-      kind: "todo_update",
-      todos,
-    });
-  }
-
-  private emitFilesChanged(
-    files: Array<{ path: string; additions: number; deletions: number }>,
-  ): void {
-    this.progressCallback?.({
-      icon: "\uD83D\uDCC4",
-      step: "Files changed",
-      kind: "files_changed",
-      files,
-    });
-  }
-
-  private emitTokenUpdate(): void {
-    if (!this.tokenCallback) return;
-    const budget = this.currentConfig.maxContextTokens;
-    const consumed = this.tokensConsumed;
-    const percent =
-      budget > 0 ? Math.min(100, Math.round((consumed / budget) * 100)) : 0;
-    this.tokenCallback({ consumed, budget, percent });
   }
 
   /** Persona-aware system prompt prefix. */
@@ -878,8 +719,7 @@ export class AgentRuntime {
         if (controller.signal.aborted) {
           return this.makeCancelledResult(normalizedRequest.objective);
         }
-        this.lastReasoningPulseAt = 0;
-        this.lastReasoningPulseMessage = "";
+        this.broadcaster.resetReasoningState();
         this.activeTaskController = controller;
         return this.executeTask(normalizedRequest, controller.signal);
       })
@@ -937,7 +777,7 @@ export class AgentRuntime {
       if (signal?.aborted) throw new Error("__TASK_CANCELLED__");
     };
     checkAborted();
-    this.emitProgress("Starting", "Initializing session context", "\u25B8");
+    this.broadcaster.emitProgress("Starting", "Initializing session context", "\u25B8");
     let session = await this.sessionStore.getActiveSession();
     if (!session) {
       session = await this.sessionStore.createSession(objective, {
@@ -955,7 +795,7 @@ export class AgentRuntime {
       const budget = Math.max(this.currentConfig.maxContextTokens, 1);
       const usageRatio = this.tokensConsumed / budget;
       if (usageRatio >= 0.9) {
-        this.emitProgress(
+        this.broadcaster.emitProgress(
           "Context reset",
           "Token budget reached, resetting context window",
           "\u21BB",
@@ -1010,7 +850,7 @@ export class AgentRuntime {
     const inventoryRequest = this.isWorkspaceDiscoveryObjective(objective);
 
     if (inventoryRequest) {
-      this.emitProgress(
+      this.broadcaster.emitProgress(
         "Scanning workspace",
         "Listing project files",
         "\u25CB",
@@ -1048,7 +888,7 @@ export class AgentRuntime {
     }
 
     if (mode === "ask") {
-      this.emitProgress(
+      this.broadcaster.emitProgress(
         "Ask mode",
         "Preparing conversational response",
         "\u25CB",
@@ -1062,21 +902,21 @@ export class AgentRuntime {
         ]);
       const agentAwareness = this.improvementEngine.getAgentAwarenessHints();
       if (webResearch) {
-        this.emitProgress(
+        this.broadcaster.emitProgress(
           "Web research",
           webResearch.query ?? "searching",
           "\u25CB",
         );
       }
-      this.emitProgress("Generating response", model, "\u25B8");
+      this.broadcaster.emitProgress("Generating response", model, "\u25B8");
       const taskStart = Date.now();
       checkAborted();
       const response = await this.provider.chat({
         model,
         signal,
         onChunk: (chunk) => {
-          this.emitReasoningChunk(chunk);
-          this.emitStreamChunk(chunk);
+          this.broadcaster.emitReasoningChunk(chunk);
+          this.broadcaster.emitStreamChunk(chunk);
         },
         messages: [
           {
@@ -1149,21 +989,21 @@ export class AgentRuntime {
     }
 
     if (mode === "plan") {
-      this.emitProgress("Plan mode", "Preparing structured plan", "\u25A0");
+      this.broadcaster.emitProgress("Plan mode", "Preparing structured plan", "\u25A0");
       const [plannerModel, webResearch] = await Promise.all([
         this.resolveModelOrFallback(this.currentConfig.plannerModel),
         this.collectWebResearch(objective, mode),
       ]);
       if (webResearch) {
-        this.emitProgress(
+        this.broadcaster.emitProgress(
           "Web research",
           webResearch.query ?? "searching",
           "\u25CB",
         );
       }
-      this.emitProgress("Building plan", plannerModel, "\u25A0");
+      this.broadcaster.emitProgress("Building plan", plannerModel, "\u25A0");
       const plan = await this.planner.createPlan(objective, plannerModel);
-      this.emitProgress("Saving plan artifact", undefined, "\u25CB");
+      this.broadcaster.emitProgress("Saving plan artifact", undefined, "\u25CB");
       const artifactPath = await this.writePlanArtifact(
         objective,
         plan,
@@ -1194,7 +1034,7 @@ export class AgentRuntime {
     }
 
     if (!allowEdits) {
-      this.emitProgress(
+      this.broadcaster.emitProgress(
         "Generating response",
         this.currentConfig.fastModel,
         "\u25B8",
@@ -1212,8 +1052,8 @@ export class AgentRuntime {
         model,
         signal,
         onChunk: (chunk) => {
-          this.emitReasoningChunk(chunk);
-          this.emitStreamChunk(chunk);
+          this.broadcaster.emitReasoningChunk(chunk);
+          this.broadcaster.emitStreamChunk(chunk);
         },
         messages: [
           {
@@ -1285,7 +1125,7 @@ export class AgentRuntime {
       };
     }
 
-    this.emitProgress("Agent mode", "Analyzing request", "\u25B8");
+    this.broadcaster.emitProgress("Agent mode", "Analyzing request", "\u25B8");
     const taskStartAgent = Date.now();
     const agentResult = await this.runAgentWorkflow(
       objective,
@@ -2034,12 +1874,12 @@ export class AgentRuntime {
       budget,
       this.tokensConsumed + Math.max(usage.totalTokens, 0),
     );
-    this.emitTokenUpdate();
+    this.broadcaster.emitTokenUpdate(this.tokensConsumed, this.currentConfig.maxContextTokens);
   }
 
   private resetTokenUsage(): void {
     this.tokensConsumed = 0;
-    this.emitTokenUpdate();
+    this.broadcaster.emitTokenUpdate(this.tokensConsumed, this.currentConfig.maxContextTokens);
   }
 
   /**
@@ -2672,7 +2512,7 @@ export class AgentRuntime {
     ]);
     const agentAwarenessAgent = this.improvementEngine.getAgentAwarenessHints();
     if (webResearch) {
-      this.emitProgress(
+      this.broadcaster.emitProgress(
         "Web research",
         webResearch.query ?? "searching",
         "\u25CB",
@@ -2710,20 +2550,20 @@ export class AgentRuntime {
     const shortcutSummary = formatShortcutHints(optionalShortcuts);
     const primarySkillName = selectedSkills.primary?.name ?? "None";
     if (planningModel !== plannerModel) {
-      this.emitProgress(
+      this.broadcaster.emitProgress(
         "Low-VRAM speed",
         `Using ${planningModel} for planning and editing`,
         "⚡",
       );
     }
-    this.emitProgress("Building plan", planningModel, "\u25A0");
+    this.broadcaster.emitProgress("Building plan", planningModel, "\u25A0");
     const plan = await this.planner.createPlan(objective, planningModel, {
       keepAlive: profileDefaults.plannerKeepAlive,
       numCtx: profileDefaults.numCtx,
     });
 
     if (plan.isFallback) {
-      this.emitProgress(
+      this.broadcaster.emitProgress(
         "Plan fallback",
         "Planner model failed — using generic fallback plan",
         "\u26A0",
@@ -2737,7 +2577,7 @@ export class AgentRuntime {
       planningModel !== editorModel &&
       this.provider.providerType === "ollama"
     ) {
-      this.emitProgress("Freeing VRAM", `Unloading ${planningModel}`, "\u21BB");
+      this.broadcaster.emitProgress("Freeing VRAM", `Unloading ${planningModel}`, "\u21BB");
       await (this.provider as OllamaProvider).unloadModel(planningModel);
     }
 
@@ -2897,7 +2737,7 @@ export class AgentRuntime {
     let retried = false;
     const toolFailureCounts = new Map<string, number>();
     for (let iteration = 0; iteration < MAX_AGENT_ITERATIONS; iteration += 1) {
-      this.emitProgress(
+      this.broadcaster.emitProgress(
         iteration === 0 ? "Generating response" : "Continuing",
         `${editorModel} (step ${iteration + 1})`,
         "\u25B8",
@@ -2940,10 +2780,10 @@ export class AgentRuntime {
           numCtx: profileDefaults.numCtx,
           signal: iterationAbort.signal,
           onChunk: (chunk) => {
-            this.emitReasoningPulse(
+            this.broadcaster.emitReasoningPulse(
               "Reasoning through tools and code changes...",
             );
-            this.emitStreamChunk(chunk);
+            this.broadcaster.emitStreamChunk(chunk);
           },
           messages: isFollowUp
             ? [
@@ -2973,7 +2813,7 @@ export class AgentRuntime {
       } catch (err: unknown) {
         if (iterationAbort.signal.aborted && !signal?.aborted) {
           // Iteration-level timeout — log and break out with whatever we have
-          this.emitProgress(
+          this.broadcaster.emitProgress(
             "Timeout",
             `Iteration ${iteration + 1} timed out`,
             "⚠️",
@@ -3001,7 +2841,7 @@ export class AgentRuntime {
             768,
             Math.floor(profileDefaults.followUpMaxTokens * 0.6),
           );
-          this.emitProgress(
+          this.broadcaster.emitProgress(
             "Reducing context",
             `Retrying with num_ctx=${profileDefaults.numCtx}`,
             "\u21BB",
@@ -3018,7 +2858,7 @@ export class AgentRuntime {
       // Auto-reset context if budget exhausted mid-loop
       const midBudget = Math.max(this.currentConfig.maxContextTokens, 1);
       if (this.tokensConsumed / midBudget >= 0.95) {
-        this.emitProgress(
+        this.broadcaster.emitProgress(
           "Context reset",
           "Token budget near limit, resetting for next iteration",
           "\u21BB",
@@ -3049,7 +2889,7 @@ export class AgentRuntime {
 
       // Emit progressive todo updates so the UI shows them evolving
       if (parsed.todos.length > 0) {
-        this.emitTodoUpdate(parsed.todos);
+        this.broadcaster.emitTodoUpdate(parsed.todos);
       }
 
       requestedVerification ||= parsed.toolCalls.some(
@@ -3149,7 +2989,7 @@ export class AgentRuntime {
         toolTrace.push(...observations);
         const maxObs = profileDefaults.numCtx <= 4096 ? 3 : 5;
         toolContext = formatToolObservations(toolTrace.slice(-maxObs));
-        this.emitProgress(
+        this.broadcaster.emitProgress(
           "Tool results",
           `${observations.length} observation(s) collected`,
           "\u25CB",
@@ -3199,7 +3039,7 @@ export class AgentRuntime {
           pendingTodos.length > 0 &&
           noActionCount >= profileDefaults.noActionThreshold
         ) {
-          this.emitProgress(
+          this.broadcaster.emitProgress(
             "Auto-bootstrap",
             "Repeated tool failures — injecting workspace context",
             "\u21BB",
@@ -3244,7 +3084,7 @@ export class AgentRuntime {
         pendingTodos.length > 0 &&
         noActionCount >= profileDefaults.noActionThreshold
       ) {
-        this.emitProgress(
+        this.broadcaster.emitProgress(
           "Auto-bootstrap",
           "Model stalled — injecting workspace context",
           "\u21BB",
@@ -3313,7 +3153,7 @@ export class AgentRuntime {
     for (const edit of dedupedEdits) {
       const basename = path.basename(edit.filePath);
       const lineCount = (edit.content ?? "").split("\n").length;
-      this.emitFilePatch(basename, lineCount);
+      this.broadcaster.emitFilePatch(basename, lineCount);
 
       // Read current file content (may have been written during loop)
       let currentContent: string | null = null;
@@ -3351,7 +3191,7 @@ export class AgentRuntime {
     ];
 
     if (allFileChanges.length > 0) {
-      this.emitFilesChanged(allFileChanges);
+      this.broadcaster.emitFilesChanged(allFileChanges);
     }
 
     // Only create proposals for edits NOT yet applied during the loop
@@ -3370,14 +3210,14 @@ export class AgentRuntime {
       for (const edit of unappliedEdits) {
         const basename = path.basename(edit.filePath);
         const linesAdded = (edit.content ?? "").split("\n").length;
-        this.emitFilePatched(basename, linesAdded);
+        this.broadcaster.emitFilePatched(basename, linesAdded);
       }
     }
 
     // Edits applied during the loop are already on disk
     let autoApplied = allAccumulatedEdits.length > 0;
     if (proposal && this.shouldAutoApplyProposal(unappliedEdits)) {
-      this.emitProgress(
+      this.broadcaster.emitProgress(
         "Auto-applying edits",
         "Safe workspace edits",
         "\u2713",
@@ -3410,7 +3250,7 @@ export class AgentRuntime {
       )
     ) {
       this.finalizeIncompleteTodos(finalTodos, MAX_AGENT_ITERATIONS);
-      this.emitTodoUpdate(finalTodos);
+      this.broadcaster.emitTodoUpdate(finalTodos);
     }
 
     return {
@@ -4106,7 +3946,7 @@ export class AgentRuntime {
 
     for (const command of commands.slice(0, 3)) {
       checkAborted();
-      this.emitProgress("Verification", command, "\u25CB");
+      this.broadcaster.emitProgress("Verification", command, "\u25CB");
       const result = await this.executeTerminalCommand(command, {
         cwd: this.workspaceRoot?.fsPath,
         timeoutMs: 120_000,
@@ -4289,7 +4129,7 @@ export class AgentRuntime {
             Buffer.from(normalized.content ?? "", "utf8"),
           );
           const basename = path.basename(normalized.filePath);
-          this.emitFilePatched(
+          this.broadcaster.emitFilePatched(
             basename,
             (normalized.content ?? "").split("\n").length,
           );
@@ -4473,7 +4313,7 @@ export class AgentRuntime {
     }
 
     // Emit updated statuses
-    this.emitTodoUpdate(todos);
+    this.broadcaster.emitTodoUpdate(todos);
   }
 
   private shouldAutoApplyProposal(edits: ProposedEdit[]): boolean {

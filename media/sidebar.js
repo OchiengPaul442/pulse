@@ -41,6 +41,7 @@
   var conversationMode = 'agent', inChat = false;
   var activeModelName = '', permMode = 'default';
   var autoRestoreSessionAttempted = false;
+  var offlineRetryTimer = null;
   var thinkingSteps = [], thinkingStartTime = null;
   var modePopupOpen = false, modelPopupOpen = false, permPopupOpen = false;
   var isBusy = false;
@@ -929,6 +930,14 @@
     if (s && s.activeSessionId && !inChat && !autoRestoreSessionAttempted) {
       autoRestoreSessionAttempted = true;
       vscode.postMessage({ type: 'openSession', payload: s.activeSessionId });
+    }
+    // When offline, schedule a fast retry to detect Ollama coming online
+    if (!ok && !offlineRetryTimer) {
+      offlineRetryTimer = setInterval(function() { vscode.postMessage({ type: 'ping' }); }, 5000);
+    }
+    if (ok && offlineRetryTimer) {
+      clearInterval(offlineRetryTimer);
+      offlineRetryTimer = null;
     }
   }
 

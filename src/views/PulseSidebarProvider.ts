@@ -18,22 +18,29 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
   ) {}
 
   public resolveWebviewView(webviewView: vscode.WebviewView): void {
+    try {
+      this.resolveWebviewViewInner(webviewView);
+    } catch (err) {
+      this.logger.error(
+        `Sidebar initialization failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      try {
+        webviewView.webview.html = `<html><body><p>Pulse failed to initialize. Check Output &gt; Pulse for details.</p></body></html>`;
+      } catch {
+        // Even the fallback HTML failed — nothing we can do
+      }
+    }
+  }
+
+  private resolveWebviewViewInner(webviewView: vscode.WebviewView): void {
     webviewView.webview.options = {
       enableScripts: true,
       localResourceRoots: [this.extensionUri],
     };
 
-    void this.runtime
-      .summary()
-      .then((summary) => {
-        webviewView.webview.html = this.buildHtml(webviewView.webview, summary);
-      })
-      .catch((error) => {
-        this.logger.warn(
-          `Failed to load initial sidebar summary: ${error instanceof Error ? error.message : String(error)}`,
-        );
-        webviewView.webview.html = this.buildHtml(webviewView.webview, null);
-      });
+    // Set HTML synchronously so webview renders immediately;
+    // real state is pushed once the webview signals "webviewReady".
+    webviewView.webview.html = this.buildHtml(webviewView.webview, null);
 
     // ── Push the full runtime state to the webview ─────────────────────
     let pushInFlight = false;
@@ -54,6 +61,7 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
       modelCount: 0,
       activeSessionId: null,
       hasPendingEdits: false,
+      pendingEditCount: 0,
       tokenBudget: 32000,
       tokensConsumed: 0,
       tokenUsagePercent: 0,
@@ -71,8 +79,9 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
       pushInFlight = true;
 
       try {
-        // Refresh in background so UI state can render immediately.
-        void this.runtime.refreshProviderState().catch((err) => {
+        // Refresh provider health BEFORE reading summary so the status
+        // reflects the current Ollama state rather than stale cached health.
+        await this.runtime.refreshProviderState().catch((err) => {
           this.logger.warn(
             `refreshProviderState failed: ${err instanceof Error ? err.message : String(err)}`,
           );

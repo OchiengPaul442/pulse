@@ -155,25 +155,29 @@ export class ImprovementEngine {
     const weaknesses: string[] = [];
     const adjustments: string[] = [];
 
-    // Heuristic self-assessment
-    const hasCode = responseText.includes("```");
+    // Heuristic self-assessment (requires responseText for content analysis)
+    const hasResponseText = responseText.length > 0;
+    const hasCode = hasResponseText && responseText.includes("```");
     const hasExplanation = responseText.length > 200;
     const responseLen = responseText.length;
     const isDetailed = responseLen > 800;
     const isTruncated =
-      responseText.endsWith("..") ||
-      responseText.endsWith("…") ||
-      responseLen < 50;
+      hasResponseText &&
+      (responseText.endsWith("..") ||
+        responseText.endsWith("…") ||
+        responseLen < 50);
     const hasEdits =
-      responseText.includes("edit") ||
-      responseText.includes("wrote") ||
-      responseText.includes("created") ||
-      responseText.includes("modified");
+      hasResponseText &&
+      (responseText.includes("edit") ||
+        responseText.includes("wrote") ||
+        responseText.includes("created") ||
+        responseText.includes("modified"));
     const hasToolUsage =
-      responseText.includes("ran") ||
-      responseText.includes("executed") ||
-      responseText.includes("verified") ||
-      responseText.includes("checked");
+      hasResponseText &&
+      (responseText.includes("ran") ||
+        responseText.includes("executed") ||
+        responseText.includes("verified") ||
+        responseText.includes("checked"));
 
     if (success) strengths.push("Task completed without errors");
     else weaknesses.push("Task encountered errors during execution");
@@ -183,6 +187,7 @@ export class ImprovementEngine {
     else if (hasCode && !hasExplanation)
       weaknesses.push("Code provided without sufficient explanation");
     else if (
+      hasResponseText &&
       !hasCode &&
       objective
         .toLowerCase()
@@ -564,21 +569,11 @@ export class ImprovementEngine {
   public async runSelfImprovementCycle(): Promise<void> {
     const state = await this.load();
     if (state.outcomes.length === 0) return;
-    // Reflect on the most recent outcome if not already reflected
-    const latest = state.outcomes[state.outcomes.length - 1];
-    if (latest && !state.reflections.some((r) => r.outcomeId === latest.id)) {
-      await this.reflectOnTask(
-        latest.id,
-        latest.objective,
-        "",
-        latest.success,
-        latest.durationMs,
-      );
-    }
-    // Evolve strategies from all accumulated data
-    const freshState = await this.load();
-    await this.evolveStrategies(freshState);
-    await this.save(freshState);
+    // Evolve strategies from all accumulated data (reflections are
+    // created by the main task path which has the actual responseText;
+    // we skip reflection here to avoid empty-text heuristic noise).
+    await this.evolveStrategies(state);
+    await this.save(state);
   }
 
   // ── Private: strategy evolution ────────────────────────────────

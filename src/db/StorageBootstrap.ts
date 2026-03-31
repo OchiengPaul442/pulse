@@ -48,7 +48,11 @@ export async function bootstrapStorage(
     preferences: {},
   });
   await ensureJsonFile(editsPath, { pendingProposal: null, lastApplied: null });
-  await ensureJsonFile(improvementPath, { outcomes: [] });
+  await ensureJsonFile(improvementPath, {
+    outcomes: [],
+    strategies: [],
+    reflections: [],
+  });
 
   logger.info(`Storage initialized at ${storageDir}`);
 

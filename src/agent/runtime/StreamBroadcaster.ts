@@ -52,6 +52,11 @@ export class StreamBroadcaster {
     this.terminalOutputCallback = cb;
   }
 
+  public resetReasoningState(): void {
+    this.lastReasoningPulseAt = 0;
+    this.lastReasoningPulseMessage = "";
+  }
+
   // ── Stream & progress emitters ─────────────────────────────────
 
   public emitStreamChunk(chunk: string): void {
@@ -169,6 +174,14 @@ export class StreamBroadcaster {
     if (!trimmed) return "";
 
     if (/^[\s{}\[\]",:]+$/.test(trimmed)) return "";
+
+    if (
+      /^"?(response|todos|toolCalls|tool_calls|edits|shortcuts|activeTodoId|todoId)"?\s*:?$/i.test(
+        trimmed,
+      )
+    ) {
+      return "";
+    }
 
     if (
       (trimmed.startsWith("{") || trimmed.startsWith("[")) &&

@@ -39,43 +39,59 @@ export async function activate(
   const logger = createLogger();
   context.subscriptions.push({ dispose: () => logger.dispose() });
 
-  logger.info("Activating Pulse extension...");
+  try {
+    logger.info("Activating Pulse extension...");
 
-  const config = getAgentConfig();
-  const provider = createProvider(
-    config.providerType,
-    config.ollamaBaseUrl,
-    config.openaiBaseUrl,
-    config.openaiApiKey,
-    config.openaiModels,
-  );
-  const storage = await bootstrapStorage(context, logger);
-  const webSearchService = new WebSearchService(context.secrets, logger);
-  const runtime = new AgentRuntime(
-    config,
-    storage,
-    logger,
-    webSearchService,
-    provider,
-  );
-  await runtime.initialize();
+    const config = getAgentConfig();
+    const provider = createProvider(
+      config.providerType,
+      config.ollamaBaseUrl,
+      config.openaiBaseUrl,
+      config.openaiApiKey,
+      config.openaiModels,
+    );
+    const storage = await bootstrapStorage(context, logger);
+    const webSearchService = new WebSearchService(context.secrets, logger);
+    const runtime = new AgentRuntime(
+      config,
+      storage,
+      logger,
+      webSearchService,
+      provider,
+    );
 
-  const sidebarProvider = new PulseSidebarProvider(
-    context.extensionUri,
-    runtime,
-    logger,
-  );
-  context.subscriptions.push(
-    vscode.window.registerWebviewViewProvider(
-      PulseSidebarProvider.viewType,
-      sidebarProvider,
-      { webviewOptions: { retainContextWhenHidden: true } },
-    ),
-  );
+    // Register sidebar and commands BEFORE initialize() so the UI is
+    // always available — even if the provider health check fails or times out.
+    const sidebarProvider = new PulseSidebarProvider(
+      context.extensionUri,
+      runtime,
+      logger,
+    );
+    context.subscriptions.push(
+      vscode.window.registerWebviewViewProvider(
+        PulseSidebarProvider.viewType,
+        sidebarProvider,
+        { webviewOptions: { retainContextWhenHidden: true } },
+      ),
+    );
+    registerCommands(context, runtime, logger);
 
-  registerCommands(context, runtime, logger);
+    // Initialize in background — failures leave the UI in degraded mode
+    // rather than killing the entire extension.
+    await runtime.initialize().catch((err: unknown) => {
+      const msg = err instanceof Error ? err.message : String(err);
+      logger.error(`Runtime initialization failed: ${msg}`);
+      vscode.window.showWarningMessage(
+        `Pulse initialized in degraded mode: ${msg}`,
+      );
+    });
 
-  logger.info("Pulse extension activated.");
+    logger.info("Pulse extension activated.");
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    logger.error(`Pulse activation failed: ${msg}`);
+    vscode.window.showErrorMessage(`Pulse failed to activate: ${msg}`);
+  }
 }
 
 export function deactivate(): void {

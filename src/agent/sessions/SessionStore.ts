@@ -180,7 +180,7 @@ export class SessionStore {
 
     found.messages = found.messages.slice(
       0,
-      includeMessage ? index : index + 1,
+      includeMessage ? index + 1 : index,
     );
     this.refreshDerivedFields(found);
     await this.save(state);
