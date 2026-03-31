@@ -2,7 +2,7 @@
   "name": "pulse-agent",
   "displayName": "Pulse Agent",
   "description": "Local offline AI coding agent for VS Code powered by Ollama.",
-  "version": "0.0.99",
+  "version": "0.0.100",
   "publisher": "local",
   "license": "MIT",
   "keywords": [
