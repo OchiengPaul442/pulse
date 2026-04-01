@@ -152,6 +152,10 @@ describe("AgentRuntime", () => {
       AgentRuntime.prototype as any,
       "selfReflectBackground",
     ).mockImplementation(() => undefined);
+    vi.spyOn(
+      AgentRuntime.prototype as any,
+      "bootstrapWorkspaceContext",
+    ).mockResolvedValue([]);
 
     vi.spyOn(Planner.prototype, "createPlan").mockResolvedValue({
       objective: "Create a tiny project",
@@ -1161,10 +1165,121 @@ describe("AgentRuntime", () => {
       true,
     );
 
-    expect(summary).toContain("## Issue");
+    expect(summary).toContain("- Issue:");
     expect(summary).toContain("could conflict");
-    expect(summary).toContain("## Next steps");
+    expect(summary).toContain("- Next steps:");
     expect(summary).toContain("empty directory");
+  });
+
+  it("writes a detailed fallback summary for successful work instead of a generic status line", async () => {
+    const tempRoot = fs.mkdtempSync(
+      path.join(os.tmpdir(), "pulse-runtime-summary-success-test-"),
+    );
+    const storage: StorageState = {
+      storageDir: tempRoot,
+      dbPath: path.join(tempRoot, "db.sqlite"),
+      tracesDir: path.join(tempRoot, "traces"),
+      snapshotsDir: path.join(tempRoot, "snapshots"),
+      sessionsPath: path.join(tempRoot, "sessions.json"),
+      memoriesPath: path.join(tempRoot, "memories.json"),
+      editsPath: path.join(tempRoot, "edits.json"),
+      improvementPath: path.join(tempRoot, "improvement.json"),
+    };
+
+    fs.mkdirSync(storage.tracesDir, { recursive: true });
+    fs.mkdirSync(storage.snapshotsDir, { recursive: true });
+
+    const config: AgentConfig = {
+      ollamaBaseUrl: "http://127.0.0.1:11434",
+      plannerModel: "qwen2.5-coder:7b",
+      editorModel: "qwen2.5-coder:7b",
+      fastModel: "qwen2.5-coder:7b",
+      embeddingModel: "nomic-embed-text",
+      fallbackModels: ["qwen2.5-coder:7b"],
+      approvalMode: "balanced",
+      permissionMode: "default",
+      conversationMode: "agent",
+      persona: "software-engineer",
+      allowTerminalExecution: false,
+      autoRunVerification: false,
+      maxContextTokens: 16384,
+      memoryMode: "off",
+      indexingEnabled: false,
+      indexingMode: "light",
+      mcpServers: [],
+      telemetryOptIn: false,
+      selfLearnEnabled: false,
+      providerType: "ollama",
+      openaiBaseUrl: "",
+      openaiApiKey: "",
+      openaiModels: [],
+      performanceProfile: "auto",
+      qualityTargetScore: 0.9,
+    };
+
+    const runtime = new AgentRuntime(
+      config,
+      storage,
+      {
+        info: vi.fn(),
+        warn: vi.fn(),
+        error: vi.fn(),
+      } as any,
+      {
+        search: vi.fn(),
+        formatResult: vi.fn(),
+        setTavilyApiKey: vi.fn(),
+        clearTavilyApiKey: vi.fn(),
+        hasTavilyApiKey: vi.fn(),
+      } as any,
+    );
+
+    const summary = (runtime as any).buildTaskCompletionFallbackSummary(
+      {
+        objective: "Create a Next.js app",
+        rawResponseText: "Task completed.",
+        todos: [],
+        toolTrace: [
+          {
+            tool: "workspace_scan",
+            ok: true,
+            summary: "Loaded workspace inventory (8 files).",
+            detail: "package.json",
+          },
+          {
+            tool: "run_verification",
+            ok: true,
+            summary: "pnpm build exited with 0.",
+            detail: "Build succeeded.",
+          },
+        ],
+        proposal: null,
+        autoApplied: true,
+        fileDiffs: [
+          {
+            fileName: "app/page.tsx",
+            filePath: "app/page.tsx",
+            isNew: false,
+            isDelete: false,
+            hunks: [],
+            additions: 18,
+            deletions: 3,
+          },
+        ],
+        qualityScore: 0.94,
+        qualityTarget: 0.9,
+        meetsQualityTarget: true,
+      },
+      "Task completed.",
+      true,
+    );
+
+    expect(summary).toContain(
+      "Completed the requested work for Create a Next.js app.",
+    );
+    expect(summary).toContain("- What changed:");
+    expect(summary).toContain("app/page.tsx");
+    expect(summary).toContain("- Verification:");
   });
 
   it("keeps plan mode chat output concise instead of duplicating the full plan", async () => {
@@ -1371,9 +1486,128 @@ describe("AgentRuntime", () => {
       true,
     );
 
-    expect(summary).toContain("## Issue");
+    expect(summary).toContain("- Issue:");
     expect(summary).toContain("requested change was not applied");
-    expect(summary).toContain("## Next steps");
+    expect(summary).toContain("- Next steps:");
     expect(summary).toContain("one focused code change at a time");
+  });
+
+  it("treats bare continue requests as a continuation of the active objective", async () => {
+    const tempRoot = fs.mkdtempSync(
+      path.join(os.tmpdir(), "pulse-runtime-continue-test-"),
+    );
+    const storage: StorageState = {
+      storageDir: tempRoot,
+      dbPath: path.join(tempRoot, "db.sqlite"),
+      tracesDir: path.join(tempRoot, "traces"),
+      snapshotsDir: path.join(tempRoot, "snapshots"),
+      sessionsPath: path.join(tempRoot, "sessions.json"),
+      memoriesPath: path.join(tempRoot, "memories.json"),
+      editsPath: path.join(tempRoot, "edits.json"),
+      improvementPath: path.join(tempRoot, "improvement.json"),
+    };
+
+    fs.mkdirSync(storage.tracesDir, { recursive: true });
+    fs.mkdirSync(storage.snapshotsDir, { recursive: true });
+
+    const currentSession: MockSession = {
+      id: "session-continue-1",
+      objective: "Edit the homepage to add a header and footer",
+      title: "Edit the homepage to add a header and footer",
+      messages: [],
+      attachedFiles: [],
+      updatedAt: new Date().toISOString(),
+    };
+
+    const config: AgentConfig = {
+      ollamaBaseUrl: "http://127.0.0.1:11434",
+      plannerModel: "qwen2.5-coder:7b",
+      editorModel: "qwen2.5-coder:7b",
+      fastModel: "qwen2.5-coder:7b",
+      embeddingModel: "nomic-embed-text",
+      fallbackModels: ["qwen2.5-coder:7b"],
+      approvalMode: "balanced",
+      permissionMode: "default",
+      conversationMode: "plan",
+      persona: "software-engineer",
+      allowTerminalExecution: false,
+      autoRunVerification: false,
+      maxContextTokens: 16384,
+      memoryMode: "off",
+      indexingEnabled: false,
+      indexingMode: "light",
+      mcpServers: [],
+      telemetryOptIn: false,
+      selfLearnEnabled: false,
+      providerType: "ollama",
+      openaiBaseUrl: "",
+      openaiApiKey: "",
+      openaiModels: [],
+      performanceProfile: "auto",
+      qualityTargetScore: 0.9,
+    };
+
+    const plannerSpy = vi
+      .spyOn(Planner.prototype, "createPlan")
+      .mockResolvedValue({
+        objective: currentSession.objective,
+        assumptions: [],
+        acceptanceCriteria: [],
+        todos: [],
+        steps: [],
+        taskSlices: [],
+        verification: [],
+      } as any);
+    vi.spyOn(
+      AgentRuntime.prototype as any,
+      "writePlanArtifact",
+    ).mockResolvedValue(null);
+    vi.spyOn(
+      AgentRuntime.prototype as any,
+      "collectWebResearch",
+    ).mockResolvedValue(null);
+    vi.spyOn(
+      AgentRuntime.prototype as any,
+      "persistTaskResult",
+    ).mockResolvedValue(undefined);
+    vi.spyOn(
+      AgentRuntime.prototype as any,
+      "resolveModelOrFallback",
+    ).mockResolvedValue("qwen2.5-coder:7b");
+
+    const sessionMethods = SessionStore.prototype as any;
+    vi.spyOn(sessionMethods, "getActiveSession").mockResolvedValue(
+      currentSession,
+    );
+    vi.spyOn(sessionMethods, "appendMessage").mockResolvedValue(undefined);
+    vi.spyOn(sessionMethods, "getSession").mockResolvedValue(currentSession);
+
+    const runtime = new AgentRuntime(
+      config,
+      storage,
+      {
+        info: vi.fn(),
+        warn: vi.fn(),
+        error: vi.fn(),
+      } as any,
+      {
+        search: vi.fn(),
+        formatResult: vi.fn(),
+        setTavilyApiKey: vi.fn(),
+        clearTavilyApiKey: vi.fn(),
+        hasTavilyApiKey: vi.fn(),
+      } as any,
+    );
+
+    const result = await runtime.runTask({
+      objective: "continue",
+      action: "new",
+    });
+
+    expect(plannerSpy).toHaveBeenCalledWith(
+      currentSession.objective,
+      expect.any(String),
+    );
+    expect(result.objective).toBe(currentSession.objective);
   });
 });

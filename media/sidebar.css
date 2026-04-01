@@ -2051,6 +2051,30 @@ textarea {
   flex-shrink: 0;
   font-variant-numeric: tabular-nums;
 }
+.file-item-actions {
+  display: flex;
+  gap: 4px;
+  flex-shrink: 0;
+}
+.file-item-btn {
+  border: 1px solid var(--border);
+  background: var(--bg2);
+  color: var(--fg2);
+  border-radius: 999px;
+  padding: 2px 7px;
+  font-size: 10px;
+  line-height: 1.2;
+  cursor: pointer;
+  transition:
+    background var(--spd),
+    border-color var(--spd),
+    color var(--spd);
+}
+.file-item-btn:hover {
+  background: rgba(128, 128, 128, 0.12);
+  border-color: var(--accent);
+  color: var(--fg);
+}
 .file-stat-add {
   color: var(--green);
   font-size: 10px;

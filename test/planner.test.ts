@@ -32,4 +32,15 @@ describe("Planner", () => {
     expect(plan.todos[0]?.title).toMatch(/inspect/i);
     expect(plan.todos[1]?.title).not.toBe("Implement the requested changes");
   });
+
+  it("does not force todos for simple direct tasks", async () => {
+    const planner = new Planner(new ThrowingProvider());
+    const plan = await planner.createPlan(
+      "Show git history for src/extension.ts",
+      "model-a",
+    );
+
+    expect(plan.isFallback).toBe(true);
+    expect(plan.todos).toEqual([]);
+  });
 });

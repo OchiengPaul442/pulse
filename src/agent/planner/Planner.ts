@@ -37,11 +37,16 @@ export class Planner {
     model: string,
     options?: { keepAlive?: number; numCtx?: number },
   ): Promise<TaskPlan> {
+    const requireTodos = shouldTrackTodosForObjective(objective);
     const prompt = [
       "Create a JSON plan for a coding agent task. Return valid JSON only.",
       "Fields: objective, assumptions (string[]), acceptanceCriteria (string[]), todos (array of {id, title, status}), steps (array of {id, goal, tools, expectedOutput}), taskSlices (array of {id, title, scope, steps, deliverable, acceptanceCriteria}), verification (array of {type, command}).",
-      "Keep 3-5 todos with short, task-specific imperative titles.",
-      "The first todo should inspect relevant workspace files, but avoid generic titles like 'Scan workspace and read relevant files'.",
+      requireTodos
+        ? "Keep 3-5 todos with short, task-specific imperative titles."
+        : "If the task is a simple single-step action, todos may be empty and the agent can act immediately.",
+      requireTodos
+        ? "The first todo should inspect relevant workspace files, but avoid generic titles like 'Scan workspace and read relevant files'."
+        : "Avoid inventing todo scaffolding for simple direct tasks like show/open/read/history/blame requests.",
       "Todo statuses: 'pending' only (the agent will update them).",
       `Task: ${objective}`,
     ].join("\n");
@@ -69,7 +74,7 @@ export class Planner {
       const parsed = JSON.parse(response.text) as Partial<TaskPlan>;
       const plan = normalizePlan(parsed, objective);
       // Sanity check: if planner returned empty/useless todos, use fallback
-      if (plan.todos.length === 0) {
+      if (plan.todos.length === 0 && requireTodos) {
         return fallbackPlan(objective);
       }
       return plan;
@@ -203,8 +208,9 @@ function normalizeTodos(
   todos: Partial<TaskTodo>[] | undefined,
   objective: string,
 ): TaskTodo[] {
+  const requireTodos = shouldTrackTodosForObjective(objective);
   if (!todos || todos.length === 0) {
-    return buildFallbackTodos(objective);
+    return requireTodos ? buildFallbackTodos(objective) : [];
   }
 
   return todos
@@ -227,6 +233,10 @@ function normalizeTodos(
 }
 
 function buildFallbackTodos(objective: string): TaskTodo[] {
+  if (!shouldTrackTodosForObjective(objective)) {
+    return [];
+  }
+
   const lower = objective.toLowerCase();
 
   let titles: string[];
@@ -271,4 +281,37 @@ function buildFallbackTodos(objective: string): TaskTodo[] {
     title,
     status: "pending",
   }));
+}
+
+function shouldTrackTodosForObjective(objective: string): boolean {
+  const normalized = objective.trim().toLowerCase();
+  if (!normalized) {
+    return false;
+  }
+
+  const wordCount = normalized.split(/\s+/).filter(Boolean).length;
+  const complexSignals =
+    /\b(scaffold|bootstrap|refactor|migrate|investigate|debug|diagnos|implement|feature|workflow|architecture|workspace|project|codebase|multiple|across|end[- ]to[- ]end|failing tests?|add tests?|write tests?|run tests?|test suite|compile|build|lint|verification|regression)\b/;
+  const sequencingSignals = /\b(and|then|after|before|also|plus)\b/;
+  const directSignals =
+    /\b(show|open|list|read|search|find|explain|summarize|check|inspect|display|blame|history|diff|status|log)\b/;
+  const directTargetSignals =
+    /[/\\]|:\d+|\.(ts|tsx|js|jsx|json|md|py|java|cs|go|rs)\b/;
+
+  if (complexSignals.test(normalized)) {
+    return true;
+  }
+
+  if (sequencingSignals.test(normalized) && wordCount > 6) {
+    return true;
+  }
+
+  if (
+    wordCount <= 8 &&
+    (directSignals.test(normalized) || directTargetSignals.test(normalized))
+  ) {
+    return false;
+  }
+
+  return wordCount > 10;
 }

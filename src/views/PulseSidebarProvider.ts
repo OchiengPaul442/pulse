@@ -129,6 +129,20 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
       }
     };
 
+    const resolveWorkspaceFilePath = (filePath: string): string => {
+      if (
+        path.isAbsolute(filePath) ||
+        !vscode.workspace.workspaceFolders?.[0]
+      ) {
+        return filePath;
+      }
+
+      return path.join(
+        vscode.workspace.workspaceFolders[0].uri.fsPath,
+        filePath,
+      );
+    };
+
     // Forward agent progress steps to the webview as they arrive
     this.runtime.setProgressCallback((step) => {
       void webviewView.webview.postMessage({
@@ -305,22 +319,36 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
             message.payload.length > 0
           ) {
             try {
-              let filePath = message.payload;
-              // Resolve relative paths against workspace root
-              if (
-                !path.isAbsolute(filePath) &&
-                vscode.workspace.workspaceFolders?.[0]
-              ) {
-                filePath = path.join(
-                  vscode.workspace.workspaceFolders[0].uri.fsPath,
-                  filePath,
-                );
-              }
+              const filePath = resolveWorkspaceFilePath(message.payload);
               const uri = vscode.Uri.file(filePath);
               await vscode.window.showTextDocument(uri, { preview: true });
             } catch {
               /* ignore if file not found */
             }
+            return;
+          }
+
+          if (
+            message.type === "showFileHistory" &&
+            typeof message.payload === "string" &&
+            message.payload.length > 0
+          ) {
+            await vscode.commands.executeCommand(
+              "pulse.showGitFileHistory",
+              resolveWorkspaceFilePath(message.payload),
+            );
+            return;
+          }
+
+          if (
+            message.type === "showFileBlame" &&
+            typeof message.payload === "string" &&
+            message.payload.length > 0
+          ) {
+            await vscode.commands.executeCommand(
+              "pulse.showGitBlame",
+              resolveWorkspaceFilePath(message.payload),
+            );
             return;
           }
 

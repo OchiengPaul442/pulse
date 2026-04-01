@@ -2,7 +2,7 @@
   "name": "pulse-agent",
   "displayName": "Pulse Agent",
   "description": "Local offline AI coding agent for VS Code powered by Ollama.",
-  "version": "0.0.102",
+  "version": "0.0.104",
   "publisher": "local",
   "license": "MIT",
   "keywords": [
@@ -98,6 +98,18 @@
         "title": "Pulse: Search the Web"
       },
       {
+        "command": "pulse.showGitCommitHistory",
+        "title": "Pulse: Show Git Commit History"
+      },
+      {
+        "command": "pulse.showGitFileHistory",
+        "title": "Pulse: Show Git File History"
+      },
+      {
+        "command": "pulse.showGitBlame",
+        "title": "Pulse: Show Git Blame"
+      },
+      {
         "command": "pulse.setTavilyApiKey",
         "title": "Pulse: Set Tavily API Key"
       },
@@ -122,6 +134,44 @@
           "name": "Pulse",
           "type": "webview",
           "icon": "media/pulse.svg"
+        }
+      ]
+    },
+    "menus": {
+      "editor/title": [
+        {
+          "command": "pulse.showGitFileHistory",
+          "when": "resourceScheme == file",
+          "group": "navigation@50"
+        },
+        {
+          "command": "pulse.showGitBlame",
+          "when": "resourceScheme == file",
+          "group": "navigation@51"
+        }
+      ],
+      "editor/context": [
+        {
+          "command": "pulse.showGitFileHistory",
+          "when": "resourceScheme == file",
+          "group": "pulse@1"
+        },
+        {
+          "command": "pulse.showGitBlame",
+          "when": "resourceScheme == file",
+          "group": "pulse@2"
+        }
+      ],
+      "explorer/context": [
+        {
+          "command": "pulse.showGitFileHistory",
+          "when": "explorerResourceIsFolder == false && resourceScheme == file",
+          "group": "pulse@1"
+        },
+        {
+          "command": "pulse.showGitBlame",
+          "when": "explorerResourceIsFolder == false && resourceScheme == file",
+          "group": "pulse@2"
         }
       ]
     },

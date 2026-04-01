@@ -879,7 +879,7 @@ export class AgentRuntime {
     request: RunTaskRequest,
     signal?: AbortSignal,
   ): Promise<RuntimeTaskResult> {
-    const objective = request.objective;
+    const requestedObjective = request.objective;
     const checkAborted = () => {
       if (signal?.aborted) throw new Error("__TASK_CANCELLED__");
     };
@@ -891,7 +891,7 @@ export class AgentRuntime {
     );
     let session = await this.sessionStore.getActiveSession();
     if (!session) {
-      session = await this.sessionStore.createSession(objective, {
+      session = await this.sessionStore.createSession(requestedObjective, {
         planner: this.currentConfig.plannerModel,
         editor: this.currentConfig.editorModel,
         fast: this.currentConfig.fastModel,
@@ -920,7 +920,7 @@ export class AgentRuntime {
         await this.sessionStore.updateMessage(
           session.id,
           request.messageId,
-          objective,
+          requestedObjective,
         );
         await this.sessionStore.truncateAfterMessage(
           session.id,
@@ -938,11 +938,15 @@ export class AgentRuntime {
       session = (await this.sessionStore.getSession(session.id)) ?? session;
     }
 
+    const continuationRequest =
+      this.isContinuationObjective(requestedObjective);
+    const objective = this.resolveTaskObjective(requestedObjective, session);
+
     if (request.action !== "edit" && request.action !== "retry") {
       const userTurn: ConversationMessage = {
         id: crypto.randomUUID(),
         role: "user",
-        content: objective,
+        content: requestedObjective,
         createdAt: new Date().toISOString(),
       };
       await this.sessionStore.appendMessage(session.id, userTurn);
@@ -1249,6 +1253,7 @@ export class AgentRuntime {
     const agentResult = await this.runAgentWorkflow(
       objective,
       session.id,
+      continuationRequest,
       signal,
       request.images,
     );
@@ -2591,6 +2596,7 @@ export class AgentRuntime {
   private async runAgentWorkflow(
     objective: string,
     sessionId: string,
+    continuationRequest: boolean,
     signal?: AbortSignal,
     images?: Array<{ name: string; dataUrl: string }>,
   ): Promise<{
@@ -2686,6 +2692,7 @@ export class AgentRuntime {
       keepAlive: profileDefaults.plannerKeepAlive,
       numCtx: profileDefaults.numCtx,
     });
+    const shouldTrackTodos = this.shouldTrackTodosForObjective(objective);
 
     if (plan.isFallback) {
       this.broadcaster.emitProgress(
@@ -2720,6 +2727,9 @@ export class AgentRuntime {
         "You have full workspace access: read, write, create, delete, rename files and run terminal commands.",
         "CRITICAL: You MUST use toolCalls to do work. Do NOT just respond with text. Call tools!",
         "The workspace context below is already part of this turn. Use it before repeating discovery steps.",
+        continuationRequest
+          ? "The user asked you to continue an in-progress task. Resume from the existing context and completed work. Do NOT restart discovery or re-ask for direction unless a blocker requires it."
+          : "",
         "",
         ...(styleHintAgent ? [styleHintAgent] : []),
         ...(improvementHintsAgent ? [improvementHintsAgent] : []),
@@ -2741,10 +2751,15 @@ export class AgentRuntime {
         "8. Detect tech stack from workspace (package.json → Node, pyproject.toml → Python, etc).",
         "9. If the workspace has existing structure, work WITHIN it — extend, fix, or modify. Do NOT start from scratch.",
         "10. Do NOT repeat the same planning sentence or generic scaffold todo list when tool results already show the next step.",
+        "11. If the user already told you what to build or change, act on it directly. Do not ask for the same direction again unless the task is genuinely ambiguous or blocked.",
         "",
         "## TODO RULES",
-        "- 3-5 actionable todos. Statuses: 'pending' | 'in-progress' | 'done' | 'blocked'",
-        "- ONE 'in-progress' at a time. Complete it, mark 'done', start next.",
+        shouldTrackTodos
+          ? "- 3-5 actionable todos. Statuses: 'pending' | 'in-progress' | 'done' | 'blocked'"
+          : "- For simple direct tasks, todos may be empty and you should act immediately.",
+        shouldTrackTodos
+          ? "- ONE 'in-progress' at a time. Complete it, mark 'done', start next."
+          : "- If todos are empty, perform the next concrete tool call immediately and finish once the evidence is collected.",
         "",
         "## JSON FORMAT",
         '{"response":"<what you are doing>","todos":[{"id":"todo_1","title":"...","status":"pending"}],"toolCalls":[{"tool":"<name>","args":{...}}],"edits":[],"shortcuts":[]}',
@@ -2817,17 +2832,26 @@ export class AgentRuntime {
                   `- [${t.status === "done" ? "x" : t.status === "in-progress" ? ">" : " "}] ${t.title}`,
               )
               .join("\n")
-          : "No todos yet.",
+          : shouldTrackTodos
+            ? "No todos yet."
+            : "No todo tracking required for this task.",
         "",
         "## INSTRUCTIONS",
         "- You MUST include toolCalls to do work. Do NOT respond with only text.",
-        "- Work on the NEXT pending todo. Mark it in-progress, use tool calls, mark done.",
+        shouldTrackTodos
+          ? "- Work on the NEXT pending todo. Mark it in-progress, use tool calls, mark done."
+          : "- This task can be completed without a todo list if it is a single direct action. Use the next tool call immediately.",
+        continuationRequest
+          ? "- This is a continuation request. Resume from the existing task state and avoid another generic 'I'll inspect/check first' preamble unless the context is missing."
+          : "",
         "- The current workspace context has already been gathered. Do NOT repeat workspace_scan unless the context is stale.",
         "- If the workspace already has files, ADAPT to them. Do NOT recreate existing files from scratch.",
         "- Use create_file ONLY for truly new files. Use batch_edit or replace_in_file for modifying existing files.",
         "- Do not repeat exact tool calls already shown in tool results.",
         "- If a prior tool call succeeded, move forward to the next step.",
-        "- When ALL todos are done WITH evidence from tool calls: write final summary, empty toolCalls.",
+        shouldTrackTodos
+          ? "- When ALL todos are done WITH evidence from tool calls: write final summary, empty toolCalls."
+          : "- When the direct task is complete with evidence from tool calls: write the final summary and leave toolCalls empty.",
         "",
         "## TOOLS",
         "workspace_scan, read_files {paths:[]}, list_dir {path}, search_files {query}, file_search {pattern}",
@@ -3018,6 +3042,7 @@ export class AgentRuntime {
         const hasNoActions =
           parsed.toolCalls.length === 0 && parsed.edits.length === 0;
         if (
+          shouldTrackTodos &&
           hasNoActions &&
           parsed.response.trim().length > 0 &&
           hasEverExecutedTools
@@ -3027,7 +3052,7 @@ export class AgentRuntime {
             ...todo,
             status: "done" as const,
           }));
-        } else {
+        } else if (shouldTrackTodos) {
           // No todos returned — use plan todos and keep them pending
           parsed.todos = plan.todos;
         }
@@ -3460,7 +3485,12 @@ export class AgentRuntime {
       }
     }
 
-    const finalTodos = parsed.todos.length > 0 ? parsed.todos : plan.todos;
+    const finalTodos =
+      parsed.todos.length > 0
+        ? parsed.todos
+        : shouldTrackTodos
+          ? plan.todos
+          : [];
     if (
       finalTodos.some(
         (todo) => todo.status === "pending" || todo.status === "in-progress",
@@ -3550,16 +3580,15 @@ export class AgentRuntime {
       const response = await this.provider.chat({
         model: summaryModel,
         temperature: 0.2,
-        maxTokens: 260,
+        maxTokens: 420,
         messages: [
           {
             role: "system",
             content:
-              "You write concise, professional task summaries for a VS Code coding agent (like GitHub Copilot). " +
-              "Format: Start with a one-sentence outcome statement. Then optionally 1-2 bullet points for key actions taken. " +
-              "If there was a failure, clearly state what failed and suggest a concrete next step. " +
-              "Keep it under 4 sentences total. Do NOT list TODOs, file counts, or verification stats — those are shown in separate UI panels. " +
-              "Use plain markdown with no JSON, no code fences, no boilerplate. Be specific and direct.",
+              "You write polished final task summaries for a VS Code coding agent, similar to GitHub Copilot Chat. " +
+              "Format: one short outcome sentence, then 2-4 concise markdown bullets that explain what the agent changed, checked, and any issue or next step if relevant. " +
+              "Do not use headings, JSON, or code fences. Avoid generic boilerplate like 'Task completed successfully'. " +
+              "Mention concrete files, actions, verification, and blockers when available.",
           },
           {
             role: "user",
@@ -3599,63 +3628,82 @@ export class AgentRuntime {
     generic: boolean,
   ): string {
     const sections: string[] = [];
+    const bullets: string[] = [];
     const doneTodos = params.todos.filter((t) => t.status === "done");
     const hasIncompleteTodos = params.todos.some(
       (todo) => todo.status !== "done",
     );
     const totalTodos = params.todos.length;
-    const fileCount =
-      (params.fileDiffs?.length ?? 0) + (params.proposal?.edits.length ?? 0);
-    const toolCount = params.toolTrace.filter((t) => t.ok).length;
 
     // Outcome statement (first line)
     if (hasIncompleteTodos) {
       const completedCount = doneTodos.length;
       if (completedCount > 0) {
         sections.push(
-          `Completed ${completedCount} of ${totalTodos} tasks. Some tasks could not be finished.`,
+          `Made progress on ${params.objective}, but some work is still incomplete.`,
         );
       } else {
-        sections.push("Task could not be completed.");
+        sections.push(`Could not finish ${params.objective}.`);
       }
     } else if (!generic && raw.length > 0 && raw.length < 200) {
       sections.push(raw);
     } else {
-      // Build a meaningful outcome line
-      const parts: string[] = [];
-      if (fileCount > 0)
-        parts.push(`${fileCount} file${fileCount === 1 ? "" : "s"} changed`);
-      if (toolCount > 0)
-        parts.push(
-          `${toolCount} tool action${toolCount === 1 ? "" : "s"} executed`,
-        );
-      sections.push(
-        parts.length > 0
-          ? `Task completed successfully — ${parts.join(", ")}.`
-          : "Task completed.",
-      );
+      sections.push(`Completed the requested work for ${params.objective}.`);
+    }
+
+    const changeSummary = this.summarizeChangesCompact(
+      params.proposal,
+      params.fileDiffs,
+      params.autoApplied,
+    );
+    if (changeSummary && changeSummary !== "No file changes were required.") {
+      bullets.push(`What changed: ${changeSummary}`);
+    }
+
+    const toolSummary = this.summarizeEvidenceCompact(params.toolTrace);
+    if (toolSummary) {
+      bullets.push(`What the agent inspected: ${toolSummary}`);
+    }
+
+    const verificationSummary = this.summarizeVerificationCompact(
+      params.toolTrace,
+      params.qualityScore,
+      params.qualityTarget,
+      params.meetsQualityTarget,
+    );
+    if (verificationSummary) {
+      bullets.push(`Verification: ${verificationSummary}`);
     }
 
     const incompleteEditTask = this.summarizeIncompleteEditTask(params);
     if (incompleteEditTask) {
-      sections.push(`\n**Issue:** ${incompleteEditTask.issue}`);
+      bullets.push(`Issue: ${incompleteEditTask.issue}`);
       if (incompleteEditTask.nextSteps.length > 0) {
-        sections.push(
-          incompleteEditTask.nextSteps.map((step) => `- ${step}`).join("\n"),
+        bullets.push(
+          `Next steps: ${incompleteEditTask.nextSteps.slice(0, 2).join("; ")}`,
         );
       }
     }
 
     const issueSummary = this.summarizeIssueCompact(params.toolTrace);
     if (issueSummary) {
-      sections.push(`\n**Issue:** ${issueSummary}`);
+      bullets.push(`Issue: ${issueSummary}`);
       const nextSteps = this.summarizeIssueNextSteps(params.toolTrace);
       if (nextSteps) {
-        sections.push(nextSteps);
+        bullets.push(
+          `Next steps: ${nextSteps
+            .split("\n")
+            .map((step) => step.replace(/^[-•]\s*/, "").trim())
+            .filter((step) => step.length > 0)
+            .slice(0, 2)
+            .join("; ")}`,
+        );
       }
     }
 
-    return sections.join("\n");
+    return [sections[0], ...bullets.slice(0, 4).map((line) => `- ${line}`)]
+      .filter((line) => line.length > 0)
+      .join("\n");
   }
 
   private buildTaskSummaryContext(
@@ -3723,11 +3771,10 @@ export class AgentRuntime {
     }
 
     sections.push(
-      "Write a concise closing summary in 2-4 sentences.",
-      "Focus on: what was done (or what failed), key outcomes, and any next steps.",
-      "Do NOT list TODOs, file changes, or verification results — those are shown separately in the UI.",
-      "If there was a failure or quality gap, explain what went wrong and suggest 1-2 recovery options.",
-      "Return plain markdown only. Be specific to this task, avoid generic boilerplate.",
+      "Write a polished closing summary with one short outcome sentence followed by 2-4 markdown bullets.",
+      "Focus on what the agent changed, what it checked or verified, and any issue or next step if relevant.",
+      "Do not use headings, JSON, or code fences. Avoid generic boilerplate.",
+      "Be specific to this task and mention concrete files, commands, or blockers when available.",
     );
 
     return sections.filter((value) => value.length > 0).join("\n\n");
@@ -4630,6 +4677,78 @@ export class AgentRuntime {
     return /\b(fix|bug|error|crash|test|build|compile|lint|diagnos|fail|refactor|implement|add|update|remove|delete|write|create|edit)\b/i.test(
       objective,
     );
+  }
+
+  private shouldTrackTodosForObjective(objective: string): boolean {
+    const normalized = objective.trim().toLowerCase();
+    if (!normalized) {
+      return false;
+    }
+
+    const wordCount = normalized.split(/\s+/).filter(Boolean).length;
+    const complexSignals =
+      /\b(scaffold|bootstrap|refactor|migrate|investigate|debug|diagnos|implement|feature|workflow|architecture|workspace|project|codebase|multiple|across|end[- ]to[- ]end|failing tests?|add tests?|write tests?|run tests?|test suite|compile|build|lint|verification|regression)\b/;
+    const sequencingSignals = /\b(and|then|after|before|also|plus)\b/;
+    const directSignals =
+      /\b(show|open|list|read|search|find|explain|summarize|check|inspect|display|blame|history|diff|status|log)\b/;
+    const directTargetSignals =
+      /[/\\]|:\d+|\.(ts|tsx|js|jsx|json|md|py|java|cs|go|rs)\b/;
+
+    if (complexSignals.test(normalized)) {
+      return true;
+    }
+
+    if (sequencingSignals.test(normalized) && wordCount > 6) {
+      return true;
+    }
+
+    if (
+      wordCount <= 8 &&
+      (directSignals.test(normalized) || directTargetSignals.test(normalized))
+    ) {
+      return false;
+    }
+
+    return wordCount > 10;
+  }
+
+  private isContinuationObjective(objective: string): boolean {
+    const normalized = objective.trim().toLowerCase();
+    if (!normalized) {
+      return false;
+    }
+
+    return /^(continue|proceed|go on|keep going|carry on|resume|continue please|proceed with this|keep working)$/i.test(
+      normalized,
+    );
+  }
+
+  private resolveTaskObjective(
+    requestedObjective: string,
+    session: SessionRecord | null,
+  ): string {
+    if (!this.isContinuationObjective(requestedObjective) || !session) {
+      return requestedObjective;
+    }
+
+    const activeObjective = session.objective?.trim();
+    if (activeObjective) {
+      return activeObjective;
+    }
+
+    const lastUserMessage = [...(session.messages ?? [])]
+      .reverse()
+      .find(
+        (message) =>
+          message.role === "user" &&
+          typeof message.content === "string" &&
+          !this.isContinuationObjective(message.content),
+      );
+
+    return typeof lastUserMessage?.content === "string" &&
+      lastUserMessage.content
+      ? lastUserMessage.content
+      : requestedObjective;
   }
 
   private getWebSearchResultLimit(): number {

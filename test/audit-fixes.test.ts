@@ -264,3 +264,20 @@ describe("Audit fix: agent placeholder responses are treated as generic", () => 
     ).toBe(true);
   });
 });
+
+describe("Audit fix: runtime only tracks todos for complex work", () => {
+  it("skips todos for simple direct git inspection tasks", () => {
+    const runtime = makeRuntime();
+
+    expect(
+      (runtime as any).shouldTrackTodosForObjective(
+        "Show git blame for src/extension.ts",
+      ),
+    ).toBe(false);
+    expect(
+      (runtime as any).shouldTrackTodosForObjective(
+        "Implement a new authentication flow across the workspace",
+      ),
+    ).toBe(true);
+  });
+});

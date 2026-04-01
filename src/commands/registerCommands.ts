@@ -1,3 +1,4 @@
+import * as path from "path";
 import * as vscode from "vscode";
 
 import type { AgentRuntime } from "../agent/runtime/AgentRuntime";
@@ -8,7 +9,7 @@ export function registerCommands(
   runtime: AgentRuntime,
   logger: Logger,
 ): void {
-  const commandHandlers: Array<[string, () => unknown]> = [
+  const commandHandlers: Array<[string, (...args: unknown[]) => unknown]> = [
     ["pulse.openPanel", () => openPanel(runtime)],
     ["pulse.startNewTask", () => startNewTask(runtime)],
     ["pulse.explainSelection", () => explainSelection(runtime)],
@@ -26,6 +27,12 @@ export function registerCommands(
     ["pulse.listSkills", () => listSkills(runtime)],
     ["pulse.runPrepublishGuard", () => runPrepublishGuard(runtime)],
     ["pulse.searchWeb", () => searchWeb(runtime)],
+    ["pulse.showGitCommitHistory", () => showGitCommitHistory(runtime)],
+    [
+      "pulse.showGitFileHistory",
+      (filePath) => showGitFileHistory(runtime, filePath),
+    ],
+    ["pulse.showGitBlame", (payload) => showGitBlame(runtime, payload)],
     ["pulse.setTavilyApiKey", () => setTavilyApiKey(context)],
     ["pulse.clearTavilyApiKey", () => clearTavilyApiKey(context)],
   ];
@@ -373,6 +380,235 @@ async function searchWeb(runtime: AgentRuntime): Promise<void> {
       `Pulse: Web search failed: ${error instanceof Error ? error.message : String(error)}`,
     );
   }
+}
+
+async function showGitCommitHistory(runtime: AgentRuntime): Promise<void> {
+  const git = runtime.getGitService();
+  if (!(await git.isGitRepository())) {
+    await vscode.window.showWarningMessage(
+      "Pulse: This workspace is not a git repository.",
+    );
+    return;
+  }
+
+  const [entries, status] = await Promise.all([
+    git.getLog(20),
+    git.getStatus(),
+  ]);
+  if (entries.length === 0) {
+    await vscode.window.showInformationMessage(
+      "Pulse: No commit history is available.",
+    );
+    return;
+  }
+
+  const doc = await vscode.workspace.openTextDocument({
+    language: "markdown",
+    content: [
+      "# Pulse Git Commit History",
+      "",
+      `Branch: ${status.branch}`,
+      "",
+      ...entries.map(
+        (entry) =>
+          `- \`${entry.hash.slice(0, 8)}\` ${entry.date} — ${entry.message}`,
+      ),
+    ].join("\n"),
+  });
+  await vscode.window.showTextDocument(doc, { preview: false });
+}
+
+async function showGitFileHistory(
+  runtime: AgentRuntime,
+  explicitFilePath?: unknown,
+): Promise<void> {
+  const git = runtime.getGitService();
+  if (!(await git.isGitRepository())) {
+    await vscode.window.showWarningMessage(
+      "Pulse: This workspace is not a git repository.",
+    );
+    return;
+  }
+
+  const filePath = await resolveGitTargetFile(runtime, explicitFilePath);
+  if (!filePath) {
+    return;
+  }
+
+  const displayPath =
+    vscode.workspace.asRelativePath(filePath, false) || filePath;
+  const history = await git.getFileHistory(filePath, 20);
+  if (history.length === 0) {
+    await vscode.window.showInformationMessage(
+      `Pulse: No git history found for ${displayPath}.`,
+    );
+    return;
+  }
+
+  const doc = await vscode.workspace.openTextDocument({
+    language: "markdown",
+    content: [
+      "# Pulse Git File History",
+      "",
+      `File: ${displayPath}`,
+      "",
+      ...history.map(
+        (entry) =>
+          `- \`${entry.hash.slice(0, 8)}\` ${entry.date} ${entry.author} — ${entry.message}`,
+      ),
+    ].join("\n"),
+  });
+  await vscode.window.showTextDocument(doc, { preview: false });
+}
+
+async function showGitBlame(
+  runtime: AgentRuntime,
+  payload?: unknown,
+): Promise<void> {
+  const git = runtime.getGitService();
+  if (!(await git.isGitRepository())) {
+    await vscode.window.showWarningMessage(
+      "Pulse: This workspace is not a git repository.",
+    );
+    return;
+  }
+
+  const parsed =
+    typeof payload === "string"
+      ? { filePath: payload }
+      : isUriLike(payload)
+        ? { filePath: payload.fsPath }
+        : payload && typeof payload === "object"
+          ? (payload as { filePath?: unknown; line?: unknown })
+          : {};
+
+  const filePath = await resolveGitTargetFile(runtime, parsed.filePath);
+  if (!filePath) {
+    return;
+  }
+
+  let line =
+    typeof parsed.line === "number" && Number.isFinite(parsed.line)
+      ? Math.max(1, Math.floor(parsed.line))
+      : undefined;
+
+  const activeEditor = vscode.window.activeTextEditor;
+  if (
+    !line &&
+    activeEditor?.document.uri.scheme === "file" &&
+    path.normalize(activeEditor.document.uri.fsPath) ===
+      path.normalize(filePath)
+  ) {
+    line = activeEditor.selection.active.line + 1;
+  }
+
+  const blame = await git.getFileBlame(filePath, line);
+  const displayPath =
+    vscode.workspace.asRelativePath(filePath, false) || filePath;
+  if (!blame || blame.length === 0) {
+    await vscode.window.showInformationMessage(
+      `Pulse: No blame information found for ${displayPath}.`,
+    );
+    return;
+  }
+
+  const visibleLines = blame.slice(0, line ? 1 : 40);
+  const truncated = !line && blame.length > visibleLines.length;
+  const doc = await vscode.workspace.openTextDocument({
+    language: "markdown",
+    content: [
+      "# Pulse Git Blame",
+      "",
+      `File: ${displayPath}`,
+      ...(line ? [`Line: ${line}`, ""] : [""]),
+      ...visibleLines.map(
+        (entry) =>
+          `- Line ${entry.lineNumber}: \`${entry.commit.slice(0, 8)}\` ${entry.author} — ${entry.summary || "(no summary)"}\n  ${entry.text}`,
+      ),
+      ...(truncated
+        ? [
+            "",
+            `_Showing the first ${visibleLines.length} blamed lines out of ${blame.length}._`,
+          ]
+        : []),
+    ].join("\n"),
+  });
+  await vscode.window.showTextDocument(doc, { preview: false });
+}
+
+async function resolveGitTargetFile(
+  runtime: AgentRuntime,
+  explicitFilePath?: unknown,
+): Promise<string | undefined> {
+  const directPath = extractFilePathFromArg(explicitFilePath);
+  if (directPath) {
+    return resolveWorkspaceFilePath(directPath);
+  }
+
+  const activeEditor = vscode.window.activeTextEditor;
+  if (activeEditor?.document.uri.scheme === "file") {
+    return activeEditor.document.uri.fsPath;
+  }
+
+  const diffSummary = await runtime.getGitService().getDiffSummary();
+  if (diffSummary.isGitRepo && diffSummary.changedFiles.length > 0) {
+    const picked = await vscode.window.showQuickPick(
+      diffSummary.changedFiles.slice(0, 50).map((change) => ({
+        label: change.relativePath,
+        description: change.status,
+      })),
+      {
+        title: "Pulse: Choose a file",
+        placeHolder: "Select a git-tracked file to inspect",
+      },
+    );
+    if (picked) {
+      return resolveWorkspaceFilePath(picked.label);
+    }
+  }
+
+  await vscode.window.showWarningMessage(
+    "Pulse: Open a file or select one from git changes first.",
+  );
+  return undefined;
+}
+
+function resolveWorkspaceFilePath(filePath: string): string {
+  if (path.isAbsolute(filePath)) {
+    return filePath;
+  }
+
+  const root = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+  return root ? path.join(root, filePath) : filePath;
+}
+
+function extractFilePathFromArg(value: unknown): string | undefined {
+  if (typeof value === "string" && value.length > 0) {
+    return value;
+  }
+
+  if (isUriLike(value)) {
+    return value.fsPath;
+  }
+
+  if (
+    value &&
+    typeof value === "object" &&
+    "filePath" in value &&
+    typeof (value as { filePath?: unknown }).filePath === "string"
+  ) {
+    return (value as { filePath: string }).filePath;
+  }
+
+  return undefined;
+}
+
+function isUriLike(value: unknown): value is { fsPath: string } {
+  return (
+    Boolean(value) &&
+    typeof value === "object" &&
+    typeof (value as { fsPath?: unknown }).fsPath === "string"
+  );
 }
 
 async function setTavilyApiKey(

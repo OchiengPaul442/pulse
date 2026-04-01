@@ -186,7 +186,12 @@
             ? '<span class="file-stat-del">\u2212' + removed + "</span>"
             : "") +
           "</span>";
-        item.innerHTML = iconSpan + nameSpan + statsSpan;
+        var actionsSpan =
+          '<span class="file-item-actions">' +
+          '<button class="file-item-btn" type="button" data-action="history" title="Show git history">History</button>' +
+          '<button class="file-item-btn" type="button" data-action="blame" title="Show git blame">Blame</button>' +
+          "</span>";
+        item.innerHTML = iconSpan + nameSpan + statsSpan + actionsSpan;
         item.addEventListener(
           "click",
           (function (p) {
@@ -195,6 +200,30 @@
             };
           })(fpath),
         );
+        var historyBtn = item.querySelector('[data-action="history"]');
+        if (historyBtn) {
+          historyBtn.addEventListener(
+            "click",
+            (function (p) {
+              return function (event) {
+                event.stopPropagation();
+                vscode.postMessage({ type: "showFileHistory", payload: p });
+              };
+            })(fpath),
+          );
+        }
+        var blameBtn = item.querySelector('[data-action="blame"]');
+        if (blameBtn) {
+          blameBtn.addEventListener(
+            "click",
+            (function (p) {
+              return function (event) {
+                event.stopPropagation();
+                vscode.postMessage({ type: "showFileBlame", payload: p });
+              };
+            })(fpath),
+          );
+        }
         filesDrawerList.appendChild(item);
       }
       filesDrawerCount.textContent =
@@ -2141,6 +2170,16 @@
         id: "git_log",
         name: "Git Log",
         desc: "Show recent commit history",
+      },
+      {
+        id: "git_file_history",
+        name: "Git File History",
+        desc: "Inspect commit history for a specific file",
+      },
+      {
+        id: "git_blame",
+        name: "Git Blame",
+        desc: "Inspect blame details for a file or line",
       },
       {
         id: "git_branch",
