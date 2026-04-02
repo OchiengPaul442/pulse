@@ -15,6 +15,7 @@ import {
   isSafeTerminalCommand,
   estimateCommandTimeout,
 } from "./TaskProtocols.js";
+import { ToolCooling } from "../context/ToolCooling.js";
 
 import {
   WriteFileTool,
@@ -77,6 +78,7 @@ function stringifyError(error: unknown): string {
  */
 export class ToolExecutor {
   private lastTerminalResult: TerminalExecResult | null = null;
+  private readonly cooling: ToolCooling;
 
   /** Tool name → handler function registry. */
   private readonly handlers: Map<
@@ -96,7 +98,9 @@ export class ToolExecutor {
     private readonly webSearch: WebSearchService,
     private readonly broadcaster: StreamBroadcaster,
     sharedToolRegistry?: ToolRegistry,
+    cooling?: ToolCooling,
   ) {
+    this.cooling = cooling ?? new ToolCooling();
     this.toolRegistry = sharedToolRegistry ?? new ToolRegistry();
     this.registerDefaultSchemas();
     // Instantiate modular tools
@@ -647,6 +651,7 @@ export class ToolExecutor {
     objective: string,
     signal?: AbortSignal,
   ): Promise<TaskToolObservation[]> {
+    this.cooling.resetTurn();
     const limitedCalls = toolCalls.slice(0, 5);
     const settled = await Promise.allSettled(
       limitedCalls.map((call) =>
@@ -700,6 +705,19 @@ export class ToolExecutor {
       ];
     }
 
+    // Cooling gate: check rate limits and failure state
+    const coolingCheck = this.cooling.check(call.tool);
+    if (!coolingCheck.allowed) {
+      return [
+        {
+          tool: call.tool,
+          ok: false,
+          summary: coolingCheck.reason ?? "Tool on cooldown.",
+          detail: "Wait for the next turn or use a different tool.",
+        },
+      ];
+    }
+
     if (signal?.aborted) {
       throw new Error("__TASK_CANCELLED__");
     }
@@ -719,6 +737,7 @@ export class ToolExecutor {
     try {
       const validation = this.toolRegistry.validate(call.tool, call.args ?? {});
       if (!validation.ok) {
+        this.cooling.recordFailure(call.tool);
         return [
           {
             tool: call.tool,
@@ -733,7 +752,19 @@ export class ToolExecutor {
       // Non-fatal: if validator throws, proceed to handler execution
     }
 
-    return handler(call, objective, signal);
+    try {
+      const results = await handler(call, objective, signal);
+      const anyFailed = results.some((r) => !r.ok);
+      if (anyFailed) {
+        this.cooling.recordFailure(call.tool);
+      } else {
+        this.cooling.recordSuccess(call.tool);
+      }
+      return results;
+    } catch (err) {
+      this.cooling.recordFailure(call.tool);
+      throw err;
+    }
   }
 
   // ── Tool handlers ──────────────────────────────────────────────

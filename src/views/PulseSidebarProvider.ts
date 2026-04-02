@@ -40,7 +40,11 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
     console.error("DEBUG: resolveWebviewViewInner entered");
     webviewView.webview.options = {
       enableScripts: true,
-      localResourceRoots: [this.extensionUri],
+      localResourceRoots: [
+        this.extensionUri,
+        vscode.Uri.joinPath(this.extensionUri, "dist"),
+        vscode.Uri.joinPath(this.extensionUri, "media"),
+      ],
     };
 
     // Set HTML synchronously so webview renders immediately;
@@ -1104,7 +1108,7 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
       vscode.Uri.joinPath(this.extensionUri, "media", "sidebar.css"),
     );
     const jsUri = webview.asWebviewUri(
-      vscode.Uri.joinPath(this.extensionUri, "media", "sidebar.js"),
+      vscode.Uri.joinPath(this.extensionUri, "dist", "sidebar.js"),
     );
     const initialOnline = Boolean(
       initialSummary &&

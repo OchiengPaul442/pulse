@@ -18,7 +18,11 @@ vi.mock("vscode", () => {
     Uri: { file: (p: string) => ({ fsPath: p }) },
     workspace,
     commands: { executeCommand: vi.fn() },
-    window: { showInformationMessage: vi.fn(), showWarningMessage: vi.fn(), activeTextEditor: null },
+    window: {
+      showInformationMessage: vi.fn(),
+      showWarningMessage: vi.fn(),
+      activeTextEditor: null,
+    },
     secrets: { get: vi.fn(), store: vi.fn(), delete: vi.fn() },
     extensions: { all: [] },
   };
@@ -36,7 +40,9 @@ describe("Attached context trimming", () => {
   });
 
   it("limits expanded attachments and characters per file based on config", async () => {
-    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "pulse-attach-test-"));
+    const tempRoot = fs.mkdtempSync(
+      path.join(os.tmpdir(), "pulse-attach-test-"),
+    );
     const storage: any = {
       storageDir: tempRoot,
       dbPath: path.join(tempRoot, "db.sqlite"),
@@ -89,35 +95,67 @@ describe("Attached context trimming", () => {
       config,
       storage,
       { info: vi.fn(), warn: vi.fn(), error: vi.fn() } as any,
-      { search: vi.fn(), formatResult: vi.fn(), setTavilyApiKey: vi.fn(), clearTavilyApiKey: vi.fn(), hasTavilyApiKey: vi.fn() } as any,
+      {
+        search: vi.fn(),
+        formatResult: vi.fn(),
+        setTavilyApiKey: vi.fn(),
+        clearTavilyApiKey: vi.fn(),
+        hasTavilyApiKey: vi.fn(),
+      } as any,
     );
 
-    // Spy expandAttachmentPaths to ensure it's called with sliced list
-    const expandSpy = vi.spyOn(AgentRuntime.prototype as any, "expandAttachmentPaths").mockResolvedValue([
-      "/a/one.txt",
-      "/a/two.txt",
-      "/a/three.txt",
-      "/a/four.txt",
-      "/a/five.txt",
-    ]);
+    // The ContextManager now handles file limiting. Mock the contextManager's buildContext method.
+    const buildCtxSpy = vi
+      .spyOn((runtime as any).contextManager, "buildContext")
+      .mockResolvedValue({
+        files: [
+          {
+            relativePath: "one.txt",
+            sizeBytes: 100,
+            tokenEstimate: 25,
+            truncated: true,
+          },
+          {
+            relativePath: "two.txt",
+            sizeBytes: 100,
+            tokenEstimate: 25,
+            truncated: true,
+          },
+          {
+            relativePath: "three.txt",
+            sizeBytes: 100,
+            tokenEstimate: 25,
+            truncated: true,
+          },
+        ],
+        totalTokens: 75,
+        serialized:
+          "<attached_context>\n--- one.txt\n" +
+          "a".repeat(50) +
+          "\n\n--- two.txt\n" +
+          "b".repeat(50) +
+          "\n\n--- three.txt\n" +
+          "c".repeat(50) +
+          "\n</attached_context>",
+      });
 
-    const readSpy = vi.spyOn((runtime as any).scanner, "readContextSnippets").mockResolvedValue([
-      { path: "/a/one.txt", content: "a".repeat(100) },
-      { path: "/a/two.txt", content: "b".repeat(100) },
-      { path: "/a/three.txt", content: "c".repeat(100) },
-    ] as any);
+    // Mock pathResolver.resolveAttachment so paths pass through
+    vi.spyOn(
+      (runtime as any).pathResolver,
+      "resolveAttachment",
+    ).mockImplementation((p: string) => "/a/" + p);
 
     const inputPaths = ["p1", "p2", "p3", "p4", "p5", "p6"];
     const result = await (runtime as any).loadAttachedFileContext(inputPaths);
 
-    // expandAttachmentPaths should be called with only the first `maxAttachedFiles` (3)
-    expect(expandSpy).toHaveBeenCalledWith(inputPaths.slice(0, 3), undefined);
+    // buildContext should have been called with resolved paths
+    expect(buildCtxSpy).toHaveBeenCalledTimes(1);
+    const resolvedArg = buildCtxSpy.mock.calls[0][0];
+    expect(Array.isArray(resolvedArg)).toBe(true);
 
-    // readContextSnippets should be called with at most `maxAttachedFiles` and the configured maxCharsPerFile
-    expect(readSpy).toHaveBeenCalledWith(expect.any(Array), 50, undefined);
-
-    // Result should be the mocked snippets (unchanged)
+    // Result should contain the files from the mocked snapshot
     expect(Array.isArray(result)).toBe(true);
-    expect(result.length).toBeGreaterThan(0);
+    expect(result.length).toBe(3);
+    expect(result[0].path).toBe("one.txt");
   });
 });

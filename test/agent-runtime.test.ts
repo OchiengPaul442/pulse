@@ -439,6 +439,9 @@ describe("AgentRuntime", () => {
         Buffer.from("print('hello world')", "utf8"),
       );
 
+      // Reset tool cooling so the second call isn't rate-limited
+      (runtime as any).toolCooling.resetAll();
+
       const emptyFileResult = await (runtime as any).executeSingleToolCall(
         {
           tool: "create_file",
@@ -541,7 +544,7 @@ describe("AgentRuntime", () => {
       { name: config.fastModel, source: "local" },
     ];
     (runtime as any).availableModelsCheckedAt = Date.now();
-    (runtime as any).tokensConsumed = 480;
+    (runtime as any).tokenBudget.consumeRaw(480);
     (runtime as any).activeTokenSessionId = "session-a";
 
     const tokenUpdates: Array<{
@@ -554,8 +557,8 @@ describe("AgentRuntime", () => {
     const result = await runtime.explainText("const value = 1;");
 
     expect(result.text).toBe("Explanation text.");
-    // Token accounting now correctly accumulates explain tokens
-    expect((runtime as any).tokensConsumed).toBe(480 + 35);
+    // Token accounting now correctly accumulates explain tokens via TokenBudget
+    expect((runtime as any).tokenBudget.snapshot().consumed).toBe(480 + 35);
     expect(provider.chat).toHaveBeenCalledTimes(1);
     // Token callback should have been called with the updated total
     expect(tokenUpdates.length).toBeGreaterThan(0);

@@ -49,6 +49,10 @@ import { PathResolver } from "./PathResolver";
 import { ProjectDetector } from "./ProjectDetector";
 import { StreamBroadcaster } from "./StreamBroadcaster";
 import { ToolExecutor } from "./ToolExecutor";
+import { TokenBudget } from "../context/TokenBudget";
+import { ContextGuard } from "../context/ContextGuard";
+import { ToolCooling } from "../context/ToolCooling";
+import { ContextManager } from "../context/ContextManager";
 import type { ToolExecutorContext } from "./ToolExecutor";
 import {
   TerminalExecutor,
@@ -183,7 +187,10 @@ export class AgentRuntime {
   private availableModelsRefreshPromise: Promise<void> | null = null;
   private static readonly MODEL_DISCOVERY_TTL_MS = 60_000;
 
-  private tokensConsumed = 0;
+  private readonly tokenBudget = new TokenBudget();
+  private readonly contextGuard = new ContextGuard();
+  private readonly toolCooling = new ToolCooling();
+  private readonly contextManager = new ContextManager();
 
   private activeTokenSessionId: string | null = null;
 
@@ -287,6 +294,7 @@ export class AgentRuntime {
       this.webSearch,
       this.broadcaster,
       toolRegistry,
+      this.toolCooling,
     );
   }
 
@@ -992,11 +1000,13 @@ export class AgentRuntime {
     if (this.activeTokenSessionId !== session.id) {
       this.activeTokenSessionId = session.id;
       this.resetTokenUsage();
+      this.toolCooling.resetAll();
     } else {
-      // Auto-reset context window when approaching budget (like Copilot does)
-      const budget = Math.max(this.currentConfig.maxContextTokens, 1);
-      const usageRatio = this.tokensConsumed / budget;
-      if (usageRatio >= 0.9) {
+      // Auto-reset context window when approaching budget
+      this.tokenBudget.setBudget(
+        Math.max(this.currentConfig.maxContextTokens, 1),
+      );
+      if (this.tokenBudget.isNearLimit()) {
         this.broadcaster.emitProgress(
           "Context reset",
           "Token budget reached, resetting context window",
@@ -1993,11 +2003,11 @@ export class AgentRuntime {
       (s) => s.state === "configured",
     ).length;
     const learningStats = await this.improvementEngine.getStats();
-    const tokenBudget = Math.max(this.currentConfig.maxContextTokens, 1);
-    const tokenUsagePercent = Math.min(
-      100,
-      Math.round((this.tokensConsumed / tokenBudget) * 100),
+    this.tokenBudget.setBudget(
+      Math.max(this.currentConfig.maxContextTokens, 1),
     );
+    const snap = this.tokenBudget.snapshot();
+    const tokenUsagePercent = snap.percent;
     const learningProgressPercent = Math.min(
       100,
       Math.round(learningStats.performanceScore * 100),
@@ -2020,8 +2030,8 @@ export class AgentRuntime {
       activeSessionId: active?.id ?? null,
       hasPendingEdits: pending !== null,
       pendingEditCount: pending?.edits.length ?? 0,
-      tokenBudget,
-      tokensConsumed: this.tokensConsumed,
+      tokenBudget: snap.budget,
+      tokensConsumed: snap.consumed,
       tokenUsagePercent,
       learningProgressPercent,
       mcpConfigured,
@@ -2108,23 +2118,22 @@ export class AgentRuntime {
       return;
     }
 
-    const budget = Math.max(this.currentConfig.maxContextTokens, 1);
-    this.tokensConsumed = Math.min(
-      budget,
-      this.tokensConsumed + Math.max(usage.totalTokens, 0),
+    this.tokenBudget.setBudget(
+      Math.max(this.currentConfig.maxContextTokens, 1),
     );
-    this.broadcaster.emitTokenUpdate(
-      this.tokensConsumed,
-      this.currentConfig.maxContextTokens,
-    );
+    this.tokenBudget.consume({
+      promptTokens: usage.promptTokens,
+      completionTokens: usage.completionTokens,
+      totalTokens: Math.max(usage.totalTokens, 0),
+    });
+    const snap = this.tokenBudget.snapshot();
+    this.broadcaster.emitTokenUpdate(snap.consumed, snap.budget);
   }
 
   private resetTokenUsage(): void {
-    this.tokensConsumed = 0;
-    this.broadcaster.emitTokenUpdate(
-      this.tokensConsumed,
-      this.currentConfig.maxContextTokens,
-    );
+    this.tokenBudget.reset();
+    const snap = this.tokenBudget.snapshot();
+    this.broadcaster.emitTokenUpdate(snap.consumed, snap.budget);
   }
 
   /**
@@ -2156,7 +2165,7 @@ export class AgentRuntime {
           editsProposed,
           editsApplied,
           skillsUsed: [],
-          tokensUsed: this.tokensConsumed,
+          tokensUsed: this.tokenBudget.snapshot().consumed,
         });
         await this.improvementEngine.reflectOnTask(
           outcomeId,
@@ -2315,61 +2324,30 @@ export class AgentRuntime {
       return [];
     }
 
-    // Respect user-configurable limits (fallback to conservative defaults)
-    const maxAttached = this.currentConfig?.maxAttachedFiles ?? 4;
-    const maxChars = this.currentConfig?.maxCharsPerFile ?? 1200;
+    // Resolve raw paths through the path resolver before handing to ContextManager
+    const resolvedPaths = paths
+      .map((p) => this.pathResolver.resolveAttachment(p))
+      .filter((p): p is string => p !== null);
 
-    const expandedPaths = await this.expandAttachmentPaths(
-      paths.slice(0, maxAttached),
+    const snapshot = await this.contextManager.buildContext(
+      resolvedPaths,
       signal,
     );
 
-    const limited = expandedPaths.slice(0, maxAttached);
-    return this.scanner.readContextSnippets(limited, maxChars, signal);
-  }
-
-  private async expandAttachmentPaths(
-    paths: string[],
-    signal?: AbortSignal,
-  ): Promise<string[]> {
-    if (signal?.aborted) {
-      return [];
-    }
-
-    const expanded = await Promise.all(
-      paths.map(async (item) => {
-        if (signal?.aborted) {
-          return [] as string[];
-        }
-
-        const absolutePath = this.resolveAttachmentPath(item);
-        if (!absolutePath) {
-          return [] as string[];
-        }
-
-        try {
-          const stats = await vscode.workspace.fs.stat(
-            vscode.Uri.file(absolutePath),
-          );
-          if (stats.type === vscode.FileType.Directory) {
-            const folderUri = vscode.Uri.file(absolutePath);
-            const files = await vscode.workspace.findFiles(
-              new vscode.RelativePattern(folderUri, "**/*"),
-              "**/{node_modules,dist,.git}/**",
-              20,
-            );
-            return files.map((file) => file.fsPath);
-          }
-
-          return [absolutePath];
-        } catch {
-          // Skip unreadable attachments.
-          return [] as string[];
-        }
-      }),
-    );
-
-    return Array.from(new Set(expanded.flat()));
+    // Convert ContextSnapshot back to the legacy {path, content} shape
+    // used by the rest of the pipeline (buildPrompt, ask mode, etc.)
+    return snapshot.files
+      .map((file) => {
+        const match = snapshot.serialized.match(
+          new RegExp(
+            `--- ${file.relativePath.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}[^\\n]*\\n([\\s\\S]*?)(?=\\n\\n---|</attached_context>)`,
+          ),
+        );
+        return match
+          ? { path: file.relativePath, content: match[1].trim() }
+          : null;
+      })
+      .filter((r): r is { path: string; content: string } => r !== null);
   }
 
   private resolveAttachmentPath(value: string): string | null {
@@ -2383,13 +2361,12 @@ export class AgentRuntime {
   private formatAttachedContext(
     attachedContext: Array<{ path: string; content: string }>,
   ): string {
-    return [
-      "Attached workspace context:",
-      ...attachedContext.map(
-        (snippet) =>
-          `File: ${this.normalizeDisplayPath(snippet.path)}\n${snippet.content}`,
-      ),
-    ].join("\n\n");
+    if (attachedContext.length === 0) return "";
+    const sections = attachedContext.map(
+      (snippet) =>
+        `--- ${this.normalizeDisplayPath(snippet.path)}\n${snippet.content}`,
+    );
+    return `<attached_context>\n${sections.join("\n\n")}\n</attached_context>`;
   }
 
   private normalizeDisplayPath(filePath: string): string {
@@ -3126,6 +3103,21 @@ export class AgentRuntime {
         // Adaptive context fallback for Ollama memory/context errors
         const errMsg =
           err instanceof Error ? err.message.toLowerCase() : String(err);
+
+        // ContextGuard Stage 2: truncate tool context on overflow
+        if (
+          /context.*too|overflow|token.*limit|max.*length/i.test(errMsg) &&
+          toolContext.length > 2000
+        ) {
+          toolContext = this.contextGuard.truncateToolOutput(toolContext);
+          this.broadcaster.emitProgress(
+            "Context overflow",
+            "Truncating tool context and retrying",
+            "\u21BB",
+          );
+          continue;
+        }
+
         if (
           this.provider.providerType === "ollama" &&
           /out of memory|context.*too|num_ctx|oom|alloc/i.test(errMsg) &&
@@ -3159,8 +3151,7 @@ export class AgentRuntime {
       this.consumeTokens(response.tokenUsage);
 
       // Auto-reset context if budget exhausted mid-loop
-      const midBudget = Math.max(this.currentConfig.maxContextTokens, 1);
-      if (this.tokensConsumed / midBudget >= 0.95) {
+      if (this.tokenBudget.isNearLimit()) {
         this.broadcaster.emitProgress(
           "Context reset",
           "Token budget near limit, resetting for next iteration",
@@ -3357,6 +3348,15 @@ export class AgentRuntime {
       }
 
       if (observations.length > 0) {
+        // ContextGuard: truncate oversized tool output before storing
+        for (const obs of observations) {
+          if (obs.detail && obs.detail.length > 50_000) {
+            obs.detail = this.contextGuard.truncateToolOutput(obs.detail);
+          }
+          if (obs.summary && obs.summary.length > 50_000) {
+            obs.summary = this.contextGuard.truncateToolOutput(obs.summary);
+          }
+        }
         toolTrace.push(...observations);
         const maxObs = profileDefaults.numCtx <= 4096 ? 3 : 5;
         toolContext = formatToolObservations(toolTrace.slice(-maxObs));

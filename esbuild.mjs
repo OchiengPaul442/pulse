@@ -2,7 +2,8 @@ import esbuild from "esbuild";
 
 const watch = process.argv.includes("--watch");
 
-const ctx = await esbuild.context({
+// Extension (Node.js)
+const extCtx = await esbuild.context({
   entryPoints: ["src/extension.ts"],
   bundle: true,
   outfile: "dist/extension.js",
@@ -12,11 +13,23 @@ const ctx = await esbuild.context({
   external: ["vscode"],
 });
 
+// Webview (browser)
+const webCtx = await esbuild.context({
+  entryPoints: ["src/webview/sidebar.ts"],
+  bundle: true,
+  outfile: "dist/sidebar.js",
+  platform: "browser",
+  format: "iife",
+  sourcemap: true,
+  target: "es2020",
+  minify: !watch,
+});
+
 if (watch) {
-  await ctx.watch();
-  console.log("Pulse extension build watching...");
+  await Promise.all([extCtx.watch(), webCtx.watch()]);
+  console.log("Pulse extension + webview build watching...");
 } else {
-  await ctx.rebuild();
-  await ctx.dispose();
-  console.log("Pulse extension build completed.");
+  await Promise.all([extCtx.rebuild(), webCtx.rebuild()]);
+  await Promise.all([extCtx.dispose(), webCtx.dispose()]);
+  console.log("Pulse extension + webview build completed.");
 }
