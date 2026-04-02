@@ -17,8 +17,12 @@ export interface StorageState {
 export async function bootstrapStorage(
   context: vscode.ExtensionContext,
   logger: Logger,
+  persistenceScope: "global" | "workspace" = "global",
 ): Promise<StorageState> {
-  const storageDir = context.globalStorageUri.fsPath;
+  const storageDir =
+    persistenceScope === "workspace" && context.storageUri
+      ? context.storageUri.fsPath
+      : context.globalStorageUri.fsPath;
   const tracesDir = path.join(storageDir, "traces");
   const snapshotsDir = path.join(storageDir, "snapshots");
   const dbPath = path.join(storageDir, "db.sqlite");

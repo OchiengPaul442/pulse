@@ -1,5 +1,6 @@
 import type { ModelProvider } from "../model/ModelProvider";
 import type { TaskTodo, TaskTodoStatus } from "../runtime/TaskProtocols";
+import { ToolRegistry } from "../tooling/ToolRegistry";
 
 export interface PlanStep {
   id: string;
@@ -30,7 +31,10 @@ export interface TaskPlan {
 }
 
 export class Planner {
-  public constructor(private readonly provider: ModelProvider) {}
+  public constructor(
+    private readonly provider: ModelProvider,
+    private readonly toolRegistry?: ToolRegistry,
+  ) {}
 
   public async createPlan(
     objective: string,
@@ -38,7 +42,7 @@ export class Planner {
     options?: { keepAlive?: number; numCtx?: number },
   ): Promise<TaskPlan> {
     const requireTodos = shouldTrackTodosForObjective(objective);
-    const prompt = [
+    const basePrompt = [
       "Create a JSON plan for a coding agent task. Return valid JSON only.",
       "Fields: objective, assumptions (string[]), acceptanceCriteria (string[]), todos (array of {id, title, status}), steps (array of {id, goal, tools, expectedOutput}), taskSlices (array of {id, title, scope, steps, deliverable, acceptanceCriteria}), verification (array of {type, command}).",
       requireTodos
@@ -50,6 +54,19 @@ export class Planner {
       "Todo statuses: 'pending' only (the agent will update them).",
       `Task: ${objective}`,
     ].join("\n");
+
+    // Attach concise schema-driven tool hints when a ToolRegistry was provided.
+    let prompt = basePrompt;
+    if (this.toolRegistry) {
+      const regs = this.toolRegistry.list();
+      if (regs.length > 0) {
+        const toolLines = regs.map((r) => {
+          const hint = r.prompt ?? r.description ?? "";
+          return `- ${r.name}: ${hint}`;
+        });
+        prompt = `${basePrompt}\n\nAvailable tools and argument guidance (use tool names exactly as listed):\n${toolLines.join("\n")}`;
+      }
+    }
 
     try {
       const response = await this.provider.chat({

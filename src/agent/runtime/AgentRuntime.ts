@@ -37,6 +37,7 @@ import {
 } from "../permissions/PermissionPolicy";
 import type { PermissionDecision } from "../permissions/PermissionPolicy";
 import { Planner } from "../planner/Planner";
+import { ToolRegistry } from "../tooling/ToolRegistry";
 import {
   WebSearchService,
   type WebSearchResponse,
@@ -109,6 +110,10 @@ export interface RuntimeSummary {
   mcpConfigured: number;
   mcpHealthy: number;
   selfLearnEnabled: boolean;
+  /** UI summary verbosity preference surfaced to the webview. */
+  uiSummaryVerbosity?: "compact" | "normal" | "verbose";
+  /** Whether the compact-summary toggle should be shown in the webview. */
+  uiShowSummaryToggle?: boolean;
 }
 
 export interface RecentSessionItem {
@@ -163,6 +168,11 @@ export class AgentRuntime {
   private readonly broadcaster: StreamBroadcaster;
 
   private readonly toolExecutor: ToolExecutor;
+  private readonly toolRegistry: ToolRegistry;
+
+  private pendingClarificationResolver:
+    | ((value: { selection?: string; [k: string]: unknown } | string) => void)
+    | null = null;
 
   private currentConfig: AgentConfig;
 
@@ -225,18 +235,23 @@ export class AgentRuntime {
         : [],
     };
     this.provider = provider ?? new OllamaProvider(config.ollamaBaseUrl);
-    this.planner = new Planner(this.provider);
+    const toolRegistry = new ToolRegistry();
+    this.toolRegistry = toolRegistry;
+    this.planner = new Planner(this.provider, toolRegistry);
     this.scanner = new WorkspaceScanner();
     this.sessionStore = new SessionStore(storage.sessionsPath);
     this.memoryStore = new MemoryStore(storage.memoriesPath);
     this.editManager = new EditManager(storage.editsPath, storage.snapshotsDir);
     this.verifier = new VerificationRunner();
     this.mcpManager = new McpManager(config.mcpServers);
-    this.skillRegistry = new SkillRegistry();
+    this.skillRegistry = new SkillRegistry(toolRegistry);
     this.webSearch = webSearch;
     this.permissionPolicy = new PermissionPolicy(config.permissionMode);
     this.gitService = new GitService();
-    this.improvementEngine = new ImprovementEngine(storage.improvementPath);
+    this.improvementEngine = new ImprovementEngine(
+      storage.improvementPath,
+      toolRegistry,
+    );
     this.terminalExecutor = new TerminalExecutor();
     this.pathResolver = new PathResolver(() => this.workspaceRoot);
     this.projectDetector = new ProjectDetector();
@@ -271,6 +286,7 @@ export class AgentRuntime {
       this.gitService,
       this.webSearch,
       this.broadcaster,
+      toolRegistry,
     );
   }
 
@@ -300,6 +316,45 @@ export class AgentRuntime {
       | null,
   ): void {
     this.broadcaster.setTerminalOutputCallback(cb);
+  }
+
+  public setClarificationCallback(
+    cb: ((payload: { question: string; options?: string[] }) => void) | null,
+  ): void {
+    this.broadcaster.setClarificationCallback(cb);
+  }
+
+  public async requestClarification(
+    question: string,
+    options?: string[],
+    timeoutMs = 120000,
+  ): Promise<{ selection?: string } | string> {
+    return new Promise((resolve) => {
+      this.pendingClarificationResolver = resolve;
+      try {
+        this.broadcaster.emitClarificationRequest(question, options);
+      } catch {}
+      if (timeoutMs > 0) {
+        setTimeout(() => {
+          if (this.pendingClarificationResolver) {
+            this.pendingClarificationResolver({ selection: "Inspect logs" });
+            this.pendingClarificationResolver = null;
+          }
+        }, timeoutMs);
+      }
+    });
+  }
+
+  public receiveClarificationResponse(payload: unknown): void {
+    if (!this.pendingClarificationResolver) return;
+    try {
+      this.pendingClarificationResolver(payload as any);
+    } catch {
+      try {
+        this.pendingClarificationResolver(String(payload));
+      } catch {}
+    }
+    this.pendingClarificationResolver = null;
   }
 
   /** Persona-aware system prompt prefix. */
@@ -450,13 +505,49 @@ export class AgentRuntime {
 
   private async updateSetting(key: string, value: unknown): Promise<void> {
     const cfg = vscode.workspace.getConfiguration("pulse");
-    const target = vscode.workspace.workspaceFolders?.length
-      ? vscode.ConfigurationTarget.Workspace
-      : vscode.ConfigurationTarget.Global;
+    // Respect the configured persistence scope when updating settings.
+    const target =
+      this.currentConfig && this.currentConfig.persistenceScope === "workspace"
+        ? vscode.ConfigurationTarget.Workspace
+        : vscode.ConfigurationTarget.Global;
     try {
       await cfg.update(key, value, target);
     } catch {
-      await cfg.update(key, value, vscode.ConfigurationTarget.Global);
+      // Fallback to the other target if the preferred one fails.
+      const fallback =
+        target === vscode.ConfigurationTarget.Global
+          ? vscode.ConfigurationTarget.Workspace
+          : vscode.ConfigurationTarget.Global;
+      try {
+        await cfg.update(key, value, fallback);
+      } catch {
+        // Give up silently; settings update is non-critical.
+      }
+    }
+  }
+
+  public async setUiSummaryVerbosity(
+    value: "compact" | "normal" | "verbose",
+  ): Promise<void> {
+    await this.updateSetting("ui.summaryVerbosity", value);
+    this.currentConfig.uiSummaryVerbosity = value;
+    try {
+      await this.memoryStore.setPreference("ui.summaryVerbosity", value);
+    } catch {
+      // ignore
+    }
+  }
+
+  public async setUiShowSummaryToggle(value: boolean): Promise<void> {
+    await this.updateSetting("ui.showSummaryToggle", value);
+    this.currentConfig.uiShowSummaryToggle = value;
+    try {
+      await this.memoryStore.setPreference(
+        "ui.showSummaryToggle",
+        String(value),
+      );
+    } catch {
+      // ignore
     }
   }
 
@@ -1711,7 +1802,18 @@ export class AgentRuntime {
   }
 
   public diagnosticsSummary(): string {
-    const result = this.verifier.runDiagnostics();
+    const toolHints = (() => {
+      try {
+        const regs = this.toolRegistry.list();
+        const toolLines = regs
+          .slice(0, 10)
+          .map((r) => `- ${r.name}: ${r.prompt ?? r.description ?? ""}`);
+        return toolLines.join("\n").slice(0, 1200);
+      } catch {
+        return "";
+      }
+    })();
+    const result = this.verifier.runDiagnostics(toolHints);
     return result.summary;
   }
 
@@ -1782,7 +1884,18 @@ export class AgentRuntime {
   public async runPrepublishGuard(): Promise<PrepublishGuardResult> {
     await this.refreshProviderState();
 
-    const diagnostics = this.verifier.runDiagnostics();
+    const toolHints = (() => {
+      try {
+        const regs = this.toolRegistry.list();
+        const toolLines = regs
+          .slice(0, 10)
+          .map((r) => `- ${r.name}: ${r.prompt ?? r.description ?? ""}`);
+        return toolLines.join("\n").slice(0, 1200);
+      } catch {
+        return "";
+      }
+    })();
+    const diagnostics = this.verifier.runDiagnostics(toolHints);
     const pending = await this.editManager.getPendingProposal();
     const mcpStatuses = await this.getMcpStatuses(true);
     const models = await this.listAvailableModels();
@@ -1914,6 +2027,8 @@ export class AgentRuntime {
       mcpConfigured,
       mcpHealthy,
       selfLearnEnabled: this.currentConfig.selfLearnEnabled ?? false,
+      uiSummaryVerbosity: this.currentConfig.uiSummaryVerbosity ?? "normal",
+      uiShowSummaryToggle: this.currentConfig.uiShowSummaryToggle ?? true,
     };
   }
 
@@ -2200,15 +2315,17 @@ export class AgentRuntime {
       return [];
     }
 
+    // Respect user-configurable limits (fallback to conservative defaults)
+    const maxAttached = this.currentConfig?.maxAttachedFiles ?? 4;
+    const maxChars = this.currentConfig?.maxCharsPerFile ?? 1200;
+
     const expandedPaths = await this.expandAttachmentPaths(
-      paths.slice(0, 8),
+      paths.slice(0, maxAttached),
       signal,
     );
-    return this.scanner.readContextSnippets(
-      expandedPaths.slice(0, 8),
-      4000,
-      signal,
-    );
+
+    const limited = expandedPaths.slice(0, maxAttached);
+    return this.scanner.readContextSnippets(limited, maxChars, signal);
   }
 
   private async expandAttachmentPaths(
@@ -2717,6 +2834,20 @@ export class AgentRuntime {
       await (this.provider as OllamaProvider).unloadModel(planningModel);
     }
 
+    // Prepare a compact tool-hints block derived from the ToolRegistry to
+    // guide the editor model and refinement step. Keep it bounded.
+    const toolHints = (() => {
+      try {
+        const regs = this.toolRegistry.list();
+        const toolLines = regs
+          .slice(0, 20)
+          .map((r) => `- ${r.name}: ${r.prompt ?? r.description ?? ""}`);
+        return toolLines.join("\n").slice(0, 1200);
+      } catch {
+        return "";
+      }
+    })();
+
     const buildPrompt = (
       toolContext: string,
       critiqueContext: string,
@@ -2789,6 +2920,7 @@ export class AgentRuntime {
           : "",
         webResearch ? `Web research: ${JSON.stringify(webResearch)}` : "",
         toolContext ? `Tool results:\n${toolContext}` : "",
+        toolHints ? `Tool hints:\n${toolHints}` : "",
         critiqueContext ? `Feedback:\n${critiqueContext}` : "",
       ]
         .filter((value) => value.length > 0)
@@ -2812,6 +2944,7 @@ export class AgentRuntime {
     let critiqueContext = "";
     let requestedVerification = false;
     let finalAssessment: TaskQualityAssessment | null = null;
+    let awaitingClarification = false;
 
     // Build a compact follow-up prompt for iterations > 0.
     // This avoids resending full workspace/conversation context, saving tokens.
@@ -2866,6 +2999,9 @@ export class AgentRuntime {
         '{"response":"...","todos":[...],"toolCalls":[{"tool":"...","args":{...}}],"edits":[],"shortcuts":[]}',
         "",
         toolCtx ? `## TOOL RESULTS\n${toolCtx}` : "",
+        toolHints
+          ? `Tool hints: ${toolHints.split("\n").slice(0, 5).join("; ")}`
+          : "",
         critiqueCtx ? `## FEEDBACK\n${critiqueCtx}` : "",
       ]
         .filter((v) => v.length > 0)
@@ -3034,7 +3170,19 @@ export class AgentRuntime {
       }
 
       const previousTodos = parsed.todos;
-      parsed = parseTaskResponse(response.text);
+      // Determine whether to allow loose JSON heuristics based on provider capabilities.
+      const caps = (
+        this.provider as unknown as {
+          capabilities?: {
+            supportsJsonMode?: boolean;
+            supportsJsonSchema?: boolean;
+          };
+        }
+      ).capabilities;
+      const allowLooseParsing = caps
+        ? !(caps.supportsJsonSchema || caps.supportsJsonMode)
+        : true;
+      parsed = parseTaskResponse(response.text, allowLooseParsing);
       if (previousTodos.length > 0 && parsed.todos.length > 0) {
         parsed.todos = this.reconcileTodoProgress(previousTodos, parsed.todos);
       }
@@ -3157,6 +3305,55 @@ export class AgentRuntime {
           "The following tool calls failed. Do NOT give up. Analyze the error, find the root cause, and try an alternative approach:\n" +
           failSummary +
           hardStopBlock;
+
+        // If a terminal command failed, surface a clarification request
+        try {
+          const terminalFailure = failedObs.find(
+            (o) => o.tool === "run_terminal" && !o.ok,
+          );
+          if (terminalFailure) {
+            const lastTerm = this.toolExecutor.getLastTerminalResult
+              ? this.toolExecutor.getLastTerminalResult()
+              : null;
+            if (
+              lastTerm &&
+              (lastTerm.exitCode !== 0 ||
+                lastTerm.timedOut ||
+                lastTerm.interactivePrompt)
+            ) {
+              if (!awaitingClarification) {
+                awaitingClarification = true;
+                const excerpt = String(lastTerm.output ?? "").slice(0, 400);
+                const q = `The command "${lastTerm.command}" failed (exit ${lastTerm.exitCode ?? "unknown"}). Output excerpt:\n${excerpt}\n\nHow should I proceed?`;
+                const resp = await this.requestClarification(q, [
+                  "Inspect logs",
+                  "Attempt automatic fix and rerun",
+                  "Skip and continue",
+                ]);
+                const sel =
+                  resp && typeof resp === "object" && (resp as any).selection
+                    ? (resp as any).selection
+                    : resp;
+                if (
+                  sel === "Attempt automatic fix and rerun" ||
+                  sel === "attempt_fix" ||
+                  sel === "Attempt automatic fix"
+                ) {
+                  critiqueContext +=
+                    "\nUser approved automatic fix attempts: apply reasonable fixes and rerun the failing command.";
+                } else if (sel === "Skip and continue" || sel === "skip") {
+                  critiqueContext += "\nUser chose to skip rerun.";
+                } else {
+                  critiqueContext +=
+                    "\nUser requested to inspect logs before proceeding.";
+                }
+                awaitingClarification = false;
+              }
+            }
+          }
+        } catch (e) {
+          // ignore clarification path errors
+        }
       }
 
       if (observations.length > 0) {
@@ -3366,6 +3563,7 @@ export class AgentRuntime {
         parsed,
         finalAssessment,
         observations,
+        toolHints,
       );
       const recoveryNextSteps = this.summarizeIssueNextSteps(observations);
       if (recoveryNextSteps) {
@@ -3535,7 +3733,49 @@ export class AgentRuntime {
     objective: string,
     signal?: AbortSignal,
   ): Promise<TaskToolObservation[]> {
-    return this.toolExecutor.executeToolCalls(toolCalls, objective, signal);
+    const allowedCalls: TaskToolCall[] = [];
+    const preObservations: TaskToolObservation[] = [];
+
+    for (const call of toolCalls) {
+      try {
+        const action = classifyAction(call.reason ?? call.tool);
+        const desc = `Tool: ${call.tool}${call.reason ? ` — ${call.reason}` : ""}`;
+        const detail = JSON.stringify(call.args ?? {}).slice(0, 2000);
+        const decision = this.permissionPolicy.evaluate({
+          action,
+          description: desc,
+          detail,
+        });
+
+        if (!decision.allowed) {
+          preObservations.push({
+            tool: call.tool,
+            ok: false,
+            summary: `Approval required: ${decision.reason}`,
+            detail: call.reason,
+          });
+        } else {
+          allowedCalls.push(call);
+        }
+      } catch (err) {
+        preObservations.push({
+          tool: call.tool,
+          ok: false,
+          summary: `Permission evaluation failed: ${err instanceof Error ? err.message : String(err)}`,
+        });
+      }
+    }
+
+    const execObservations =
+      allowedCalls.length > 0
+        ? await this.toolExecutor.executeToolCalls(
+            allowedCalls,
+            objective,
+            signal,
+          )
+        : [];
+
+    return [...preObservations, ...execObservations];
   }
 
   private async buildTaskCompletionSummary(params: {
@@ -3585,10 +3825,12 @@ export class AgentRuntime {
           {
             role: "system",
             content:
-              "You write polished final task summaries for a VS Code coding agent, similar to GitHub Copilot Chat. " +
-              "Format: one short outcome sentence, then 2-4 concise markdown bullets that explain what the agent changed, checked, and any issue or next step if relevant. " +
-              "Do not use headings, JSON, or code fences. Avoid generic boilerplate like 'Task completed successfully'. " +
-              "Mention concrete files, actions, verification, and blockers when available.",
+              "Produce a professional end-of-task summary modeled after GitHub Copilot Chat. Use this exact structure:\n" +
+              "Progress update: one concise sentence summarizing the key outcome.\n\n" +
+              "What I did:\n- 2-6 concise bullets listing concrete changes, files modified, commands run, and verification performed.\n\n" +
+              "Next steps for you:\n- 2-4 concise bullets with actionable guidance, verification steps, and optional follow-ups.\n\n" +
+              "Optionally offer up to two quick actions I can do next (for example: 'Add unit test', 'Open a PR').\n" +
+              "Do not include code fences, JSON, or unrelated boilerplate. Be specific and mention filenames or commands when applicable.",
           },
           {
             role: "user",
@@ -3701,9 +3943,48 @@ export class AgentRuntime {
       }
     }
 
-    return [sections[0], ...bullets.slice(0, 4).map((line) => `- ${line}`)]
-      .filter((line) => line.length > 0)
-      .join("\n");
+    // Build a Copilot-like structured fallback summary:
+    const parts: string[] = [];
+    parts.push(`Progress update: ${sections[0]}`);
+
+    if (bullets.length > 0) {
+      parts.push("");
+      parts.push("What I did:");
+      for (const b of bullets.slice(0, 6)) {
+        if (b && b.length > 0) parts.push(`- ${b}`);
+      }
+    }
+
+    // Collect concise next steps from incomplete edit analysis or issue suggestions
+    const nextSteps: string[] = [];
+    // Reuse the earlier `incompleteEditTask` computed above in this function.
+    if (incompleteEditTask) {
+      nextSteps.push(...incompleteEditTask.nextSteps.slice(0, 4));
+    } else {
+      const issueNext = this.summarizeIssueNextSteps(params.toolTrace);
+      if (issueNext) {
+        nextSteps.push(
+          ...issueNext
+            .split("\n")
+            .map((s) => s.replace(/^[-•]\s*/, "").trim())
+            .filter(Boolean),
+        );
+      }
+    }
+
+    if (nextSteps.length > 0) {
+      parts.push("");
+      parts.push("Next steps for you:");
+      for (const s of nextSteps.slice(0, 4)) {
+        parts.push(`- ${s}`);
+      }
+    } else if (bullets.length === 0) {
+      parts.push("");
+      parts.push("Next steps for you:");
+      parts.push("- No further action required.");
+    }
+
+    return parts.join("\n");
   }
 
   private buildTaskSummaryContext(
@@ -4240,7 +4521,18 @@ export class AgentRuntime {
     const observations: TaskToolObservation[] = [];
 
     // Always start with VS Code diagnostics — fast, no process spawn, no ENOENT risk
-    const diagnostics = this.verifier.runDiagnostics();
+    const toolHints = (() => {
+      try {
+        const regs = this.toolRegistry.list();
+        const toolLines = regs
+          .slice(0, 10)
+          .map((r) => `- ${r.name}: ${r.prompt ?? r.description ?? ""}`);
+        return toolLines.join("\n").slice(0, 1200);
+      } catch {
+        return "";
+      }
+    })();
+    const diagnostics = this.verifier.runDiagnostics(toolHints);
     observations.push({
       tool: "run_verification",
       ok: !diagnostics.hasErrors,

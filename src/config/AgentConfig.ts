@@ -56,6 +56,16 @@ export interface AgentConfig {
   selfLearnEnabled: boolean;
   /** Quality score target for the agent (0-1). Profile-aware default. */
   qualityTargetScore: number;
+  /** Where to persist runtime data: 'global' or 'workspace'. */
+  persistenceScope: "global" | "workspace";
+  /** UI summary verbosity preference. */
+  uiSummaryVerbosity: "compact" | "normal" | "verbose";
+  /** Whether to show the compact-summary toggle in the sidebar UI. */
+  uiShowSummaryToggle: boolean;
+  /** Maximum number of attached files to include in context. */
+  maxAttachedFiles?: number;
+  /** Maximum characters to include per attached file. */
+  maxCharsPerFile?: number;
 }
 
 export function getAgentConfig(): AgentConfig {
@@ -115,6 +125,23 @@ export function getAgentConfig(): AgentConfig {
     telemetryOptIn: cfg.get<boolean>("telemetry.optIn", false),
     selfLearnEnabled: cfg.get<boolean>("behavior.selfLearn", true),
     qualityTargetScore: cfg.get<number>("behavior.qualityTargetScore", 0.9),
+    persistenceScope: cfg.get<"global" | "workspace">(
+      "persistence.scope",
+      "global",
+    ),
+    uiSummaryVerbosity: cfg.get<"compact" | "normal" | "verbose">(
+      "ui.summaryVerbosity",
+      "normal",
+    ),
+    uiShowSummaryToggle: cfg.get<boolean>("ui.showSummaryToggle", true),
+    maxAttachedFiles: cfg.get<number>(
+      "attachments.maxAttachedFiles",
+      4,
+    ),
+    maxCharsPerFile: cfg.get<number>(
+      "attachments.maxCharsPerFile",
+      1200,
+    ),
   };
 }
 

@@ -33,6 +33,9 @@
     var settingsDrawer = D("settingsDrawer");
     var personaSelect = D("personaSelect"),
       modelSelect = D("modelSelect");
+    var summaryVerbositySelect = D("summaryVerbositySelect"),
+      compactSummaryToggle = D("compactSummaryToggle"),
+      compactSummaryRow = D("compactSummaryRow");
     var btnSyncModels = D("btnSyncModels"),
       btnApplyModel = D("btnApplyModel");
     var btnAddMcp = D("btnAddMcp"),
@@ -1320,6 +1323,40 @@
                 block.classList.toggle("open");
               }
             });
+            // Action buttons: rerun / copy
+            var rerunBtn = termHeader.querySelector(".terminal-rerun");
+            if (rerunBtn) {
+              rerunBtn.addEventListener("click", function (e) {
+                e.stopPropagation();
+                var header = this.closest(".terminal-chat-header");
+                var cmd = header ? header.getAttribute("data-command") : "";
+                if (cmd) {
+                  try {
+                    vscode.postMessage({
+                      type: "rerunTerminal",
+                      payload: { command: cmd },
+                    });
+                  } catch (_) {}
+                }
+              });
+            }
+            var copyBtn = termHeader.querySelector(".terminal-copy");
+            if (copyBtn) {
+              copyBtn.addEventListener("click", function (e) {
+                e.stopPropagation();
+                var header = this.closest(".terminal-chat-header");
+                var cmd = header ? header.getAttribute("data-command") : "";
+                if (cmd && navigator.clipboard) {
+                  navigator.clipboard.writeText(cmd).then(function () {
+                    var prev = copyBtn.textContent;
+                    copyBtn.textContent = "\u2713";
+                    setTimeout(function () {
+                      copyBtn.textContent = prev;
+                    }, 1200);
+                  });
+                }
+              });
+            }
           }
           messages.appendChild(div);
           continue;
@@ -1678,6 +1715,15 @@
       if (s && s.persona && personaSelect) personaSelect.value = s.persona;
       if (s && typeof s.selfLearnEnabled === "boolean" && selfLearnToggle)
         selfLearnToggle.checked = s.selfLearnEnabled;
+      if (s && s.uiSummaryVerbosity && summaryVerbositySelect)
+        summaryVerbositySelect.value = s.uiSummaryVerbosity;
+      if (compactSummaryToggle) {
+        compactSummaryToggle.checked =
+          (s && s.uiSummaryVerbosity === "compact") || false;
+        if (compactSummaryRow && typeof s.uiShowSummaryToggle === "boolean") {
+          compactSummaryRow.style.display = s.uiShowSummaryToggle ? "" : "none";
+        }
+      }
       var model = (s && s.plannerModel) || "";
       activeModelName = model;
       chipModel.textContent = model.split(":")[0].slice(0, 14) || "\u2013";
@@ -1908,6 +1954,28 @@
         type: "setSelfLearn",
         payload: selfLearnToggle.checked,
       });
+    });
+
+    // Summary verbosity select
+    on(summaryVerbositySelect, "change", function () {
+      try {
+        var v = summaryVerbositySelect.value;
+        vscode.postMessage({ type: "setSummaryVerbosity", payload: v });
+      } catch (e) {
+        // ignore
+      }
+    });
+
+    // Compact summary quick toggle
+    on(compactSummaryToggle, "change", function () {
+      try {
+        var checked = compactSummaryToggle.checked;
+        var nv = checked ? "compact" : "normal";
+        if (summaryVerbositySelect) summaryVerbositySelect.value = nv;
+        vscode.postMessage({ type: "setSummaryVerbosity", payload: nv });
+      } catch (e) {
+        // ignore
+      }
     });
 
     // ── Drag-and-drop file attach ─────────────────────────────────
@@ -2407,6 +2475,16 @@
         renderAttachments(payload);
         return;
       }
+      if (type === "dropImage") {
+        try {
+          if (payload && payload.name && payload.dataUrl) {
+            addImagePreview(payload.name, payload.dataUrl);
+          }
+        } catch (e) {
+          // ignore preview failures
+        }
+        return;
+      }
       if (type === "thinkingStep") {
         addThinkingStep(payload);
         return;
@@ -2422,6 +2500,8 @@
             '">' +
             '<div class="terminal-chat-header" data-termid="' +
             esc(termId) +
+            '" data-command="' +
+            esc(payload.command) +
             '">' +
             '<span class="terminal-chat-icon">&#9654;</span>' +
             '<span class="terminal-chat-cmd">$ ' +
@@ -2432,6 +2512,10 @@
               ? "\u2713"
               : "\u2717 exit " +
                 (payload.exitCode != null ? payload.exitCode : "?")) +
+            "</span>" +
+            '<span class="terminal-chat-actions">' +
+            '<button class="terminal-action-btn terminal-rerun" title="Re-run">\u21BB</button>' +
+            '<button class="terminal-action-btn terminal-copy" title="Copy">\u2398</button>' +
             "</span>" +
             '<span class="terminal-chat-toggle">\u25BC</span>' +
             "</div>" +
@@ -2448,6 +2532,54 @@
           });
           renderMessages();
           scrollBottom();
+        }
+        return;
+      }
+      if (type === "clarificationRequest") {
+        // Render a clarification UI inside the chat so the user can respond
+        try {
+          var q =
+            payload && payload.question
+              ? String(payload.question)
+              : "Clarification needed";
+          var opts = Array.isArray(payload && payload.options)
+            ? payload.options
+            : [
+                "Inspect logs",
+                "Attempt automatic fix and rerun",
+                "Skip and continue",
+              ];
+          var box = document.createElement("div");
+          box.className = "clarify-box fadein";
+          var txt = document.createElement("div");
+          txt.className = "clarify-text";
+          txt.textContent = q;
+          box.appendChild(txt);
+          var actions = document.createElement("div");
+          actions.className = "clarify-actions";
+          for (var oi = 0; oi < opts.length; oi++) {
+            (function (opt) {
+              var btn = document.createElement("button");
+              btn.className = "clarify-btn" + (oi === 0 ? " primary" : "");
+              btn.textContent = opt;
+              btn.addEventListener("click", function (e) {
+                e.stopPropagation();
+                try {
+                  vscode.postMessage({
+                    type: "clarificationResponse",
+                    payload: { selection: opt },
+                  });
+                } catch (_) {}
+                if (box && box.parentNode) box.parentNode.removeChild(box);
+              });
+              actions.appendChild(btn);
+            })(opts[oi]);
+          }
+          box.appendChild(actions);
+          messages.appendChild(box);
+          scrollBottom();
+        } catch (err) {
+          /* ignore UI errors */
         }
         return;
       }

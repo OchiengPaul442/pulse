@@ -88,6 +88,12 @@ function toOllamaMessages(
 
 export class OllamaProvider implements ModelProvider {
   public readonly providerType = "ollama" as const;
+  public readonly capabilities = {
+    supportsJsonMode: true,
+    supportsJsonSchema: true,
+    supportsToolCalling: false,
+    supportsVision: false,
+  };
 
   public constructor(private readonly baseUrl: string) {}
 

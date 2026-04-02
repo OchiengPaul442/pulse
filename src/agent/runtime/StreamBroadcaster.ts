@@ -18,6 +18,9 @@ export class StreamBroadcaster {
         exitCode: number | null;
       }) => void)
     | null = null;
+  private clarificationCallback:
+    | ((payload: { question: string; options?: string[] }) => void)
+    | null = null;
 
   private lastReasoningPulseAt = 0;
   private lastReasoningPulseMessage = "";
@@ -50,6 +53,12 @@ export class StreamBroadcaster {
       | null,
   ): void {
     this.terminalOutputCallback = cb;
+  }
+
+  public setClarificationCallback(
+    cb: ((payload: { question: string; options?: string[] }) => void) | null,
+  ): void {
+    this.clarificationCallback = cb;
   }
 
   public resetReasoningState(): void {
@@ -105,6 +114,10 @@ export class StreamBroadcaster {
     exitCode: number | null,
   ): void {
     this.terminalOutputCallback?.({ command, output, exitCode });
+  }
+
+  public emitClarificationRequest(question: string, options?: string[]): void {
+    this.clarificationCallback?.({ question, options });
   }
 
   public emitReasoningChunk(chunk: string): void {

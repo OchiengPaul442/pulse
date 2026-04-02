@@ -274,15 +274,18 @@ const TOOL_ALIASES: Record<string, TaskToolName> = {
   build_project: "run_verification",
 };
 
-export function parseTaskResponse(raw: string): TaskModelResponse {
+export function parseTaskResponse(
+  raw: string,
+  allowLooseParsing = true,
+): TaskModelResponse {
   // Try direct JSON parse first
-  const directParsed = tryParseJson(raw);
+  const directParsed = tryParseJson(raw, allowLooseParsing);
   if (directParsed) {
     return buildModelResponse(directParsed, raw);
   }
 
   // Try extracting JSON from markdown code fences or surrounding text
-  const extracted = extractJsonFromText(raw);
+  const extracted = extractJsonFromText(raw, allowLooseParsing);
   if (extracted) {
     return buildModelResponse(extracted, raw);
   }
@@ -306,7 +309,10 @@ export function parseTaskResponse(raw: string): TaskModelResponse {
   };
 }
 
-function tryParseJson(text: string): Record<string, unknown> | null {
+function tryParseJson(
+  text: string,
+  allowLoose = false,
+): Record<string, unknown> | null {
   const trimmed = text.trim();
   if (!trimmed.startsWith("{")) {
     return null;
@@ -315,6 +321,7 @@ function tryParseJson(text: string): Record<string, unknown> | null {
   try {
     return JSON.parse(escapedNewlines) as Record<string, unknown>;
   } catch {
+    if (!allowLoose) return null;
     // Try fixing common local-model JSON issues:
     // trailing commas, single quotes, unquoted keys, control chars
     try {
@@ -385,11 +392,14 @@ function escapeNewlinesInJsonStrings(input: string): string {
   return output;
 }
 
-function extractJsonFromText(text: string): Record<string, unknown> | null {
+function extractJsonFromText(
+  text: string,
+  allowLoose = false,
+): Record<string, unknown> | null {
   // Try markdown code fences: ```json ... ``` or ``` ... ```
   const fenceMatch = text.match(/```(?:json)?\s*\n?([\s\S]*?)\n?\s*```/);
   if (fenceMatch) {
-    const parsed = tryParseJson(fenceMatch[1]);
+    const parsed = tryParseJson(fenceMatch[1], allowLoose);
     if (parsed) {
       return parsed;
     }
@@ -400,7 +410,7 @@ function extractJsonFromText(text: string): Record<string, unknown> | null {
   const lastBrace = text.lastIndexOf("}");
   if (firstBrace >= 0 && lastBrace > firstBrace) {
     const candidate = text.slice(firstBrace, lastBrace + 1);
-    const parsed = tryParseJson(candidate);
+    const parsed = tryParseJson(candidate, allowLoose);
     if (parsed && hasTaskPayloadShape(parsed)) {
       return parsed;
     }
@@ -409,29 +419,30 @@ function extractJsonFromText(text: string): Record<string, unknown> | null {
   // Some local models emit top-level key/value JSON fragments without
   // outer braces, e.g. "response": "...", "toolCalls": [...].
   // Wrap and parse so tool calls are still executed.
-  const wrappedFragment = wrapTopLevelJsonFragment(text);
-  if (wrappedFragment) {
-    const parsed = tryParseJson(wrappedFragment);
-    if (parsed) {
-      return parsed;
+  if (allowLoose) {
+    const wrappedFragment = wrapTopLevelJsonFragment(text);
+    if (wrappedFragment) {
+      const parsed = tryParseJson(wrappedFragment, true);
+      if (parsed) {
+        return parsed;
+      }
+    }
+
+    // Try to reconstruct a response from plain-text patterns models sometimes use
+    const toolCallMatch = text.match(
+      /tool[_\s]*(?:call|use|execute)[s]?\s*[:=]\s*(.+)/i,
+    );
+    const responseMatch = text.match(
+      /(?:^|\n)(?:response|answer|result)\s*[:=]\s*(.+)/i,
+    );
+    if (toolCallMatch || responseMatch) {
+      const synthetic: Record<string, unknown> = {};
+      if (responseMatch) {
+        synthetic.response = responseMatch[1].trim();
+      }
+      return Object.keys(synthetic).length > 0 ? synthetic : null;
     }
   }
-
-  // Try to reconstruct a response from plain-text patterns models sometimes use
-  const toolCallMatch = text.match(
-    /tool[_\s]*(?:call|use|execute)[s]?\s*[:=]\s*(.+)/i,
-  );
-  const responseMatch = text.match(
-    /(?:^|\n)(?:response|answer|result)\s*[:=]\s*(.+)/i,
-  );
-  if (toolCallMatch || responseMatch) {
-    const synthetic: Record<string, unknown> = {};
-    if (responseMatch) {
-      synthetic.response = responseMatch[1].trim();
-    }
-    return Object.keys(synthetic).length > 0 ? synthetic : null;
-  }
-
   return null;
 }
 
@@ -1034,6 +1045,7 @@ export function buildTaskRefinementPrompt(
   previous: TaskModelResponse,
   assessment: TaskQualityAssessment,
   observations: TaskToolObservation[],
+  toolHints?: string,
 ): string {
   const toolSummary = formatToolObservations(observations);
   return [
@@ -1046,6 +1058,7 @@ export function buildTaskRefinementPrompt(
     `Previous response: ${JSON.stringify(previous, null, 2)}`,
     `Assessment:\n${formatTaskQualityAssessment(assessment)}`,
     toolSummary ? `Tool observations:\n${toolSummary}` : "",
+    toolHints ? `Tool hints:\n${toolHints}` : "",
   ]
     .filter((value) => value.length > 0)
     .join("\n");

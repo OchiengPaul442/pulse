@@ -18,6 +18,12 @@ import type {
  */
 export class OpenAICompatibleProvider implements ModelProvider {
   public readonly providerType = "openai" as const;
+  public readonly capabilities = {
+    supportsJsonMode: true,
+    supportsJsonSchema: false,
+    supportsToolCalling: false,
+    supportsVision: false,
+  };
 
   private readonly baseUrl: string;
   private readonly apiKey: string;

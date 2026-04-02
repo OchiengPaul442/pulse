@@ -8,6 +8,7 @@
  *   • Self-reflect after each task to identify improvement opportunities
  */
 import * as vscode from "vscode";
+import { ToolRegistry } from "../tooling/ToolRegistry";
 
 export const TARGET_AGENT_QUALITY_SCORE = 0.9;
 
@@ -93,7 +94,10 @@ interface ImprovementState {
 export class ImprovementEngine {
   private stateCache: ImprovementState | null = null;
 
-  public constructor(private readonly storagePath: string) {}
+  public constructor(
+    private readonly storagePath: string,
+    private readonly toolRegistry?: ToolRegistry,
+  ) {}
 
   /** Record a task outcome for tracking and analysis. */
   public async recordOutcome(outcome: TaskOutcome): Promise<void> {
@@ -338,6 +342,23 @@ export class ImprovementEngine {
         hints.push(
           "Double-check file paths and ensure edits are valid JSON before responding.",
         );
+      }
+    }
+
+    // Attach concise schema-driven tool hints when a ToolRegistry was provided.
+    if (this.toolRegistry) {
+      try {
+        const regs = this.toolRegistry.list();
+        if (regs.length > 0) {
+          const toolLines = regs
+            .slice(0, 20)
+            .map((r) => `- ${r.name}: ${r.prompt ?? r.description ?? ""}`);
+          const toolHint = `Available tools (use names exactly as listed):\n${toolLines.join("\n")}`;
+          // Keep this injection reasonably bounded to avoid huge prompts
+          hints.push(toolHint.slice(0, 1200));
+        }
+      } catch {
+        // non-fatal — if tool registry access fails, skip hint injection
       }
     }
 

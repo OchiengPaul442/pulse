@@ -50,18 +50,23 @@ export interface ModelSummary {
 }
 
 /** Provider interface that all model backends must implement. */
-export interface ModelProvider {
-  chat(request: ChatRequest): Promise<ChatResponse>;
-  healthCheck(): Promise<ProviderHealth>;
-  listModels(): Promise<ModelSummary[]>;
-  /** Returns the provider type identifier (e.g. "ollama", "openai", "custom"). */
-  readonly providerType: string;
+/** Provider capability flags used by the orchestrator to pick parsing/execution strategies. */
+export interface ProviderCapabilities {
+  supportsJsonMode: boolean;
+  supportsJsonSchema: boolean;
+  supportsToolCalling: boolean;
+  supportsVision?: boolean;
+  maxContextTokens?: number;
 }
 
 /** Known provider types. */
 export type ProviderType = "ollama" | "openai" | "anthropic" | "custom";
 
+/** Provider interface that all model backends must implement. */
 export interface ModelProvider {
+  readonly providerType: ProviderType;
+  readonly capabilities?: ProviderCapabilities;
+
   chat(request: ChatRequest): Promise<ChatResponse>;
   healthCheck(): Promise<ProviderHealth>;
   listModels(): Promise<ModelSummary[]>;

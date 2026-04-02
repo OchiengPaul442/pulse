@@ -32,6 +32,7 @@ import {
   GitBranchTool,
 } from "../tools/index.js";
 import type { AgentTool } from "../tools/index.js";
+import { ToolRegistry } from "../tooling/ToolRegistry.js";
 
 /**
  * Adapter interface that AgentRuntime implements to provide services
@@ -94,7 +95,10 @@ export class ToolExecutor {
     private readonly gitService: GitService,
     private readonly webSearch: WebSearchService,
     private readonly broadcaster: StreamBroadcaster,
+    sharedToolRegistry?: ToolRegistry,
   ) {
+    this.toolRegistry = sharedToolRegistry ?? new ToolRegistry();
+    this.registerDefaultSchemas();
     // Instantiate modular tools
     const fileCtx = {
       resolvePath: (p: string) => ctx.resolvePath(p),
@@ -148,9 +152,484 @@ export class ToolExecutor {
     ]);
 
     // Register modular tools into the handler map
+
+    // Register modular tools into the handler map
     for (const tool of modularTools) {
       this.handlers.set(tool.name, (c, o, s) => tool.execute(c, o, s));
     }
+  }
+
+  private readonly toolRegistry: ToolRegistry;
+
+  private registerDefaultSchemas(): void {
+    // run_terminal requires a command string
+    this.toolRegistry.register(
+      "run_terminal",
+      {
+        type: "object",
+        properties: { command: { type: "string" } },
+        required: ["command"],
+      },
+      "Execute a shell command in the workspace.",
+      "Tool `run_terminal` args: { command: string } — provide a single shell command string. Example: { command: 'npm test' } or { command: 'pnpm run build' }. Avoid destructive operations; prefer read-only, build, or test commands.",
+    );
+
+    // read_files accepts either a single path or a paths array
+    this.toolRegistry.register(
+      "read_files",
+      {
+        oneOf: [
+          {
+            type: "object",
+            properties: { path: { type: "string" } },
+            required: ["path"],
+          },
+          {
+            type: "object",
+            properties: { paths: { type: "array", items: { type: "string" } } },
+            required: ["paths"],
+          },
+        ],
+      },
+      "Read bounded sections of files.",
+      "Tool `read_files` args: { path: string } or { paths: string[] } — request small snippets (e.g. function bodies or relevant sections). Example: { path: 'package.json' } or { paths: ['src/index.ts','README.md'] }.",
+    );
+
+    // create_file / write_file: require filePath/path and content
+    this.toolRegistry.register(
+      "create_file",
+      {
+        oneOf: [
+          {
+            type: "object",
+            properties: {
+              filePath: { type: "string" },
+              content: { type: "string" },
+            },
+            required: ["filePath", "content"],
+          },
+          {
+            type: "object",
+            properties: {
+              path: { type: "string" },
+              content: { type: "string" },
+            },
+            required: ["path", "content"],
+          },
+        ],
+      },
+      "Create a new file with provided content.",
+      "Tool `create_file` args: { filePath: string, content: string } — create a new file. Example: { filePath: 'src/newFile.ts', content: 'export default function() { return 1 }' }.",
+    );
+
+    this.toolRegistry.register(
+      "write_file",
+      {
+        oneOf: [
+          {
+            type: "object",
+            properties: {
+              filePath: { type: "string" },
+              content: { type: "string" },
+            },
+            required: ["filePath", "content"],
+          },
+          {
+            type: "object",
+            properties: {
+              path: { type: "string" },
+              content: { type: "string" },
+            },
+            required: ["path", "content"],
+          },
+        ],
+      },
+      "Overwrite a file with provided content.",
+      "Tool `write_file` args: { filePath: string, content: string } — overwrite an existing file. Example: { filePath: 'src/index.ts', content: '...' } — avoid accidental deletion of important content.",
+    );
+
+    // git_commit requires message
+    this.toolRegistry.register(
+      "git_commit",
+      {
+        type: "object",
+        properties: { message: { type: "string" } },
+        required: ["message"],
+      },
+      "Create a git commit with the provided message.",
+      "Tool `git_commit` args: { message: string } — provide a concise, descriptive commit message.",
+    );
+
+    // Additional tool schemas and prompts
+    this.toolRegistry.register(
+      "workspace_scan",
+      {
+        type: "object",
+        properties: {
+          limit: { type: "integer" },
+          includeGlobs: { type: "array", items: { type: "string" } },
+          excludeGlobs: { type: "array", items: { type: "string" } },
+        },
+      },
+      "Scan workspace for files",
+      "Tool `workspace_scan` args: { limit?: number, includeGlobs?: string[], excludeGlobs?: string[] } — return a bounded list of files. Example: { limit: 20, includeGlobs: ['src/**/*.ts'] }.",
+    );
+
+    this.toolRegistry.register(
+      "create_directory",
+      {
+        oneOf: [
+          {
+            type: "object",
+            properties: { path: { type: "string" } },
+            required: ["path"],
+          },
+          {
+            type: "object",
+            properties: { directory: { type: "string" } },
+            required: ["directory"],
+          },
+        ],
+      },
+      "Create a directory",
+      "Tool `create_directory` args: { path: string } — create a directory inside the workspace. Example: { path: 'src/components' }.",
+    );
+
+    this.toolRegistry.register(
+      "delete_file",
+      {
+        oneOf: [
+          {
+            type: "object",
+            properties: { filePath: { type: "string" } },
+            required: ["filePath"],
+          },
+          {
+            type: "object",
+            properties: { path: { type: "string" } },
+            required: ["path"],
+          },
+        ],
+      },
+      "Delete a file (destructive)",
+      "Tool `delete_file` args: { filePath: string } — destructive action; requires explicit approval in default mode. Example: { filePath: 'dist/old.js' }.",
+    );
+
+    this.toolRegistry.register(
+      "search_files",
+      {
+        oneOf: [
+          {
+            type: "object",
+            properties: { query: { type: "string" } },
+            required: ["query"],
+          },
+          {
+            type: "object",
+            properties: { pattern: { type: "string" } },
+            required: ["pattern"],
+          },
+        ],
+      },
+      "Search file contents",
+      "Tool `search_files` args: { query: string } or { pattern: string } — prefer narrow queries and limit matches. Example: { query: 'TODO' } or { pattern: 'TODO' }.",
+    );
+
+    this.toolRegistry.register(
+      "list_dir",
+      {
+        oneOf: [
+          {
+            type: "object",
+            properties: { path: { type: "string" } },
+            required: ["path"],
+          },
+          {
+            type: "object",
+            properties: { directory: { type: "string" } },
+            required: ["directory"],
+          },
+        ],
+      },
+      "List directory",
+      "Tool `list_dir` args: { path: string } — list directory entries (files and folders). Example: { path: 'src' }.",
+    );
+
+    this.toolRegistry.register(
+      "run_verification",
+      {
+        oneOf: [
+          {
+            type: "object",
+            properties: {
+              kind: {
+                type: "string",
+                enum: ["tests", "build", "lint", "typecheck"],
+              },
+            },
+            required: ["kind"],
+          },
+          {
+            type: "object",
+            properties: {
+              commands: { type: "array", items: { type: "string" } },
+            },
+            required: ["commands"],
+          },
+        ],
+      },
+      "Run verification (tests/build/lint)",
+      "Tool `run_verification` args: { kind: 'tests'|'build'|'lint'|'typecheck' } or { commands: string[] } — run safe verification commands. Example: { kind: 'tests' } or { commands: ['npm test'] }.",
+    );
+
+    this.toolRegistry.register(
+      "web_search",
+      {
+        type: "object",
+        properties: {
+          query: { type: "string" },
+          recencyDays: { type: "integer" },
+          maxResults: { type: "integer" },
+        },
+        required: ["query"],
+      },
+      "Perform a web search",
+      "Tool `web_search` args: { query: string, recencyDays?: number, maxResults?: number } — return summarized search results with citations. Example: { query: 'typescript promises examples', maxResults: 3 }.",
+    );
+
+    this.toolRegistry.register(
+      "git_diff",
+      {
+        oneOf: [
+          {
+            type: "object",
+            properties: { path: { type: "string" } },
+            required: ["path"],
+          },
+          { type: "object", properties: { cached: { type: "boolean" } } },
+        ],
+      },
+      "Show git diff",
+      "Tool `git_diff` args: { path?: string, cached?: boolean } — return the diff for working tree changes or a file. Example: { path: 'src/index.ts' } or { cached: true }.",
+    );
+
+    this.toolRegistry.register(
+      "mcp_status",
+      { type: "object" },
+      "Get MCP servers status",
+      "Tool `mcp_status` args: none — returns configured MCP server health and details.",
+    );
+
+    this.toolRegistry.register(
+      "diagnostics",
+      { type: "object", properties: { path: { type: "string" } } },
+      "Run diagnostics (VS Code diagnostics)",
+      "Tool `diagnostics` args: { path?: string } — return current diagnostics for a file or workspace. Example: { path: 'src/app.ts' }.",
+    );
+
+    this.toolRegistry.register(
+      "batch_edit",
+      {
+        type: "object",
+        properties: {
+          edits: {
+            type: "array",
+            items: {
+              type: "object",
+              properties: {
+                filePath: { type: "string" },
+                search: { type: "string" },
+                replace: { type: "string" },
+              },
+              required: ["filePath"],
+            },
+          },
+        },
+        required: ["edits"],
+      },
+      "Apply multiple edits",
+      "Tool `batch_edit` args: { edits: [{ filePath:string, search:string, replace:string }] } — apply multiple in-file replacements. Example: { edits: [{ filePath: 'src/a.ts', search: 'foo', replace: 'bar' }] }.",
+    );
+
+    this.toolRegistry.register(
+      "rename_file",
+      {
+        type: "object",
+        properties: {
+          oldPath: { type: "string" },
+          newPath: { type: "string" },
+        },
+        required: ["oldPath", "newPath"],
+      },
+      "Rename a file",
+      "Tool `rename_file` args: { oldPath: string, newPath: string } — rename/move a file within the workspace. Example: { oldPath: 'src/old.ts', newPath: 'src/new.ts' }.",
+    );
+
+    this.toolRegistry.register(
+      "find_references",
+      {
+        type: "object",
+        properties: { symbol: { type: "string" }, query: { type: "string" } },
+        required: ["symbol"],
+      },
+      "Find references of a symbol",
+      "Tool `find_references` args: { symbol: string } — locate usages of a symbol across the workspace. Example: { symbol: 'MyClass' }.",
+    );
+
+    this.toolRegistry.register(
+      "file_search",
+      {
+        type: "object",
+        properties: { pattern: { type: "string" } },
+        required: ["pattern"],
+      },
+      "Search for files by glob",
+      "Tool `file_search` args: { pattern: string } — glob pattern (e.g. **/*.ts) to find matching files. Example: { pattern: '**/*.test.ts' }.",
+    );
+
+    this.toolRegistry.register(
+      "get_problems",
+      { type: "object", properties: { filePath: { type: "string" } } },
+      "Get diagnostics/problems",
+      "Tool `get_problems` args: { filePath?: string } — return diagnostics for a file or workspace. Example: { filePath: 'src/index.ts' }.",
+    );
+
+    this.toolRegistry.register(
+      "get_terminal_output",
+      { type: "object" },
+      "Get last terminal output",
+      "Tool `get_terminal_output` args: none — returns the last captured terminal output.",
+    );
+
+    this.toolRegistry.register(
+      "replace_in_file",
+      {
+        type: "object",
+        properties: {
+          filePath: { type: "string" },
+          search: { type: "string" },
+          replace: { type: "string" },
+        },
+        required: ["filePath", "search", "replace"],
+      },
+      "Replace text in a file",
+      "Tool `replace_in_file` args: { filePath: string, search: string, replace: string } — replace occurrences of search with replacement in the given file. Example: { filePath: 'src/a.ts', search: 'var x', replace: 'const x' }.",
+    );
+
+    this.toolRegistry.register(
+      "grep_search",
+      {
+        type: "object",
+        properties: { pattern: { type: "string" } },
+        required: ["pattern"],
+      },
+      "Grep-style search",
+      "Tool `grep_search` args: { pattern: string } — search file contents for the pattern. Example: { pattern: 'TODO|FIXME' }.",
+    );
+
+    this.toolRegistry.register(
+      "get_definitions",
+      {
+        type: "object",
+        properties: {
+          filePath: { type: "string" },
+          line: { type: "integer" },
+          character: { type: "integer" },
+        },
+        required: ["filePath", "line", "character"],
+      },
+      "LSP: go to definition",
+      "Tool `get_definitions` args: { filePath: string, line: number, character: number } — return definition locations.",
+    );
+
+    this.toolRegistry.register(
+      "get_references",
+      {
+        type: "object",
+        properties: {
+          filePath: { type: "string" },
+          line: { type: "integer" },
+          character: { type: "integer" },
+          includeDeclaration: { type: "boolean" },
+        },
+        required: ["filePath", "line", "character"],
+      },
+      "LSP: find references",
+      "Tool `get_references` args: { filePath: string, line: number, character: number, includeDeclaration?: boolean } — return symbol usages.",
+    );
+
+    this.toolRegistry.register(
+      "get_document_symbols",
+      {
+        type: "object",
+        properties: { filePath: { type: "string" } },
+        required: ["filePath"],
+      },
+      "LSP: document symbols",
+      "Tool `get_document_symbols` args: { filePath: string } — return top-level symbols in the document.",
+    );
+
+    this.toolRegistry.register(
+      "rename_symbol",
+      {
+        type: "object",
+        properties: {
+          filePath: { type: "string" },
+          line: { type: "integer" },
+          character: { type: "integer" },
+          newName: { type: "string" },
+        },
+        required: ["filePath", "line", "character", "newName"],
+      },
+      "LSP: rename symbol",
+      "Tool `rename_symbol` args: { filePath: string, line: number, character: number, newName: string } — perform a safe rename refactor.",
+    );
+
+    this.toolRegistry.register(
+      "git_log",
+      {
+        type: "object",
+        properties: { path: { type: "string" }, limit: { type: "integer" } },
+      },
+      "Git log",
+      "Tool `git_log` args: { path?: string, limit?: number } — return recent commits or file history.",
+    );
+
+    this.toolRegistry.register(
+      "git_blame",
+      {
+        type: "object",
+        properties: { filePath: { type: "string" } },
+        required: ["filePath"],
+      },
+      "Git blame",
+      "Tool `git_blame` args: { filePath: string } — show blame annotations for a file.",
+    );
+
+    this.toolRegistry.register(
+      "git_file_history",
+      {
+        type: "object",
+        properties: { filePath: { type: "string" } },
+        required: ["filePath"],
+      },
+      "Git file history",
+      "Tool `git_file_history` args: { filePath: string } — list commits that touched a file.",
+    );
+
+    this.toolRegistry.register(
+      "git_status",
+      { type: "object" },
+      "Git status",
+      "Tool `git_status` args: none — summarize working tree state.",
+    );
+
+    this.toolRegistry.register(
+      "git_branch",
+      { type: "object", properties: { name: { type: "string" } } },
+      "Git branch operations",
+      "Tool `git_branch` args: { name?: string } — list or create/switch branches depending on context.",
+    );
   }
 
   public getLastTerminalResult(): TerminalExecResult | null {
@@ -234,6 +713,24 @@ export class ToolExecutor {
           summary: "Unsupported tool call.",
         },
       ];
+    }
+
+    // Validate arguments against the tool registry schema if present
+    try {
+      const validation = this.toolRegistry.validate(call.tool, call.args ?? {});
+      if (!validation.ok) {
+        return [
+          {
+            tool: call.tool,
+            ok: false,
+            summary: `Tool argument validation failed: ${validation.errors.join("; ")}`,
+            detail:
+              "Please re-issue the tool call with arguments matching the tool schema.",
+          },
+        ];
+      }
+    } catch (err) {
+      // Non-fatal: if validator throws, proceed to handler execution
     }
 
     return handler(call, objective, signal);
@@ -664,7 +1161,18 @@ export class ToolExecutor {
   }
 
   private async handleDiagnostics(): Promise<TaskToolObservation[]> {
-    const diagnostics = this.verifier.runDiagnostics();
+    const toolHints = (() => {
+      try {
+        const regs = this.toolRegistry.list();
+        const toolLines = regs
+          .slice(0, 10)
+          .map((r) => `- ${r.name}: ${r.prompt ?? r.description ?? ""}`);
+        return toolLines.join("\n").slice(0, 1200);
+      } catch {
+        return "";
+      }
+    })();
+    const diagnostics = this.verifier.runDiagnostics(toolHints);
     return [
       {
         tool: "diagnostics",
@@ -1054,7 +1562,18 @@ export class ToolExecutor {
     const observations: TaskToolObservation[] = [];
 
     // Always start with VS Code diagnostics
-    const diagnostics = this.verifier.runDiagnostics();
+    const toolHints = (() => {
+      try {
+        const regs = this.toolRegistry.list();
+        const toolLines = regs
+          .slice(0, 10)
+          .map((r) => `- ${r.name}: ${r.prompt ?? r.description ?? ""}`);
+        return toolLines.join("\n").slice(0, 1200);
+      } catch {
+        return "";
+      }
+    })();
+    const diagnostics = this.verifier.runDiagnostics(toolHints);
     observations.push({
       tool: "run_verification",
       ok: !diagnostics.hasErrors,

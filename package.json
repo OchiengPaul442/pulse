@@ -2,7 +2,7 @@
   "name": "pulse-agent",
   "displayName": "Pulse Agent",
   "description": "Local offline AI coding agent for VS Code powered by Ollama.",
-  "version": "0.0.104",
+  "version": "0.0.107",
   "publisher": "local",
   "license": "MIT",
   "keywords": [
@@ -368,6 +368,42 @@
           "minimum": 0.1,
           "maximum": 1,
           "description": "Quality score target for agent task completion. Lower values are more forgiving for local models. Automatically adjusted by performance profile."
+        },
+        "pulse.persistence.scope": {
+          "type": "string",
+          "enum": [
+            "global",
+            "workspace"
+          ],
+          "default": "global",
+          "description": "Where Pulse persistently stores session/memory data: global (user-level) or workspace (project-level)."
+        },
+        "pulse.attachments.maxAttachedFiles": {
+          "type": "number",
+          "default": 4,
+          "minimum": 0,
+          "description": "Maximum number of attached files to include in prompt context. Lower values reduce token usage."
+        },
+        "pulse.attachments.maxCharsPerFile": {
+          "type": "number",
+          "default": 1200,
+          "minimum": 128,
+          "description": "Maximum number of characters to include from each attached file when building prompt context."
+        },
+        "pulse.ui.summaryVerbosity": {
+          "type": "string",
+          "enum": [
+            "compact",
+            "normal",
+            "verbose"
+          ],
+          "default": "normal",
+          "description": "Default verbosity level for runtime summaries displayed in the UI."
+        },
+        "pulse.ui.showSummaryToggle": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show a quick toggle in the sidebar to switch compact/normal summaries."
         }
       }
     }
@@ -393,5 +429,9 @@
     "rimraf": "^6.0.1",
     "typescript": "^5.8.3",
     "vitest": "^3.1.1"
+  },
+  "dependencies": {
+    "ajv": "^8.12.0",
+    "ajv-formats": "^2.1.1"
   }
 }

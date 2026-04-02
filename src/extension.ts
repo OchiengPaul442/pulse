@@ -51,7 +51,11 @@ export async function activate(
       config.openaiApiKey,
       config.openaiModels,
     );
-    const storage = await bootstrapStorage(context, logger);
+    const storage = await bootstrapStorage(
+      context,
+      logger,
+      config.persistenceScope ?? "global",
+    );
     const webSearchService = new WebSearchService(context.secrets, logger);
     const runtime = new AgentRuntime(
       config,

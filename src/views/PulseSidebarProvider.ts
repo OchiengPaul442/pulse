@@ -21,6 +21,8 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
     try {
       this.resolveWebviewViewInner(webviewView);
     } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error("DEBUG: resolveWebviewView failed", err);
       this.logger.error(
         `Sidebar initialization failed: ${err instanceof Error ? err.message : String(err)}`,
       );
@@ -33,6 +35,9 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
   }
 
   private resolveWebviewViewInner(webviewView: vscode.WebviewView): void {
+    // Diagnostic: ensure this function is entered during tests
+    // eslint-disable-next-line no-console
+    console.error("DEBUG: resolveWebviewViewInner entered");
     webviewView.webview.options = {
       enableScripts: true,
       localResourceRoots: [this.extensionUri],
@@ -41,6 +46,19 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
     // Set HTML synchronously so webview renders immediately;
     // real state is pushed once the webview signals "webviewReady".
     webviewView.webview.html = this.buildHtml(webviewView.webview, null);
+
+    // Use a thin wrapper around `webview.postMessage` so tests that
+    // replace or mock the webview later still have their mock invoked
+    // at call-time. Also log minimal diagnostics to aid failing tests.
+    const post = async (msg: any) => {
+      // Diagnostic for tests
+      // eslint-disable-next-line no-console
+      console.error(
+        "DEBUG: post helper invoked",
+        msg && typeof msg === "object" ? (msg as any).type : msg,
+      );
+      return await webviewView.webview.postMessage(msg);
+    };
 
     // ── Push the full runtime state to the webview ─────────────────────
     let pushInFlight = false;
@@ -98,15 +116,9 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
           this.runtime.listRecentSessions().catch(() => []),
         ]);
 
-        void webviewView.webview.postMessage({
-          type: "runtimeSummary",
-          payload: summary,
-        });
-        void webviewView.webview.postMessage({
-          type: "sessions",
-          payload: sessions,
-        });
-        void webviewView.webview.postMessage({
+        void post({ type: "runtimeSummary", payload: summary });
+        void post({ type: "sessions", payload: sessions });
+        void post({
           type: "mcpServers",
           payload: this.runtime.getConfiguredMcpServers(),
         });
@@ -115,10 +127,7 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
           const models = await this.runtime
             .listAvailableModels()
             .catch(() => []);
-          void webviewView.webview.postMessage({
-            type: "models",
-            payload: models,
-          });
+          void post({ type: "models", payload: models });
         }
       } finally {
         pushInFlight = false;
@@ -145,27 +154,25 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
 
     // Forward agent progress steps to the webview as they arrive
     this.runtime.setProgressCallback((step) => {
-      void webviewView.webview.postMessage({
-        type: "thinkingStep",
-        payload: step,
-      });
+      void post({ type: "thinkingStep", payload: step });
     });
 
     // Forward streaming text chunks for typewriter effect
     this.runtime.setStreamCallback((chunk) => {
-      void webviewView.webview.postMessage({
-        type: "streamChunk",
-        payload: chunk,
-      });
+      void post({ type: "streamChunk", payload: chunk });
     });
 
     // Forward terminal output for in-chat terminal blocks
     this.runtime.setTerminalOutputCallback((data) => {
-      void webviewView.webview.postMessage({
-        type: "terminalOutput",
-        payload: data,
-      });
+      void post({ type: "terminalOutput", payload: data });
     });
+
+    // Forward clarification requests to the webview so the user can respond
+    if (typeof this.runtime.setClarificationCallback === "function") {
+      this.runtime.setClarificationCallback((payload) => {
+        void post({ type: "clarificationRequest", payload });
+      });
+    }
 
     // Re-push state every time the sidebar panel becomes visible
     webviewView.onDidChangeVisibility(() => {
@@ -174,6 +181,18 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
       }
     });
 
+    // Diagnostic: log handler registration
+    // eslint-disable-next-line no-console
+    console.error("DEBUG: registering onDidReceiveMessage");
+    // eslint-disable-next-line no-console
+    console.error(
+      "DEBUG: onDidReceiveMessage typeof",
+      typeof webviewView.webview.onDidReceiveMessage,
+    );
+    if (typeof webviewView.webview.onDidReceiveMessage !== "function") {
+      // eslint-disable-next-line no-console
+      console.error("DEBUG: onDidReceiveMessage MISSING");
+    }
     webviewView.webview.onDidReceiveMessage(
       async (message: { type?: string; payload?: unknown }) => {
         try {
@@ -192,10 +211,7 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
           if (message.type === "refreshModels") {
             await this.runtime.refreshProviderState(true);
             const models = await this.runtime.listAvailableModels();
-            await webviewView.webview.postMessage({
-              type: "models",
-              payload: models,
-            });
+            await post({ type: "models", payload: models });
             return;
           }
 
@@ -236,7 +252,7 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
                   : null;
 
             if (!request) {
-              await webviewView.webview.postMessage({
+              await post({
                 type: "taskResult",
                 payload: {
                   responseText: "Error: Invalid task payload.",
@@ -259,7 +275,7 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
               // TODOs, tool summaries, quality scores are tracked in the
               // thinking panel — don't dump them into the message.
               const taskText = result.responseText;
-              await webviewView.webview.postMessage({
+              await post({
                 type: "taskResult",
                 payload: {
                   responseText: taskText,
@@ -278,7 +294,7 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
                 msg.includes("__TASK_CANCELLED__") ||
                 msg.includes("cancelled") ||
                 msg.includes("Aborted");
-              await webviewView.webview.postMessage({
+              await post({
                 type: "taskResult",
                 payload: {
                   responseText: cancelled ? "Task cancelled." : `Error: ${msg}`,
@@ -292,16 +308,64 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
             const sessions = await this.runtime
               .listRecentSessions()
               .catch(() => []);
-            await webviewView.webview.postMessage({
-              type: "sessions",
-              payload: sessions,
-            });
+            await post({ type: "sessions", payload: sessions });
+            return;
+          }
+
+          if (message.type === "clarificationResponse") {
+            // UI -> runtime: user answered a clarification prompt
+            try {
+              this.runtime.receiveClarificationResponse(message.payload);
+            } catch (err) {
+              this.logger.warn(
+                `Failed to deliver clarification response: ${err instanceof Error ? err.message : String(err)}`,
+              );
+            }
+            return;
+          }
+
+          if (message.type === "rerunTerminal") {
+            // User requested to rerun a terminal command via the UI
+            try {
+              const payload = message.payload as
+                | { command?: unknown }
+                | unknown;
+              if (payload && typeof payload === "object") {
+                const cmd =
+                  typeof (payload as any).command === "string"
+                    ? (payload as any).command
+                    : "";
+                if (cmd) {
+                  const result = await this.runtime.executeTerminalCommand(
+                    cmd,
+                    {
+                      purpose: "manual",
+                      visible: false,
+                    },
+                  );
+                  const out = result
+                    ? {
+                        command: result.command,
+                        output: result.output,
+                        exitCode: result.exitCode,
+                      }
+                    : {
+                        command: cmd,
+                        output: "Terminal execution blocked or failed.",
+                        exitCode: null,
+                      };
+                  await post({ type: "terminalOutput", payload: out });
+                }
+              }
+            } catch (err) {
+              this.logger.warn(`Failed to rerun terminal: ${String(err)}`);
+            }
             return;
           }
 
           if (message.type === "cancelTask") {
             this.runtime.cancelTask();
-            await webviewView.webview.postMessage({
+            await post({
               type: "taskResult",
               payload: {
                 responseText: "Task cancelled.",
@@ -358,10 +422,31 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
           ) {
             await this.runtime.setSelfLearn(message.payload);
             const updatedSum = await this.runtime.summary();
-            await webviewView.webview.postMessage({
-              type: "runtimeSummary",
-              payload: updatedSum,
-            });
+            await post({ type: "runtimeSummary", payload: updatedSum });
+            return;
+          }
+
+          if (
+            message.type === "setSummaryVerbosity" &&
+            (message.payload === "compact" ||
+              message.payload === "normal" ||
+              message.payload === "verbose")
+          ) {
+            await this.runtime.setUiSummaryVerbosity(
+              message.payload as "compact" | "normal" | "verbose",
+            );
+            const updated = await this.runtime.summary();
+            await post({ type: "runtimeSummary", payload: updated });
+            return;
+          }
+
+          if (
+            message.type === "setShowSummaryToggle" &&
+            typeof message.payload === "boolean"
+          ) {
+            await this.runtime.setUiShowSummaryToggle(Boolean(message.payload));
+            const updated = await this.runtime.summary();
+            await post({ type: "runtimeSummary", payload: updated });
             return;
           }
 
@@ -371,35 +456,23 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
             // (payload === true), treat it as approved.
             const userApproved = message.payload === true;
             if (!userApproved && this.runtime.needsApprovalForEdits()) {
-              await webviewView.webview.postMessage({
-                type: "actionResult",
-                payload: "Apply canceled.",
-              });
+              await post({ type: "actionResult", payload: "Apply canceled." });
               return;
             }
 
             const applied = await this.runtime.applyPendingEdits(userApproved);
-            await webviewView.webview.postMessage({
-              type: "actionResult",
-              payload: applied,
-            });
+            await post({ type: "actionResult", payload: applied });
             return;
           }
 
           if (message.type === "revertLast") {
             if (message.payload !== true) {
-              await webviewView.webview.postMessage({
-                type: "actionResult",
-                payload: "Revert canceled.",
-              });
+              await post({ type: "actionResult", payload: "Revert canceled." });
               return;
             }
 
             const reverted = await this.runtime.revertLastAppliedEdits();
-            await webviewView.webview.postMessage({
-              type: "actionResult",
-              payload: reverted,
-            });
+            await post({ type: "actionResult", payload: reverted });
             return;
           }
 
@@ -408,10 +481,7 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
             typeof message.payload === "string"
           ) {
             const result = await this.runtime.acceptFileEdit(message.payload);
-            await webviewView.webview.postMessage({
-              type: "actionResult",
-              payload: result,
-            });
+            await post({ type: "actionResult", payload: result });
             return;
           }
 
@@ -420,10 +490,7 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
             typeof message.payload === "string"
           ) {
             const result = await this.runtime.rejectFileEdit(message.payload);
-            await webviewView.webview.postMessage({
-              type: "actionResult",
-              payload: result,
-            });
+            await post({ type: "actionResult", payload: result });
             return;
           }
 
@@ -434,7 +501,7 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
               message.payload === "fast")
           ) {
             await this.runtime.setApprovalMode(message.payload);
-            await webviewView.webview.postMessage({
+            await post({
               type: "actionResult",
               payload: `Approval mode set to ${message.payload}`,
             });
@@ -449,10 +516,7 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
           ) {
             await this.runtime.setPermissionMode(message.payload);
             const summary = await this.runtime.summary();
-            await webviewView.webview.postMessage({
-              type: "runtimeSummary",
-              payload: summary,
-            });
+            await post({ type: "runtimeSummary", payload: summary });
             return;
           }
 
@@ -476,10 +540,7 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
             ) {
               await this.runtime.selectModel(payload.role, payload.model);
               const summary = await this.runtime.summary();
-              await webviewView.webview.postMessage({
-                type: "runtimeSummary",
-                payload: summary,
-              });
+              await post({ type: "runtimeSummary", payload: summary });
             }
             return;
           }
@@ -492,19 +553,13 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
               message.payload as Array<Record<string, unknown>>,
             );
             const summary = await this.runtime.summary();
-            await webviewView.webview.postMessage({
-              type: "runtimeSummary",
-              payload: summary,
-            });
+            await post({ type: "runtimeSummary", payload: summary });
             return;
           }
 
           if (message.type === "reloadMcpServers") {
             const mcpServers = this.runtime.getConfiguredMcpServers();
-            await webviewView.webview.postMessage({
-              type: "mcpServers",
-              payload: mcpServers,
-            });
+            await post({ type: "mcpServers", payload: mcpServers });
             return;
           }
 
@@ -515,7 +570,7 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
               message.payload === "plan")
           ) {
             await this.runtime.setConversationMode(message.payload);
-            await webviewView.webview.postMessage({
+            await post({
               type: "runtimeSummary",
               payload: await this.runtime.summary(),
             });
@@ -527,7 +582,7 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
             typeof message.payload === "string"
           ) {
             await this.runtime.setPersona(message.payload as AgentPersona);
-            await webviewView.webview.postMessage({
+            await post({
               type: "runtimeSummary",
               payload: await this.runtime.summary(),
             });
@@ -540,17 +595,14 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
           ) {
             const session = await this.runtime.openSession(message.payload);
             if (!session) {
-              await webviewView.webview.postMessage({
+              await post({
                 type: "actionResult",
                 payload: "Session not found.",
               });
               return;
             }
 
-            await webviewView.webview.postMessage({
-              type: "sessionLoaded",
-              payload: session,
-            });
+            await post({ type: "sessionLoaded", payload: session });
             return;
           }
 
@@ -566,31 +618,28 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
             );
 
             if (decision !== "Delete") {
-              await webviewView.webview.postMessage({
-                type: "actionResult",
-                payload: "Delete canceled.",
-              });
+              await post({ type: "actionResult", payload: "Delete canceled." });
               return;
             }
 
             const result = await this.runtime.deleteSession(message.payload);
             if (!result.deleted) {
-              await webviewView.webview.postMessage({
+              await post({
                 type: "actionResult",
                 payload: "Session not found.",
               });
               return;
             }
 
-            await webviewView.webview.postMessage({
+            await post({
               type: "sessions",
               payload: await this.runtime.listRecentSessions(),
             });
-            await webviewView.webview.postMessage({
+            await post({
               type: "runtimeSummary",
               payload: await this.runtime.summary(),
             });
-            await webviewView.webview.postMessage({
+            await post({
               type: "sessionDeleted",
               payload: { wasActive: result.wasActive },
             });
@@ -598,6 +647,12 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
           }
 
           if (message.type === "attachContext") {
+            try {
+              this.logger.info?.("attachContext invoked");
+            } catch {}
+            // Diagnostic log for tests
+            // eslint-disable-next-line no-console
+            console.error("DEBUG: attachContext invoked");
             const activeEditorUri =
               vscode.window.activeTextEditor?.document.uri ?? null;
             const workspaceFolder =
@@ -641,7 +696,7 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
             });
 
             if (!pickedMode) {
-              await webviewView.webview.postMessage({
+              await post({
                 type: "actionResult",
                 payload: "Attachment canceled.",
               });
@@ -674,7 +729,7 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
                 );
 
               if (!fileItems.length) {
-                await webviewView.webview.postMessage({
+                await post({
                   type: "actionResult",
                   payload: "No workspace files found to attach.",
                 });
@@ -689,7 +744,7 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
               });
 
               if (!pickedFiles || pickedFiles.length === 0) {
-                await webviewView.webview.postMessage({
+                await post({
                   type: "actionResult",
                   payload: "Attachment canceled.",
                 });
@@ -715,7 +770,7 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
                 );
 
               if (!fileItems.length) {
-                await webviewView.webview.postMessage({
+                await post({
                   type: "actionResult",
                   payload: "No workspace files found to attach.",
                 });
@@ -730,7 +785,7 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
               });
 
               if (!pickedFiles || pickedFiles.length === 0) {
-                await webviewView.webview.postMessage({
+                await post({
                   type: "actionResult",
                   payload: "Attachment canceled.",
                 });
@@ -766,7 +821,7 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
               });
 
               if (!picked || picked.length === 0) {
-                await webviewView.webview.postMessage({
+                await post({
                   type: "actionResult",
                   payload: "Attachment canceled.",
                 });
@@ -784,7 +839,7 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
               });
 
               if (!picked || picked.length === 0) {
-                await webviewView.webview.postMessage({
+                await post({
                   type: "actionResult",
                   payload: "Attachment canceled.",
                 });
@@ -793,8 +848,72 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
               attachedPaths = picked.map((item) => item.fsPath);
             }
 
+            // If any chosen attachments are image files, read them as data URLs
+            // so the webview can preview them and so they are included in
+            // the next runTask call as vision inputs.
+            if (attachedPaths.length > 0) {
+              // Diagnostic log for tests
+              // eslint-disable-next-line no-console
+              console.error("DEBUG: attachedPaths:", attachedPaths);
+              const imageExts = new Set([
+                "png",
+                "jpg",
+                "jpeg",
+                "gif",
+                "bmp",
+                "webp",
+                "svg",
+                "avif",
+                "ico",
+              ]);
+
+              for (const fp of attachedPaths) {
+                try {
+                  const ext = path.extname(fp).replace(/^\./, "").toLowerCase();
+                  if (!imageExts.has(ext)) continue;
+                  // Skip huge images
+                  const stat = await vscode.workspace.fs.stat(
+                    vscode.Uri.file(fp),
+                  );
+                  if (stat.size > 10 * 1024 * 1024) continue;
+                  const bytes = await vscode.workspace.fs.readFile(
+                    vscode.Uri.file(fp),
+                  );
+                  const b64 = Buffer.from(bytes).toString("base64");
+                  const mime =
+                    ext === "svg"
+                      ? "image/svg+xml"
+                      : ext === "ico"
+                        ? "image/x-icon"
+                        : ext === "jpg"
+                          ? "image/jpeg"
+                          : `image/${ext}`;
+                  const dataUrl = `data:${mime};base64,${b64}`;
+
+                  if (!this.pendingImages) this.pendingImages = [];
+                  const name = path.basename(fp);
+                  // Avoid duplicates
+                  if (!this.pendingImages.some((i) => i.name === name)) {
+                    this.pendingImages.push({ name, dataUrl });
+                    try {
+                      this.logger.info?.(`posting dropImage for ${name}`);
+                    } catch {}
+                    // Diagnostic log for tests
+                    // eslint-disable-next-line no-console
+                    console.error("DEBUG: posting dropImage for", name);
+                    await post({
+                      type: "dropImage",
+                      payload: { name, dataUrl },
+                    });
+                  }
+                } catch {
+                  /* ignore unreadable images */
+                }
+              }
+            }
+
             if (attachedPaths.length === 0) {
-              await webviewView.webview.postMessage({
+              await post({
                 type: "actionResult",
                 payload: "No files selected.",
               });
@@ -804,7 +923,7 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
             const session =
               await this.runtime.attachFilesToActiveSession(attachedPaths);
             if (!session) {
-              await webviewView.webview.postMessage({
+              await post({
                 type: "actionResult",
                 payload:
                   "Unable to attach — start a conversation first or send a message.",
@@ -812,15 +931,15 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
               return;
             }
 
-            await webviewView.webview.postMessage({
+            await post({
               type: "runtimeSummary",
               payload: await this.runtime.summary(),
             });
-            await webviewView.webview.postMessage({
+            await post({
               type: "sessionAttachments",
               payload: session.attachedFiles ?? [],
             });
-            await webviewView.webview.postMessage({
+            await post({
               type: "actionResult",
               payload: `Attached ${session.attachedFiles?.length ?? 0} file(s).`,
             });
@@ -829,7 +948,7 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
 
           if (message.type === "newConversation") {
             await this.runtime.startNewConversation();
-            await webviewView.webview.postMessage({
+            await post({
               type: "runtimeSummary",
               payload: await this.runtime.summary(),
             });
@@ -872,11 +991,11 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
 
             if (resolvedPaths.length > 0) {
               await this.runtime.attachFiles(resolvedPaths);
-              await webviewView.webview.postMessage({
+              await post({
                 type: "sessionAttachments",
                 payload: resolvedPaths,
               });
-              await webviewView.webview.postMessage({
+              await post({
                 type: "actionResult",
                 payload: `Attached ${resolvedPaths.length} file(s) via drop.`,
               });
@@ -925,13 +1044,15 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
           }
         } catch (error) {
           this.logger.error("Sidebar message handling failed", error);
-          await webviewView.webview.postMessage({
+          await post({
             type: "actionResult",
             payload: `Error: ${error instanceof Error ? error.message : String(error)}`,
           });
         }
       },
     );
+    // eslint-disable-next-line no-console
+    console.error("DEBUG: registered onDidReceiveMessage");
 
     // ── Proactive initial push ──────────────────────────────────────
     // Don't rely on the webview's loadDashboard message (race condition).
@@ -1034,6 +1155,23 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
   <div id="settingsDrawer">
     <div class="srow"><span class="slabel">Persona</span><select id="personaSelect"><option value="software-engineer">Software Engineer</option><option value="full-stack-developer">Full-Stack Developer</option><option value="data-scientist">Data Scientist</option><option value="designer">Designer</option><option value="devops-engineer">DevOps Engineer</option><option value="researcher">Researcher</option></select></div>
     <div class="srow"><span class="slabel">Model</span><select id="modelSelect"></select></div>
+    <div class="srow" id="summaryRow"><span class="slabel">Summary</span>
+      <select id="summaryVerbositySelect">
+        <option value="compact">Compact</option>
+        <option value="normal">Normal</option>
+        <option value="verbose">Verbose</option>
+      </select>
+    </div>
+    <div class="srow" id="compactSummaryRow">
+      <div class="self-learn-info">
+        <div class="self-learn-label">Compact Summaries</div>
+        <div class="self-learn-desc">Shorter, more compact responses</div>
+      </div>
+      <label class="toggle-switch">
+        <input type="checkbox" id="compactSummaryToggle" />
+        <span class="toggle-track"></span>
+      </label>
+    </div>
     <div class="sbtns"><button id="btnSyncModels" class="btn">Sync models</button><button id="btnApplyModel" class="btn primary">Apply</button></div>
     <div class="section">
       <div class="section-head"><span class="slabel">MCP Servers</span><span id="mcpCount" class="mcp-count">0 configured</span></div>

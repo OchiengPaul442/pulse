@@ -6,6 +6,8 @@ export interface SkillManifest {
   tools: string[];
 }
 
+import type { ToolRegistry } from "../tooling/ToolRegistry";
+
 export interface SkillSelection {
   primary: SkillManifest | null;
   selected: SkillManifest[];
@@ -490,6 +492,11 @@ const BUILTIN_SKILLS: SkillManifest[] = [
 
 export class SkillRegistry {
   private readonly skills = [...BUILTIN_SKILLS];
+  private readonly toolRegistry?: ToolRegistry;
+
+  public constructor(toolRegistry?: ToolRegistry) {
+    this.toolRegistry = toolRegistry;
+  }
 
   public list(): SkillManifest[] {
     return [...this.skills];
@@ -560,6 +567,24 @@ export class SkillRegistry {
     const shortcuts = this.buildOptionalShortcuts(selection);
     if (shortcuts.length > 0) {
       lines.push(`Shortcuts: ${shortcuts.join(" | ")}`);
+    }
+
+    // Append compact tool hints when a ToolRegistry is available. Keep bounded.
+    const toolHints = (() => {
+      try {
+        if (!this.toolRegistry) return "";
+        const regs = this.toolRegistry.list();
+        const toolLines = regs
+          .slice(0, 10)
+          .map((r) => `- ${r.name}: ${r.prompt ?? r.description ?? ""}`);
+        return toolLines.join("\n").slice(0, 1200);
+      } catch {
+        return "";
+      }
+    })();
+
+    if (toolHints) {
+      lines.push(`Tool hints:\n${toolHints}`);
     }
 
     return lines.join("\n");

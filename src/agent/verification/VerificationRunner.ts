@@ -7,7 +7,7 @@ export interface VerificationResult {
 }
 
 export class VerificationRunner {
-  public runDiagnostics(): VerificationResult {
+  public runDiagnostics(toolHints?: string): VerificationResult {
     const allDiagnostics = vscode.languages.getDiagnostics();
     let errorCount = 0;
 
@@ -25,10 +25,20 @@ export class VerificationRunner {
         0,
       ),
       hasErrors: errorCount > 0,
-      summary:
-        errorCount > 0
-          ? `${errorCount} error diagnostics currently active.`
-          : "No error diagnostics reported.",
+      summary: (() => {
+        const base =
+          errorCount > 0
+            ? `${errorCount} error diagnostics currently active.`
+            : "No error diagnostics reported.";
+        if (!toolHints) return base;
+        // Append a compact, first-lines-only view of tool hints to keep summaries small
+        try {
+          const compact = toolHints.split("\n").slice(0, 5).join("; ");
+          return `${base} Tool hints: ${compact}`;
+        } catch {
+          return base;
+        }
+      })(),
     };
   }
 }
