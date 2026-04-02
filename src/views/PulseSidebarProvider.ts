@@ -905,6 +905,11 @@ export class PulseSidebarProvider implements vscode.WebviewViewProvider {
                       type: "dropImage",
                       payload: { name, dataUrl },
                     });
+                    // Sentinel to indicate the dropImage preview post has been emitted.
+                    await post({
+                      type: "dropImageSentinel",
+                      payload: { name },
+                    });
                   }
                 } catch {
                   /* ignore unreadable images */
