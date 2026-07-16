@@ -816,9 +816,9 @@ function isSafeSingleCommand(normalized: string): boolean {
     /\bpnpm\s+dlx\s+create-/,
     // Make
     /\bmake(\s|$)/,
-    // Curl/wget for fetching (non-destructive read)
-    /\bcurl\s/,
-    /\bwget\s/,
+    // Curl/wget for fetching (non-destructive read only — exclude data-egress flags)
+    /\bcurl\s+(?!.*(-d\b|--data|--data-raw|--data-binary|-x\s*(post|put|patch|delete)|-t\b|--upload-file|--output|-o\b))\S/,
+    /\bwget\s+(?!.*(--post-data|--post-file|--method\s*post|-O\b))\S/,
   ];
 
   return safePatterns.some((pattern) => pattern.test(normalized));

@@ -12,6 +12,8 @@ import { OpenAICompatibleProvider } from "./agent/model/OpenAICompatibleProvider
 import { WebSearchService } from "./agent/search/WebSearchService";
 import { PulseSidebarProvider } from "./views/PulseSidebarProvider";
 
+const PROVIDER_API_KEY_SECRET = "pulse.provider.apiKey";
+
 function createProvider(
   type: ProviderType,
   ollamaBaseUrl: string,
@@ -44,11 +46,28 @@ export async function activate(
     logger.info("Activating Pulse extension...");
 
     const config = getAgentConfig();
+
+    // Read API key from SecretStorage; migrate from plain config if needed
+    let openaiApiKey =
+      (await context.secrets.get(PROVIDER_API_KEY_SECRET)) ?? "";
+    if (!openaiApiKey && config.openaiApiKey) {
+      // Migrate existing plain-text key to SecretStorage
+      openaiApiKey = config.openaiApiKey;
+      await context.secrets.store(PROVIDER_API_KEY_SECRET, openaiApiKey);
+      const cfg = vscode.workspace.getConfiguration("pulse");
+      await cfg.update(
+        "provider.apiKey",
+        "",
+        vscode.ConfigurationTarget.Global,
+      );
+      logger.info("Migrated provider API key to SecretStorage.");
+    }
+
     const provider = createProvider(
       config.providerType,
       config.ollamaBaseUrl,
       config.openaiBaseUrl,
-      config.openaiApiKey,
+      openaiApiKey,
       config.openaiModels,
     );
     const storage = await bootstrapStorage(

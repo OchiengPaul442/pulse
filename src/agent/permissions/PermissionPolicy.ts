@@ -72,7 +72,12 @@ const SAFE_ACTIONS: ReadonlySet<ActionCategory> = new Set([
 ]);
 
 export function classifyAction(description: string): ActionCategory {
-  const lower = description.toLowerCase();
+  // Normalize snake_case, camelCase, and kebab-case into space-separated tokens
+  // so that word-boundary patterns match correctly (e.g., "terminal_exec" → "terminal exec").
+  const lower = description
+    .replace(/[_-]/g, " ")
+    .replace(/([a-z])([A-Z])/g, "$1 $2")
+    .toLowerCase();
 
   if (
     /\b(commit|push|merge|rebase|reset|checkout|stash|branch|cherry.?pick)\b/.test(
@@ -94,7 +99,7 @@ export function classifyAction(description: string): ActionCategory {
   if (/\b(rm\s+-rf|rmdir|del\s+\/|drop\s+table|truncate)\b/.test(lower)) {
     return "destructive";
   }
-  if (/\b(exec|shell|terminal|spawn|run\s+command|command)\b/.test(lower)) {
+  if (/\b(exec|shell|terminal|spawn|run(\s+\w+)?|command)\b/.test(lower)) {
     return "terminal_exec";
   }
   if (/\b(fetch|http|api|request|download|upload)\b/.test(lower)) {
@@ -109,8 +114,12 @@ export function classifyAction(description: string): ActionCategory {
   if (/\b(write|create|edit|modify|update)\b/.test(lower)) {
     return "file_write";
   }
+  if (/\b(read|view|list|show|display|check|inspect)\b/.test(lower)) {
+    return "file_read";
+  }
 
-  return "file_read";
+  // Fail closed: unknown actions require approval rather than auto-approving
+  return "destructive";
 }
 
 export class PermissionPolicy {

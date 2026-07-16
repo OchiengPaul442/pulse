@@ -41,6 +41,9 @@ function makeConfig(overrides: Partial<AgentConfig> = {}): AgentConfig {
     telemetryOptIn: false,
     selfLearnEnabled: true,
     qualityTargetScore: 0.9,
+    persistenceScope: "global",
+    uiSummaryVerbosity: "normal",
+    uiShowSummaryToggle: true,
     ...overrides,
   };
 }

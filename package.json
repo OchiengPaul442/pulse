@@ -116,6 +116,14 @@
       {
         "command": "pulse.clearTavilyApiKey",
         "title": "Pulse: Clear Tavily API Key"
+      },
+      {
+        "command": "pulse.setProviderApiKey",
+        "title": "Pulse: Set Provider API Key"
+      },
+      {
+        "command": "pulse.clearProviderApiKey",
+        "title": "Pulse: Clear Provider API Key"
       }
     ],
     "viewsContainers": {

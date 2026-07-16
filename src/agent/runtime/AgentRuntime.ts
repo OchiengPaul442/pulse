@@ -1625,7 +1625,15 @@ export class AgentRuntime {
 
     const canAutoRunSafeCommand = canAutoRunNonInstall || canAutoRunInstall;
 
-    if (!decision.allowed && !canAutoRunSafeCommand) {
+    // For terminal_exec actions, require BOTH policy approval AND command-level safety check.
+    // This ensures the isSafeTerminalCommand allowlist is actually consulted,
+    // preventing arbitrary commands from auto-executing in default mode.
+    const requiresCommandLevelCheck = action === "terminal_exec";
+    const permitted = requiresCommandLevelCheck
+      ? decision.allowed && (safeCommand || canAutoRunSafeCommand)
+      : decision.allowed;
+
+    if (!permitted) {
       this.logger.info(`Terminal exec blocked by policy: ${sanitized}`);
       return null;
     }

@@ -126,6 +126,9 @@ describe("AgentRuntime", () => {
       openaiModels: [],
       performanceProfile: "auto",
       qualityTargetScore: 0.9,
+      persistenceScope: "global",
+      uiSummaryVerbosity: "normal",
+      uiShowSummaryToggle: true,
     };
 
     vi.spyOn(
@@ -300,6 +303,9 @@ describe("AgentRuntime", () => {
       openaiModels: [],
       performanceProfile: "auto",
       qualityTargetScore: 0.9,
+      persistenceScope: "global",
+      uiSummaryVerbosity: "normal",
+      uiShowSummaryToggle: true,
     };
 
     const provider = {
@@ -395,6 +401,9 @@ describe("AgentRuntime", () => {
           openaiModels: [],
           performanceProfile: "auto",
           qualityTargetScore: 0.9,
+          persistenceScope: "global",
+          uiSummaryVerbosity: "normal",
+          uiShowSummaryToggle: true,
         },
         storage,
         {
@@ -503,6 +512,9 @@ describe("AgentRuntime", () => {
       openaiModels: [],
       performanceProfile: "auto",
       qualityTargetScore: 0.9,
+      persistenceScope: "global",
+      uiSummaryVerbosity: "normal",
+      uiShowSummaryToggle: true,
     };
 
     const provider = {
@@ -605,6 +617,9 @@ describe("AgentRuntime", () => {
       openaiModels: [],
       performanceProfile: "auto",
       qualityTargetScore: 0.9,
+      persistenceScope: "global",
+      uiSummaryVerbosity: "normal",
+      uiShowSummaryToggle: true,
     };
 
     const executeTaskSpy = vi
@@ -709,6 +724,9 @@ describe("AgentRuntime", () => {
       openaiModels: [],
       performanceProfile: "auto",
       qualityTargetScore: 0.9,
+      persistenceScope: "global",
+      uiSummaryVerbosity: "normal",
+      uiShowSummaryToggle: true,
     };
 
     const executeTaskSpy = vi
@@ -828,6 +846,9 @@ describe("AgentRuntime", () => {
       openaiModels: [],
       performanceProfile: "auto",
       qualityTargetScore: 0.9,
+      persistenceScope: "global",
+      uiSummaryVerbosity: "normal",
+      uiShowSummaryToggle: true,
     };
 
     vi.spyOn(OllamaProvider.prototype, "healthCheck").mockResolvedValue({
@@ -912,6 +933,9 @@ describe("AgentRuntime", () => {
       openaiModels: [],
       performanceProfile: "auto",
       qualityTargetScore: 0.9,
+      persistenceScope: "global",
+      uiSummaryVerbosity: "normal",
+      uiShowSummaryToggle: true,
     };
 
     const runtime = new AgentRuntime(
@@ -991,6 +1015,9 @@ describe("AgentRuntime", () => {
       openaiModels: [],
       performanceProfile: "balanced",
       qualityTargetScore: 0.9,
+      persistenceScope: "global",
+      uiSummaryVerbosity: "normal",
+      uiShowSummaryToggle: true,
     };
 
     const runtime = new AgentRuntime(
@@ -1121,6 +1148,9 @@ describe("AgentRuntime", () => {
       openaiModels: [],
       performanceProfile: "auto",
       qualityTargetScore: 0.9,
+      persistenceScope: "global",
+      uiSummaryVerbosity: "normal",
+      uiShowSummaryToggle: true,
     };
 
     const runtime = new AgentRuntime(
@@ -1215,6 +1245,9 @@ describe("AgentRuntime", () => {
       openaiModels: [],
       performanceProfile: "auto",
       qualityTargetScore: 0.9,
+      persistenceScope: "global",
+      uiSummaryVerbosity: "normal",
+      uiShowSummaryToggle: true,
     };
 
     const runtime = new AgentRuntime(
@@ -1326,6 +1359,9 @@ describe("AgentRuntime", () => {
       openaiModels: [],
       performanceProfile: "auto",
       qualityTargetScore: 0.9,
+      persistenceScope: "global",
+      uiSummaryVerbosity: "normal",
+      uiShowSummaryToggle: true,
     };
 
     const plannerSpy = vi
@@ -1443,6 +1479,9 @@ describe("AgentRuntime", () => {
       openaiModels: [],
       performanceProfile: "auto",
       qualityTargetScore: 0.9,
+      persistenceScope: "global",
+      uiSummaryVerbosity: "normal",
+      uiShowSummaryToggle: true,
     };
 
     const runtime = new AgentRuntime(
@@ -1545,6 +1584,9 @@ describe("AgentRuntime", () => {
       openaiModels: [],
       performanceProfile: "auto",
       qualityTargetScore: 0.9,
+      persistenceScope: "global",
+      uiSummaryVerbosity: "normal",
+      uiShowSummaryToggle: true,
     };
 
     const plannerSpy = vi

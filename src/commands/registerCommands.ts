@@ -35,6 +35,8 @@ export function registerCommands(
     ["pulse.showGitBlame", (payload) => showGitBlame(runtime, payload)],
     ["pulse.setTavilyApiKey", () => setTavilyApiKey(context)],
     ["pulse.clearTavilyApiKey", () => clearTavilyApiKey(context)],
+    ["pulse.setProviderApiKey", () => setProviderApiKey(context)],
+    ["pulse.clearProviderApiKey", () => clearProviderApiKey(context)],
   ];
 
   for (const [commandId, handler] of commandHandlers) {
@@ -646,6 +648,55 @@ async function clearTavilyApiKey(
 
   await context.secrets.delete("pulse.tavily.apiKey");
   await vscode.window.showInformationMessage("Pulse: Tavily API key removed.");
+}
+
+const PROVIDER_API_KEY_SECRET = "pulse.provider.apiKey";
+
+async function setProviderApiKey(
+  context: vscode.ExtensionContext,
+): Promise<void> {
+  const apiKey = await vscode.window.showInputBox({
+    title: "Pulse: Set Provider API Key",
+    prompt: "Paste your API key for OpenAI/Anthropic/custom provider",
+    password: true,
+    ignoreFocusOut: true,
+  });
+
+  if (!apiKey) {
+    return;
+  }
+
+  await context.secrets.store(PROVIDER_API_KEY_SECRET, apiKey.trim());
+
+  // Migrate: remove the key from plain config if present
+  const cfg = vscode.workspace.getConfiguration("pulse");
+  const plainKey = cfg.get<string>("provider.apiKey", "");
+  if (plainKey) {
+    await cfg.update("provider.apiKey", "", vscode.ConfigurationTarget.Global);
+  }
+
+  await vscode.window.showInformationMessage(
+    "Pulse: Provider API key saved in VS Code Secret Storage.",
+  );
+}
+
+async function clearProviderApiKey(
+  context: vscode.ExtensionContext,
+): Promise<void> {
+  const decision = await vscode.window.showWarningMessage(
+    "Pulse will remove the saved provider API key from VS Code Secret Storage.",
+    { modal: true },
+    "Remove",
+  );
+
+  if (decision !== "Remove") {
+    return;
+  }
+
+  await context.secrets.delete(PROVIDER_API_KEY_SECRET);
+  await vscode.window.showInformationMessage(
+    "Pulse: Provider API key removed.",
+  );
 }
 
 function formatWebSearchMarkdown(

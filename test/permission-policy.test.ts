@@ -128,8 +128,8 @@ describe("classifyAction", () => {
     expect(classifyAction("write a new config file")).toBe("file_write");
   });
 
-  it("classifies unknown as file_read", () => {
-    expect(classifyAction("check something")).toBe("file_read");
+  it("classifies truly unknown actions as destructive (fail-closed)", () => {
+    expect(classifyAction("xyzzy foobar")).toBe("destructive");
   });
 });
 
